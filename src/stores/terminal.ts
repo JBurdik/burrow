@@ -11,7 +11,7 @@ let lineId = 0;
 
 export const useTerminalStore = defineStore("terminal", () => {
   const lines = ref<TerminalLine[]>([
-    { id: lineId++, type: "info", content: "Agentic IDE v0.1.0" },
+    { id: lineId++, type: "info", content: "Burrow v0.1.0" },
     { id: lineId++, type: "info", content: "Type a command or ask the AI agent..." },
     { id: lineId++, type: "output", content: "" },
   ]);

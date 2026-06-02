@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Burrow — the `burrow` CLI (sub-agent delegation)</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --bg-panel: #111;
+    --border: #222;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --purple: #a78bfa;
+    --mono: "JetBrains Mono", "Fira Code", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.6; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 48px 24px 80px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .back { font-size: 12px; color: var(--muted); margin-bottom: 18px; display: inline-block; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+  .tagline { color: var(--muted); font-size: 15px; margin-bottom: 28px; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 36px 0 14px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; color: var(--text); }
+  p { color: #cbd5e1; margin-bottom: 12px; }
+  ul { padding-left: 20px; color: #cbd5e1; }
+  li { margin-bottom: 6px; }
+  code { font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px; color: #93c5fd; }
+  pre { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; overflow-x: auto; margin-bottom: 14px; }
+  pre code { background: none; padding: 0; color: #cbd5e1; font-size: 12.5px; line-height: 1.5; }
+  .note { background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #bfdbfe; }
+  .warn { background: rgba(234,179,8,0.08); border: 1px solid rgba(234,179,8,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #fde68a; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 14px; }
+  th { text-align: left; padding: 6px 10px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td { padding: 6px 10px; border-bottom: 1px solid #1a1a1a; vertical-align: top; }
+  td:first-child { font-family: var(--mono); color: #93c5fd; white-space: nowrap; }
+  .ok { color: #4ade80; }
+  .no { color: #f87171; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <a class="back" href="context.html">← Project context</a>
+  <h1>The <code>burrow</code> CLI</h1>
+  <div class="tagline">Let an AI agent running inside Burrow delegate work to sub-agents in new terminal tabs — and optionally wait for their results.</div>
+
+  <h2>The idea</h2>
+  <p>
+    Every agent in Burrow runs inside a terminal tab. To delegate, <code>burrow spawn</code> drops a small <strong>request
+    file</strong> in a directory Burrow watches; the app polls it and opens a new tab. Results come back through result files.
+    No port, no socket, no MCP server.
+  </p>
+  <div class="warn">
+    <strong>Why files, not the terminal?</strong> An earlier design printed an escape sequence to <code>/dev/tty</code>.
+    But agents invoke <code>burrow</code> through their Bash tool / hooks, whose subprocesses have <strong>no controlling
+    terminal</strong> — so <code>/dev/tty</code> fails with <em>"Device not configured"</em> and Claude also captures the
+    command's stdout, so the bytes never reach the PTY. File-based transport sidesteps both problems and works from any
+    subprocess.
+  </div>
+  <div class="note">
+    <strong>Subscription-safe by design.</strong> Sub-agents are launched <strong>interactively</strong> (plain <code>claude</code>,
+    with the prompt as a positional arg) — never <code>claude -p</code> / <code>--print</code> and never the Agent SDK. This
+    matches the post-2025-06-15 policy for subscription use. The CLI passes commands through verbatim and must never inject <code>-p</code>.
+  </div>
+
+  <h2>Commands</h2>
+
+  <h3><code>burrow spawn [--token T] [--cwd DIR] &lt;command...&gt;</code></h3>
+  <p>Open a new terminal tab in the <strong>current project</strong> and run <code>command</code> in it.</p>
+  <ul>
+    <li><code>--token T</code> — attach an id so you can <code>burrow wait T</code> for the result.</li>
+    <li><code>--cwd DIR</code> — run the new tab in <code>DIR</code> instead of the current project dir.</li>
+  </ul>
+  <pre><code>burrow spawn claude "write unit tests for src/foo"
+burrow spawn codex  "refactor the auth module"</code></pre>
+
+  <h3><code>burrow wait &lt;token&gt; [--timeout SECONDS]</code></h3>
+  <p>Block until the sub-agent launched with that token finishes its turn, then print its final message to stdout. Exits 1 on timeout.</p>
+  <pre><code>burrow spawn --token t1 claude "summarize what changed in this PR"
+burrow wait  t1                 # blocks, then prints the sub-agent's final message
+burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
+
+  <h3><code>burrow capture &lt;token&gt;</code> <span style="color:var(--muted);font-weight:400;font-size:12px">(internal)</span></h3>
+  <p>
+    Not called by hand — it is wired as the spawned Claude's <strong>Stop hook</strong> (only on tabs that carry a
+    <code>resultToken</code>). It reads the Stop-hook JSON on stdin, pulls <code>transcript_path</code>, extracts the last
+    assistant message (parsed with <code>node</code>, which Claude Code guarantees), then writes <code>&lt;token&gt;.result</code>
+    and <code>&lt;token&gt;.done</code> into <code>$BURROW_SESSION_DIR</code>.
+  </p>
+
+  <h3><code>burrow status &lt;running|waiting|done&gt;</code></h3>
+  <p>
+    Reports the current tab's agent state to Burrow's <strong>hook HTTP server</strong> (a <code>POST /hook</code> with
+    <code>{ptyId,state}</code>). Reads <code>BURROW_PTY_ID</code> + the port (<code>BURROW_HOOK_PORT</code>, else the live
+    <code>&lt;BURROW_HOME_DIR&gt;/hook.port</code> file — which survives an app restart); a no-op outside Burrow. The frontend
+    turns <code>running</code>/<code>waiting</code>/<code>done</code> into the tab's status dot (orange spinner / blue /
+    green-<em>review</em>).
+  </p>
+
+  <h3><code>burrow hook</code> <span style="color:var(--muted);font-weight:400;font-size:12px">(internal)</span></h3>
+  <p>
+    The status mechanism — modeled on Superset's single global <code>notify.sh</code>. At startup
+    <code>install_status_hooks</code> merges <strong>one persistent hook into each agent's own global config</strong>
+    (<code>~/.claude/settings.json</code>, <code>~/.codex/hooks.json</code> — identical schema), running
+    <code>[ -n "$BURROW_PTY_ID" ] &amp;&amp; '…/bin/burrow' hook || true</code>. <code>burrow hook</code> reads the hook JSON on
+    stdin, maps <code>hook_event_name</code> → state (<code>UserPromptSubmit</code>/<code>PostToolUse</code>→running,
+    <code>PreToolUse</code>/<code>Notification</code>→waiting, <code>Stop</code>→done) and forwards via
+    <code>burrow status</code>. Because it's <strong>global + env-driven</strong>, status works for <em>every</em> agent
+    session — launched-by-button, typed by hand, or reattached after restart — not just per-launch ones. The merge is
+    non-destructive (append + dedupe + <code>.burrow-bak</code>) and a no-op outside Burrow.
+  </p>
+  <div class="callout" style="border-left:3px solid var(--green);padding-left:12px">
+    <strong>The poll never fabricates "busy" for an agent.</strong> An agent stays the foreground process whether it's
+    thinking or idle at its own prompt — so equating presence with busy left a permanent orange spinner. Status now comes
+    only from hooks; the 2 s poll only titles agent tabs and clears state when the shell returns (rescuing a Ctrl+C'd agent
+    that never fired <code>done</code>).
+  </div>
+
+  <h2>How a spawn flows</h2>
+  <pre><code>agent runs:  burrow spawn --token t1 claude "fix tests"
+   │  writes  $BURROW_SESSION_DIR/requests/req.XXXXXX/
+   │     cmd="claude 'fix tests'"   token="t1"   cwd=&lt;new tab dir&gt;   ws=&lt;workspace dir&gt;
+   │     ready                       ← marker written LAST (avoids reading half-written req)
+   ▼
+Terminal.vue polls take_spawn_requests(cwd) every 1s
+   │  Rust claims (deletes) request dirs whose `ws` == this workspace's cwd → routing
+   │  → addTab(cmd, { cwd, resultToken })          (Leaf carries cwd + resultToken)
+   ▼
+new tab runs cmd; status comes from the GLOBAL burrow hook; for a token,
+   │     a per-launch --settings adds:  Stop → burrow capture &lt;token&gt;
+   ▼
+new tab running the sub-agent  ──(on turn end)──►  &lt;token&gt;.result / &lt;token&gt;.done written
+   ▲
+   └── meanwhile `burrow wait t1` polls those files, then prints the result</code></pre>
+  <p>
+    <strong>Routing to the correct workspace:</strong> the request records its workspace dir as <code>ws</code> (from the
+    <code>BURROW_CWD</code> env Burrow sets per PTY). Each <code>Terminal.vue</code> polls with its own <code>cwd</code>, and
+    <code>take_spawn_requests</code> only hands back — and deletes — requests whose <code>ws</code> matches, so the new tab opens
+    in the spawning agent's project. <code>--cwd</code> sets the new tab's own directory via <code>Leaf.cwd</code>.
+  </p>
+
+  <h2>Two channels (both files)</h2>
+  <table>
+    <thead><tr><th>Direction</th><th>Mechanism</th><th>Used for</th></tr></thead>
+    <tbody>
+      <tr><td>CLI → app</td><td><code>requests/req.XXXXXX/</code> dirs in <code>$BURROW_SESSION_DIR</code></td><td><code>spawn</code> requests (polled by the frontend)</td></tr>
+      <tr><td>app → CLI</td><td><code>&lt;token&gt;.result</code> / <code>&lt;token&gt;.done</code> in <code>$BURROW_SESSION_DIR</code></td><td><code>wait</code> reading <code>capture</code>'s output</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Request format</h2>
+  <p>
+    Each request is a directory of raw, unencoded files — no escaping, no base64. The command is re-quoted before storage
+    (program name bare, each arg single-quoted) so it re-parses correctly when typed into the new tab:
+  </p>
+  <pre><code>requests/req.Ab12Cd/
+  cmd     claude 'say hi to the user'      ← re-quoted shell line
+  token   t1                               ← may be empty
+  cwd     /Users/me/code/app               ← new tab's dir
+  ws      /Users/me/code/app               ← workspace routing key
+  ready                                    ← empty marker, written last</code></pre>
+  <p>
+    (Status is a separate channel: globally-installed agent hooks → <code>burrow hook</code> → <code>burrow status</code> →
+    <code>POST /hook</code> on the local HTTP server. No OSC, no tty — see the <code>burrow status</code> / <code>burrow hook</code>
+    sections above. The old <code>OSC 9998</code> tty protocol is retired.)
+  </p>
+
+  <h2>How agents discover the CLI</h2>
+  <p>On Tauri <code>setup</code>, <code>install_agent_docs()</code> writes usage docs so agents know the CLI exists:</p>
+  <table>
+    <thead><tr><th>Agent</th><th>Where</th><th>How</th></tr></thead>
+    <tbody>
+      <tr><td>Claude</td><td><code>~/.claude/skills/burrow/SKILL.md</code></td><td>Global skill, auto-discovered (overwritten each launch to stay fresh)</td></tr>
+      <tr><td>Codex</td><td><code>~/.codex/AGENTS.md</code></td><td>Managed <code>&lt;!-- BURROW:BEGIN/END --&gt;</code> block, non-destructive merge</td></tr>
+    </tbody>
+  </table>
+  <p>Doc text lives in the <code>BURROW_SKILL_MD</code> / <code>BURROW_AGENT_DOC</code> consts in <code>lib.rs</code>.</p>
+
+  <h2>Files &amp; environment</h2>
+  <table>
+    <thead><tr><th>Thing</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>src-tauri/bin/burrow</td><td>The POSIX sh CLI, embedded via <code>include_str!</code></td></tr>
+      <tr><td>&lt;app-data&gt;/bin/burrow</td><td>Written on each PTY spawn (<code>ensure_burrow_bin</code>); this dir is prepended to PATH</td></tr>
+      <tr><td>&lt;app-data&gt;/sessions/</td><td><code>BURROW_SESSION_DIR</code>; holds <code>requests/</code> dirs + <code>&lt;token&gt;.result</code> / <code>&lt;token&gt;.done</code></td></tr>
+      <tr><td>&lt;app-data&gt;/hook.port</td><td>Current hook-server port (<code>BURROW_HOME_DIR</code>); read by <code>burrow status</code> when the env port is stale</td></tr>
+      <tr><td>~/.claude/settings.json, ~/.codex/hooks.json</td><td>Global status hook merged in by <code>install_status_hooks</code> (<code>.burrow-bak</code> backup); removed by <code>remove_status_hooks</code></td></tr>
+      <tr><td>PTY env</td><td><code>BURROW_SESSION_DIR</code>, <code>BURROW_CWD</code>, <code>BURROW_PTY_ID</code>, <code>BURROW_HOOK_PORT</code>, <code>BURROW_HOME_DIR</code></td></tr>
+      <tr><td>lib.rs</td><td><code>take_spawn_requests(cwd)</code> claims matching request dirs; sets the <code>BURROW_*</code> env per PTY</td></tr>
+      <tr><td>Terminal.vue</td><td>Polls <code>take_spawn_requests</code> every 1s → <code>addTab(cmd, { cwd, resultToken })</code></td></tr>
+      <tr><td>XTerm.vue</td><td>Injects the <code>capture</code> Stop hook when <code>resultToken</code> is set (latent OSC 9999 parser unused)</td></tr>
+      <tr><td>TerminalSplitView.vue</td><td><code>Leaf</code> interface gained <code>cwd?</code> + <code>resultToken?</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Examples</h2>
+  <h3>Fan out, then collect</h3>
+  <pre><code>burrow spawn --token a claude "audit src/auth for bugs"
+burrow spawn --token b claude "audit src/api for bugs"
+burrow wait a; echo "---"; burrow wait b</code></pre>
+  <h3>Delegate in another project</h3>
+  <pre><code>burrow spawn --cwd ~/code/other-app claude "bump deps and run the build"</code></pre>
+
+  <h2>Caveats</h2>
+  <div class="warn">
+    <ul style="margin:0;color:#fde68a;">
+      <li>The Stop hook fires on <strong>every</strong> turn end — if a sub-agent pauses to ask a question, that counts as "done". Tell it "don't ask, just do it" in the prompt (or rely on <code>--dangerously-skip-permissions</code>).</li>
+      <li>Result capture is <strong>Claude-only</strong> (it uses Claude's Stop hook). Other agents spawn fine, but <code>wait</code> only resolves once a <code>.done</code> marker is written.</li>
+      <li>Windows ships the POSIX <code>sh</code> version only for now; a <code>burrow.cmd</code> variant is a future add.</li>
+      <li>Any process in any tab that prints OSC 9999 can open a tab, and any process can <code>POST /hook</code> to the local status server — same trust model (the user's own machine; the server binds <code>127.0.0.1</code> only).</li>
+    </ul>
+  </div>
+
+</div>
+</body>
+</html>

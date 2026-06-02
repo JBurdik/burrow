@@ -4,3 +4,10 @@ dist
 src-tauri/target
 src-tauri/gen
 *.local
+
+# Code-signing certs / keys (fetched locally, never commit)
+*.cer
+*.p12
+*.pem
+*.key
+*.mobileprovision

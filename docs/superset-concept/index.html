@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>How Superset Detects Terminal/Agent Status — concept study</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --bg-panel: #111;
+    --border: #222;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --purple: #a78bfa;
+    --mono: "JetBrains Mono", "Fira Code", monospace;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.6; max-width: 900px; margin: 0 auto; padding: 40px 28px 80px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .back { font-size: 12px; color: var(--muted); margin-bottom: 18px; display: inline-block; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+  .tagline { color: var(--muted); font-size: 15px; margin-bottom: 12px; }
+  .source { font-size: 12px; color: var(--muted); margin-bottom: 28px; font-family: var(--mono); }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 40px 0 14px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 15px; font-weight: 600; margin: 22px 0 8px; color: var(--text); }
+  p { color: #cbd5e1; margin-bottom: 12px; }
+  ul, ol { padding-left: 20px; color: #cbd5e1; }
+  li { margin-bottom: 6px; }
+  code { font-family: var(--mono); font-size: 12.5px; background: #1a1a1a; padding: 1px 5px; border-radius: 4px; color: #e2e8f0; }
+  pre { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 12px 0; }
+  pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.55; }
+  .file { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--bg-panel); color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
+  td code { font-size: 12px; }
+  .callout { border-left: 3px solid var(--accent); background: #11161f; padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; }
+  .callout.warn { border-color: var(--amber); background: #1a160d; }
+  .pill { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+  .pill.idle { background: #1a1a1a; color: var(--muted); }
+  .pill.working { background: #2a1f08; color: var(--amber); }
+  .pill.permission { background: #2a1010; color: var(--red); }
+  .pill.review { background: #0c2415; color: var(--green); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .flow { font-family: var(--mono); font-size: 12px; color: #cbd5e1; line-height: 1.9; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; }
+  .hl { color: var(--accent); }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+  <a href="../context.html" class="back">← Burrow docs</a>
+  <h1>How Superset Detects Terminal/Agent Status</h1>
+  <p class="tagline">Concept study — reverse-engineered from <strong>superset-sh/superset</strong>, for comparison with Burrow's own status detection.</p>
+  <p class="source">source: ~/.opensrc/repos/github.com/superset-sh/superset/main &nbsp;·&nbsp; apps/desktop (Electron)</p>
+
+  <div class="callout">
+    <strong>TL;DR.</strong> Superset does <strong>not</strong> parse PTY output, watch quiescence timers, or sniff the foreground process to decide if an agent is busy. It is <strong>100% hook-driven</strong>: the running CLI agent <code>curl</code>s a tiny local HTTP server on every lifecycle event, and the UI flips a 4-state status off those callbacks. Burrow, by contrast, uses an <strong>OSC 9998 escape channel + foreground-process polling fallback</strong>. Two opposite design choices.
+  </div>
+
+  <h2>The four states</h2>
+  <p class="file">apps/desktop/src/shared/tabs-types.ts:26–40</p>
+<pre><code>export type PaneStatus = "idle" | "working" | "permission" | "review";
+export type ActivePaneStatus = Exclude&lt;PaneStatus, "idle"&gt;;
+
+export const STATUS_PRIORITY = {
+  idle: 0,
+  review: 1,
+  working: 2,
+  permission: 3,
+} as const satisfies Record&lt;PaneStatus, number&gt;;</code></pre>
+
+  <table>
+    <tr><th>State</th><th>Meaning</th><th>UI indicator</th></tr>
+    <tr><td><span class="pill working">working</span></td><td>Agent processing / thinking</td><td><span class="dot" style="background:var(--amber)"></span>Amber, pulsing — "Agent working"</td></tr>
+    <tr><td><span class="pill permission">permission</span></td><td>Agent blocked, needs user input/approval</td><td><span class="dot" style="background:var(--red)"></span>Red, pulsing — "Needs input"</td></tr>
+    <tr><td><span class="pill review">review</span></td><td>Agent done <em>while user wasn't watching</em></td><td><span class="dot" style="background:var(--green)"></span>Green, static — "Ready for review"</td></tr>
+    <tr><td><span class="pill idle">idle</span></td><td>Nothing pending / user already engaged</td><td><span class="muted">no indicator</span></td></tr>
+  </table>
+  <p>The <code>STATUS_PRIORITY</code> map matters because a tab aggregates many panes — when a tab shows one badge for N panes, the highest-priority status wins (<code>permission</code> &gt; <code>working</code> &gt; <code>review</code> &gt; <code>idle</code>).</p>
+
+  <h2>Detection mechanism: HTTP lifecycle hooks</h2>
+  <p>A local Express server runs inside the Electron main process. Each terminal is launched with env vars pointing at it.</p>
+  <p class="file">apps/desktop/src/main/lib/terminal/env.ts:472–482</p>
+<pre><code>SUPERSET_PANE_ID:      paneId,
+SUPERSET_PORT:         String(env.DESKTOP_NOTIFICATIONS_PORT),
+SUPERSET_HOOK_VERSION: HOOK_PROTOCOL_VERSION,   // "2"</code></pre>
+  <p>The agent's hooks (Claude Code hooks, Codex notify, etc.) fire a plain GET — no tty needed, works from any subprocess:</p>
+<pre><code>GET /hook/complete?eventType=Start&amp;paneId=$SUPERSET_PANE_ID
+GET /hook/complete?eventType=Stop&amp;paneId=$SUPERSET_PANE_ID
+GET /hook/complete?eventType=PermissionRequest&amp;paneId=$SUPERSET_PANE_ID</code></pre>
+  <p class="file">apps/desktop/src/main/lib/notifications/server.ts:52–126</p>
+<pre><code>app.get("/hook/complete", (req, res) =&gt; {
+  const { paneId, eventType, /* ... */ } = req.query;
+  const mappedEventType = mapEventType(eventType as string | undefined);
+  if (!mappedEventType) { /* unknown: 200 but ignore */ }
+  notificationsEmitter.emit(NOTIFICATION_EVENTS.AGENT_LIFECYCLE, event);
+  res.json({ success: true, paneId: resolvedPaneId, tabId });
+});</code></pre>
+
+  <h2>Many agents, three canonical events</h2>
+  <p>Different agents emit different hook names. <code>mapEventType</code> collapses dozens of aliases into <strong>Start / Stop / PermissionRequest</strong>, so one state machine handles Claude Code, Codex, and others.</p>
+  <p class="file">apps/desktop/src/main/lib/notifications/map-event-type.ts</p>
+  <table>
+    <tr><th>Canonical</th><th>Aliases mapped in</th></tr>
+    <tr><td><span class="pill working">Start</span></td><td><code>Start</code>, <code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>PostToolUse</code>, <code>PostToolUseFailure</code>, <code>BeforeAgent</code>, <code>AfterTool</code>, <code>task_started</code>, snake/camel variants…</td></tr>
+    <tr><td><span class="pill permission">PermissionRequest</span></td><td><code>PermissionRequest</code>, <code>Notification</code>, <code>PreToolUse</code>, <code>exec_approval_request</code>, <code>apply_patch_approval_request</code>, <code>request_user_input</code></td></tr>
+    <tr><td><span class="pill review">Stop</span></td><td><code>Stop</code>, <code>agent-turn-complete</code>, <code>AfterAgent</code>, <code>session_end</code>, <code>task_complete</code></td></tr>
+  </table>
+  <div class="callout">
+    <strong>Clever bit:</strong> <code>PostToolUse</code> maps to <strong>Start</strong>, not Stop. So every tool call re-asserts "working" — the amber state stays alive across a long multi-tool turn instead of flickering to idle between steps.
+  </div>
+
+  <h2>The state machine</h2>
+  <p class="file">apps/desktop/src/renderer/stores/tabs/useAgentHookListener.ts:74–112</p>
+<pre><code>if (eventType === "Start") {
+  state.setPaneStatus(paneId, "working");
+} else if (eventType === "PermissionRequest" || eventType === "PendingQuestion") {
+  state.setPaneStatus(paneId, "permission");
+} else if (eventType === "Stop") {
+  const isInActiveTab = isTabActive &amp;&amp;
+    (getCurrentWorkspaceId() === workspaceId || isPaneFocused);
+
+  const nextStatus =
+    pane?.status === "permission" ? "idle"   // already engaged → clear
+    : isInActiveTab              ? "idle"    // user is watching → no badge
+    :                              "review"; // user away → green "look here"
+
+  state.setPaneStatus(paneId, nextStatus);
+}</code></pre>
+
+  <div class="flow">
+<span class="muted"># the lifecycle</span>
+launch terminal      → <span class="pill idle">idle</span>
+agent Start / tool   → <span class="pill working">working</span>   <span class="muted">(amber, pulsing)</span>
+agent asks approval  → <span class="pill permission">permission</span>  <span class="muted">(red, pulsing — highest priority)</span>
+agent Stop, watching → <span class="pill idle">idle</span>
+agent Stop, away     → <span class="pill review">review</span>     <span class="muted">(green — "ready for review")</span>
+click tab / focus    → <span class="pill idle">idle</span>
+</pre>
+  </div>
+  <p>"Agent thinking" vs "agent waiting for me" is <strong>not inferred</strong> — it's two distinct hook events (<code>Start</code> vs <code>PermissionRequest</code>). No heuristics, no false positives.</p>
+
+  <h2>The gap: no Stop hook on Ctrl+C</h2>
+  <p>The weakness of a pure-hook model: if the agent never fires <code>Stop</code> (user hits Ctrl+C, process killed, permission denied), the pane would be stuck on <span class="pill working">working</span> forever. The fallback is the PTY-exit event, not output parsing.</p>
+  <p class="file">apps/desktop/src/renderer/stores/tabs/useAgentHookListener.ts:114–123</p>
+<pre><code>} else if (event.type === NOTIFICATION_EVENTS.TERMINAL_EXIT) {
+  // Clear transient status for unmounted panes
+  if (currentPane?.status === "working" || currentPane?.status === "permission") {
+    state.setPaneStatus(paneId, "idle");
+  }
+}</code></pre>
+  <p class="muted">So a stuck "working" only clears when the whole terminal process exits — if the agent is interrupted but the shell stays alive, the amber badge lingers until the next event. Acknowledged limitation in the code comments.</p>
+
+  <h2>What it deliberately does NOT do</h2>
+  <ul>
+    <li><strong>No PTY output parsing</strong> for status. The headless emulator (<code>headless-emulator.ts</code>) tracks DECSET/DECRST modes, OSC-7 cwd, and screen snapshots — but only for <em>restore fidelity</em> on reattach, never for activity.</li>
+    <li><strong>No quiescence timers</strong> ("no output for 2s ⇒ idle").</li>
+    <li><strong>No foreground-process-name sniffing.</strong></li>
+    <li><strong>No OSC status escape codes</strong> on the PTY channel.</li>
+  </ul>
+
+  <h2>Superset vs Burrow</h2>
+  <table>
+    <tr><th></th><th>Superset</th><th>Burrow</th></tr>
+    <tr><td>Primary signal</td><td>HTTP GET to local Express server</td><td><code>OSC 9998;running|waiting|done</code> on PTY → <code>/dev/tty</code></td></tr>
+    <tr><td>Fallback</td><td>PTY exit event clears stuck state</td><td><code>get_pty_foreground</code> polling every 2s (proc name + recent output)</td></tr>
+    <tr><td>States</td><td>idle / working / permission / review</td><td>busy / waiting / done</td></tr>
+    <tr><td>"Done while away"</td><td>distinct <code>review</code> state (green)</td><td>—</td></tr>
+    <tr><td>Multi-agent normalization</td><td><code>mapEventType</code> alias table</td><td>Claude-specific hooks JSON</td></tr>
+    <tr><td>Transport from no-tty subprocess</td><td>works natively (HTTP)</td><td>OSC can't reach tty → file-based <code>burrow spawn</code> instead</td></tr>
+  </table>
+  <div class="callout warn">
+    <strong>Takeaway for Burrow.</strong> Superset sidesteps the exact problem Burrow hit — subprocesses with no controlling tty can't write OSC to <code>/dev/tty</code>. An HTTP loopback hook (or Unix socket) is tty-independent by construction, the same reason Burrow moved <code>spawn</code>/<code>wait</code> to a file channel. Two states Burrow lacks are worth stealing: <span class="pill permission">permission</span> (distinguish "waiting for approval" from generic idle) and <span class="pill review">review</span> (agent finished while you were on another tab — the highest-value notification in a multi-agent UI).
+  </div>
+
+  <h2>Key files</h2>
+  <table>
+    <tr><th>File</th><th>Role</th></tr>
+    <tr><td class="file">shared/tabs-types.ts</td><td>PaneStatus enum + priority aggregation</td></tr>
+    <tr><td class="file">main/lib/terminal/env.ts</td><td>Injects SUPERSET_PANE_ID / PORT / hook version into shell</td></tr>
+    <tr><td class="file">main/lib/notifications/server.ts</td><td>Local HTTP server receiving <code>/hook/complete</code></td></tr>
+    <tr><td class="file">main/lib/notifications/map-event-type.ts</td><td>Alias → Start/Stop/PermissionRequest</td></tr>
+    <tr><td class="file">renderer/stores/tabs/useAgentHookListener.ts</td><td>The state machine + exit fallback</td></tr>
+    <tr><td class="file">renderer/screens/main/.../StatusIndicator.tsx</td><td>Color + pulse per state</td></tr>
+  </table>
+
+  <p class="source" style="margin-top:40px">Reverse-engineered 2026-06-02 from superset-sh/superset@main. Line numbers approximate to that snapshot.</p>
+</body>
+</html>

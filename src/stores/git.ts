@@ -133,6 +133,15 @@ export const useGitStore = defineStore("git", () => {
     diffFile.value = null;
   }
 
+  async function fetchAllDiff(staged: boolean): Promise<string> {
+    const args = staged ? ["diff", "--cached"] : ["diff"];
+    try {
+      return await runGit(cwd.value, args);
+    } catch {
+      return "";
+    }
+  }
+
   async function gitInit() {
     if (!cwd.value) return;
     loading.value = true;
@@ -151,6 +160,6 @@ export const useGitStore = defineStore("git", () => {
     cwd, branch, staged, unstaged, untracked,
     diff, diffFile, diffStaged,
     loading, error, commitMsg,
-    setCwd, refresh, stageFile, unstageFile, stageAll, commit, showDiff, clearDiff, gitInit,
+    setCwd, refresh, stageFile, unstageFile, stageAll, commit, showDiff, clearDiff, fetchAllDiff, gitInit,
   };
 });

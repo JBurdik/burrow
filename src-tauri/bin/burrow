@@ -1,0 +1,196 @@
+#!/bin/sh
+# burrow — delegate work to sub-agents via new Burrow terminal tabs.
+#
+#   burrow spawn [--token T] [--cwd DIR] <command...>
+#       Open a new terminal tab (in the current project) running <command>.
+#       --token T   attach an id so you can `burrow wait T` for the result.
+#       --cwd DIR   run the new tab in DIR instead of the current project dir.
+#
+#   burrow wait <token> [--timeout SECONDS]
+#       Block until the sub-agent launched with that --token finishes its turn,
+#       then print its final message to stdout. Exits 1 on timeout.
+#
+#   burrow capture <token>          (internal — invoked by a Claude Stop hook)
+#       Reads a Stop-hook JSON from stdin and writes the sub-agent's last
+#       message into the result file that `burrow wait` is watching.
+#
+# Transport is FILE-BASED (no tty, no socket): `spawn` drops a request dir under
+# $BURROW_SESSION_DIR/requests/ which Burrow polls and turns into a new tab; the
+# new tab's result comes back through $BURROW_SESSION_DIR/<token>.{result,done}.
+# This works from Claude's Bash tool / hooks, which have no controlling tty.
+#
+# Sub-agents run INTERACTIVELY on your subscription (plain `claude`, never -p).
+
+sub="$1"
+[ -n "$sub" ] || { echo "usage: burrow spawn|wait|status|hook|notify <args>" >&2; exit 1; }
+shift
+
+case "$sub" in
+  spawn)
+    token=""; cwd=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --token) token="$2"; shift 2 ;;
+        --cwd)   cwd="$2";   shift 2 ;;
+        --)      shift; break ;;
+        -*)      echo "burrow spawn: unknown flag $1" >&2; exit 1 ;;
+        *)       break ;;
+      esac
+    done
+    [ -n "$1" ] || { echo "burrow spawn: no command given" >&2; exit 1; }
+
+    # Rebuild the command as a shell line that re-parses correctly when typed
+    # into the new tab. The program name stays bare (so XTerm's `claude` check
+    # still matches); every remaining arg is single-quoted to preserve spaces,
+    # quotes and newlines — e.g.  claude 'say hi to the user'.
+    prog="$1"; shift
+    fullcmd="$prog"
+    for a in "$@"; do
+      esc=$(printf '%s' "$a" | sed "s/'/'\\\\''/g")
+      fullcmd="$fullcmd '$esc'"
+    done
+
+    reqdir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}/requests"
+    mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"          # workspace this tab belongs to (routing key)
+    newcwd="${cwd:-$ws}"             # where the new tab should open
+
+    # Each field is its own raw file (no escaping needed). The `ready` marker is
+    # written LAST so Burrow never reads a half-written request.
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "$fullcmd" > "$d/cmd"
+    printf '%s' "$token"  > "$d/token"
+    printf '%s' "$newcwd" > "$d/cwd"
+    printf '%s' "$ws"     > "$d/ws"
+    : > "$d/ready"
+
+    if [ -n "$token" ]; then
+      echo "burrow: spawned sub-agent (token=$token) — use 'burrow wait $token'" >&2
+    else
+      echo "burrow: spawned a new tab" >&2
+    fi
+    exit 0
+    ;;
+
+  wait)
+    token="$1"; [ $# -gt 0 ] && shift
+    [ -n "$token" ] || { echo "burrow wait: no token given" >&2; exit 1; }
+    timeout=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --timeout) timeout="$2"; shift 2 ;;
+        *)         shift ;;
+      esac
+    done
+    dir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}"
+    done_f="$dir/$token.done"; res_f="$dir/$token.result"
+    waited=0
+    while [ ! -f "$done_f" ]; do
+      sleep 1
+      waited=$((waited + 1))
+      if [ "$timeout" -gt 0 ] && [ "$waited" -ge "$timeout" ]; then
+        echo "burrow wait: timed out after ${timeout}s (token=$token)" >&2
+        exit 1
+      fi
+    done
+    [ -f "$res_f" ] && cat "$res_f"
+    exit 0
+    ;;
+
+  status)
+    # burrow status <running|waiting|done>
+    # Report this tab's agent state to Burrow's hook server. Any agent can call
+    # this from a hook/notify program. Needs BURROW_PTY_ID + BURROW_HOOK_PORT
+    # (exported into every Burrow PTY). No-op outside Burrow.
+    state="$1"
+    [ -n "$state" ] || { echo "burrow status: no state (running|waiting|done)" >&2; exit 1; }
+    [ -n "$BURROW_PTY_ID" ] || exit 0
+    # Port: env first, else the live hook.port file (survives an app restart, when
+    # the env-baked port is stale).
+    port="$BURROW_HOOK_PORT"
+    [ -z "$port" ] && [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
+      port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+    [ -n "$port" ] || exit 0
+    curl -sf -X POST "http://127.0.0.1:$port/hook" \
+      -H 'Content-Type: application/json' \
+      -d "{\"ptyId\":$BURROW_PTY_ID,\"state\":\"$state\"}" >/dev/null 2>&1 || true
+    exit 0
+    ;;
+
+  hook)
+    # burrow hook   (internal — invoked by globally-installed Claude/Codex hooks)
+    # Reads the hook JSON on stdin, maps hook_event_name → a Burrow state, forwards
+    # via `burrow status`. No-op outside Burrow (BURROW_PTY_ID unset). Best-effort
+    # string parse, no jq/node needed.
+    [ -n "$BURROW_PTY_ID" ] || exit 0
+    json=$(cat)
+    ev=$(printf '%s' "$json" | sed -n 's/.*"hook_event_name"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+    case "$ev" in
+      UserPromptSubmit|PostToolUse) state=running ;;
+      PreToolUse|Notification)      state=waiting ;;
+      Stop|SessionEnd)              state=done ;;
+      *)                            exit 0 ;;
+    esac
+    burrow status "$state"
+    exit 0
+    ;;
+
+  notify)
+    # burrow notify '<json>'   (internal — invoked by Codex's `notify` program)
+    # Codex passes a single JSON arg describing a lifecycle event. Map its "type"
+    # to a Burrow state and forward via `burrow status`. Best-effort string parse
+    # (no jq/node dependency — Codex users may not have node).
+    json="$1"
+    [ -n "$json" ] || exit 0
+    type=$(printf '%s' "$json" | sed -n 's/.*"type"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+    case "$type" in
+      task_started|task-started|turn_started)              state=running ;;
+      agent-turn-complete|task_complete|turn_complete)     state=done ;;
+      *approval*|*approval_request|request_user_input)     state=waiting ;;
+      *)                                                   exit 0 ;;
+    esac
+    burrow status "$state"
+    exit 0
+    ;;
+
+  capture)
+    token="$1"
+    dir="${BURROW_SESSION_DIR:?}"
+    [ -n "$token" ] || exit 0
+    # Parse Stop-hook JSON (stdin) → transcript_path → last assistant text,
+    # write <token>.result then <token>.done. Node is always present (Claude
+    # Code requires it), so we don't depend on jq.
+    BURROW_DIR="$dir" BURROW_TOKEN="$token" node -e '
+      let raw = "";
+      process.stdin.on("data", d => raw += d).on("end", () => {
+        const fs = require("fs"), path = require("path");
+        const dir = process.env.BURROW_DIR, tok = process.env.BURROW_TOKEN;
+        let text = "";
+        try {
+          const tp = JSON.parse(raw).transcript_path;
+          if (tp && fs.existsSync(tp)) {
+            const lines = fs.readFileSync(tp, "utf8").split("\n").filter(Boolean);
+            for (let i = lines.length - 1; i >= 0; i--) {
+              let o; try { o = JSON.parse(lines[i]); } catch { continue; }
+              const m = o.message || o;
+              if ((o.type === "assistant" || m.role === "assistant") && m.content) {
+                text = (Array.isArray(m.content) ? m.content : [m.content])
+                  .map(c => typeof c === "string" ? c : (c && c.type === "text" ? c.text : ""))
+                  .join("");
+                if (text.trim()) break;
+              }
+            }
+          }
+        } catch {}
+        try { fs.writeFileSync(path.join(dir, tok + ".result"), text); } catch {}
+        try { fs.writeFileSync(path.join(dir, tok + ".done"), ""); } catch {}
+      });
+    '
+    exit 0
+    ;;
+
+  *)
+    echo "burrow: unknown command '$sub' (use spawn|wait|status|notify)" >&2
+    exit 1
+    ;;
+esac

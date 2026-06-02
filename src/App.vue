@@ -1,31 +1,220 @@
 <template>
   <div class="ide-root">
-    <TitleBar :workspace-name="ws.active?.name" @back="ws.close()" />
-    <div class="ide-body">
-      <Sidebar />
+    <TitleBar :workspace-name="ws.active?.name" :branch="git.branch" @back="ws.close()" />
+    <Settings v-if="ui.settingsOpen" @close="ui.closeSettings()" />
+    <div class="ide-body" :class="{ 'panels-swapped': ui.swapPanels }" :style="panelStyles">
+      <Sidebar class="panel-sidebar" />
+      <div class="resize-handle panel-resize-left" @mousedown="startResize('left', $event)" />
       <div class="ide-main">
-        <div v-if="!ws.active" class="no-workspace">
+        <div v-show="!ws.active" class="no-workspace">
           <PhFolderOpen :size="32" weight="thin" />
           <span>Select a workspace</span>
         </div>
-        <Terminal v-else :key="ws.active.id" :cwd="ws.active.path" />
+        <Terminal
+          v-for="w in ws.opened"
+          v-show="ws.active && w.id === ws.active.id"
+          :key="w.id"
+          :workspace-id="w.id"
+          :cwd="w.path"
+          :ref="(el) => setTermRef(w.id, el)"
+        />
       </div>
-      <RightPanel :cwd="ws.active?.path ?? ''" />
+      <div class="resize-handle panel-resize-right" @mousedown="startResize('right', $event)" />
+      <RightPanel class="panel-right" :cwd="ws.active?.path ?? ''" />
     </div>
+    <Spotlight
+      ref="spotlightRef"
+      @launch="(cmd) => activeTerm()?.spawnAgent(cmd)"
+      @new-terminal="activeTerm()?.addTab()"
+      @new-workspace="openNewWorkspace"
+      @open-settings="ui.openSettings()"
+    />
+    <ToastStack />
+
+    <!-- Keyboard cheatsheet overlay (⌘/) -->
+    <Teleport to="body">
+      <div v-if="cheatsheetOpen" class="cheatsheet-backdrop" @click.self="cheatsheetOpen = false">
+        <div class="cheatsheet-panel">
+          <div class="cheatsheet-header">
+            <span class="cheatsheet-title">Keyboard Shortcuts</span>
+            <button class="cheatsheet-close" @click="cheatsheetOpen = false"><PhX :size="14" /></button>
+          </div>
+          <div class="cheatsheet-body">
+            <div v-for="group in CHEATSHEET_GROUPS" :key="group.label" class="cs-group">
+              <div class="cs-group-label">{{ group.label }}</div>
+              <div v-for="s in group.shortcuts" :key="s.keys" class="cs-row">
+                <span class="cs-desc">{{ s.desc }}</span>
+                <span class="cs-keys">
+                  <kbd v-for="k in s.keys.split(' ')" :key="k" class="cs-key">{{ k }}</kbd>
+                </span>
+              </div>
+            </div>
+          </div>
+          <div class="cheatsheet-hint"><kbd class="cs-key">Esc</kbd> to close</div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted } from "vue";
-import { PhFolderOpen } from "@phosphor-icons/vue";
+import { ref, onMounted, onBeforeUnmount, computed, provide } from "vue";
+import { PhFolderOpen, PhX } from "@phosphor-icons/vue";
 import TitleBar from "@/components/TitleBar.vue";
 import Sidebar from "@/components/Sidebar.vue";
 import Terminal from "@/components/Terminal.vue";
 import RightPanel from "@/components/RightPanel.vue";
+import Settings from "@/components/Settings.vue";
+import Spotlight from "@/components/Spotlight.vue";
+import ToastStack from "@/components/ToastStack.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { useUIStore } from "@/stores/ui";
+import { useGitStore } from "@/stores/git";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+
+const sidebarWidth = ref(220);
+const rightPanelWidth = ref(300);
+
+const panelStyles = computed(() => ({
+  '--sidebar-width': sidebarWidth.value + 'px',
+  '--right-panel-width': rightPanelWidth.value + 'px',
+}));
+
+let resizing: 'left' | 'right' | null = null;
+let resizeStartX = 0;
+let resizeStartWidth = 0;
+
+function startResize(side: 'left' | 'right', e: MouseEvent) {
+  resizing = side;
+  resizeStartX = e.clientX;
+  resizeStartWidth = side === 'left' ? sidebarWidth.value : rightPanelWidth.value;
+  e.preventDefault();
+}
+
+function onResizeMove(e: MouseEvent) {
+  if (!resizing) return;
+  const delta = e.clientX - resizeStartX;
+  if (!ui.swapPanels) {
+    // Normal: [Sidebar][resize-left][main][resize-right][RightPanel]
+    if (resizing === 'left') {
+      sidebarWidth.value = Math.min(400, Math.max(150, resizeStartWidth + delta));
+    } else {
+      rightPanelWidth.value = Math.min(500, Math.max(200, resizeStartWidth - delta));
+    }
+  } else {
+    // Swapped visual: [RightPanel][resize-right][main][resize-left][Sidebar]
+    // 'right' handle is on visual left → drag right = RightPanel wider (+delta)
+    // 'left' handle is on visual right → drag left = Sidebar wider (-delta)
+    if (resizing === 'right') {
+      rightPanelWidth.value = Math.min(500, Math.max(200, resizeStartWidth + delta));
+    } else {
+      sidebarWidth.value = Math.min(400, Math.max(150, resizeStartWidth - delta));
+    }
+  }
+}
+
+function onResizeUp() {
+  resizing = null;
+}
 
 const ws = useWorkspaceStore();
-onMounted(() => ws.load());
+const ui = useUIStore();
+const git = useGitStore();
+const spotlightRef = ref<InstanceType<typeof Spotlight> | null>(null);
+const cheatsheetOpen = ref(false);
+
+const CHEATSHEET_GROUPS = [
+  {
+    label: "Global",
+    shortcuts: [
+      { keys: "⌘ ,",   desc: "Settings" },
+      { keys: "⌘ P",   desc: "Command Palette" },
+      { keys: "⌘ /",   desc: "Keyboard Shortcuts" },
+      { keys: "Esc",   desc: "Close overlay" },
+    ],
+  },
+  {
+    label: "Tabs & Panes",
+    shortcuts: [
+      { keys: "⌘ T",   desc: "New tab" },
+      { keys: "⌘ W",   desc: "Close pane" },
+      { keys: "⌘ D",   desc: "Split horizontal" },
+      { keys: "⌘ ⇧ D", desc: "Split vertical" },
+    ],
+  },
+  {
+    label: "Terminal",
+    shortcuts: [
+      { keys: "⇧ ↵",  desc: "Multiline input (Claude)" },
+    ],
+  },
+  {
+    label: "Projects",
+    shortcuts: [
+      { keys: "⌘ 1-9", desc: "Switch project" },
+    ],
+  },
+];
+
+// One Terminal stays mounted per opened workspace; resolve the active one for
+// commands (Spotlight launch, new terminal).
+const termRefs = new Map<number, InstanceType<typeof Terminal>>();
+function setTermRef(id: number, el: unknown) {
+  if (el) termRefs.set(id, el as InstanceType<typeof Terminal>);
+  else termRefs.delete(id);
+}
+function activeTerm() {
+  return ws.active ? termRefs.get(ws.active.id) : undefined;
+}
+
+provide('activeTerm', activeTerm);
+
+async function openNewWorkspace() {
+  const dir = await openDialog({ directory: true, multiple: false });
+  if (!dir || typeof dir !== "string") return;
+  const name = dir.split("/").filter(Boolean).pop() ?? dir;
+  await ws.create(name, dir);
+}
+
+onMounted(() => {
+  ws.load();
+  window.addEventListener("keydown", onKeydown);
+  window.addEventListener('mousemove', onResizeMove);
+  window.addEventListener('mouseup', onResizeUp);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKeydown);
+  window.removeEventListener('mousemove', onResizeMove);
+  window.removeEventListener('mouseup', onResizeUp);
+});
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+    if (e.key === ",") {
+      e.preventDefault();
+      ui.toggleSettings();
+    } else if (e.key === "p") {
+      e.preventDefault();
+      spotlightRef.value?.show();
+    } else if (e.key === "/") {
+      e.preventDefault();
+      cheatsheetOpen.value = !cheatsheetOpen.value;
+    } else if (/^[1-9]$/.test(e.key)) {
+      e.preventDefault();
+      const idx = parseInt(e.key) - 1;
+      const target = ws.workspaces[idx];
+      if (target) ws.open(target);
+    }
+  } else if (e.key === "Escape") {
+    if (cheatsheetOpen.value) {
+      e.preventDefault();
+      cheatsheetOpen.value = false;
+    } else if (ui.settingsOpen) {
+      e.preventDefault();
+      ui.closeSettings();
+    }
+  }
+}
 </script>
 
 <style>
@@ -40,10 +229,10 @@ onMounted(() => ws.load());
   --bg-panel: #111111;
   --bg-hover: #1a1a1a;
   --bg-selected: #1e3a5f;
-  --border: #222222;
+  --border: #2a2a2a;
   --text-primary: #e2e8f0;
-  --text-secondary: #64748b;
-  --text-muted: #334155;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
   --accent: #3b82f6;
   --accent-dim: #1d4ed8;
   --green: #22c55e;
@@ -62,13 +251,22 @@ body {
   font-family: var(--font-ui);
   overflow: hidden;
   user-select: none;
+  /* macOS renders text heavy/soft on dark bg without this — antialiased makes it crisp. */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* #app fills the window; UI scale is applied via `zoom` in the ui store. */
+#app {
+  width: 100vw;
+  height: 100vh;
 }
 
 .ide-root {
   display: flex;
   flex-direction: column;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
 }
 
 .ide-body {
@@ -84,6 +282,27 @@ body {
   flex-direction: column;
 }
 
+.resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  flex-shrink: 0;
+  background: transparent;
+  transition: background 0.15s;
+  position: relative;
+  z-index: 10;
+}
+.resize-handle:hover,
+.resize-handle:active {
+  background: var(--accent);
+  opacity: 0.4;
+}
+
+.panels-swapped .panel-sidebar { order: 5; }
+.panels-swapped .panel-resize-left { order: 4; }
+.panels-swapped .ide-main { order: 3; }
+.panels-swapped .panel-resize-right { order: 2; }
+.panels-swapped .panel-right { order: 1; }
+
 .no-workspace {
   flex: 1;
   display: flex;
@@ -91,7 +310,98 @@ body {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 13px;
+}
+
+/* Cheatsheet overlay */
+.cheatsheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.cheatsheet-panel {
+  background: #0f0f0f;
+  border: 1px solid #222;
+  border-radius: 10px;
+  width: 480px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7);
+}
+.cheatsheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid #1a1a1a;
+}
+.cheatsheet-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e2e8f0;
+  letter-spacing: 0.01em;
+}
+.cheatsheet-close {
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+}
+.cheatsheet-close:hover { color: #888; }
+.cheatsheet-body {
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.cs-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #555;
+  margin-bottom: 6px;
+}
+.cs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+  gap: 12px;
+}
+.cs-desc { font-size: 12px; color: #94a3b8; }
+.cs-keys { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.cs-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  color: #cbd5e1;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.cheatsheet-hint {
+  padding: 10px 16px;
+  border-top: 1px solid #1a1a1a;
+  font-size: 11px;
+  color: #444;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 </style>

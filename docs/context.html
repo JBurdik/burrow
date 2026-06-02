@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>agentic-ide — Project Context</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --bg-panel: #111;
+    --border: #222;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --purple: #a78bfa;
+    --mono: "JetBrains Mono", "Fira Code", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.6; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 48px 24px 80px; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+  .tagline { color: var(--muted); font-size: 15px; margin-bottom: 40px; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 36px 0 14px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  p { color: #cbd5e1; margin-bottom: 12px; }
+  ul { padding-left: 20px; color: #cbd5e1; }
+  li { margin-bottom: 6px; }
+  .badge { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 4px; margin: 2px; }
+  .b-blue { background: rgba(59,130,246,0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.3); }
+  .b-green { background: rgba(34,197,94,0.12); color: #4ade80; border: 1px solid rgba(34,197,94,0.25); }
+  .b-yellow { background: rgba(234,179,8,0.12); color: #facc15; border: 1px solid rgba(234,179,8,0.25); }
+  .b-purple { background: rgba(167,139,250,0.12); color: #c4b5fd; border: 1px solid rgba(167,139,250,0.25); }
+  .b-gray { background: rgba(100,116,139,0.15); color: #94a3b8; border: 1px solid rgba(100,116,139,0.25); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 8px; }
+  .card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; }
+  .card h3 { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+  .card p, .card li { font-size: 12px; color: var(--muted); }
+  .arch { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .layer { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .layer-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; }
+  .layer-blue { border-top: 2px solid var(--accent); }
+  .layer-green { border-top: 2px solid var(--green); }
+  .layer-yellow { border-top: 2px solid var(--yellow); }
+  code { font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px; color: #93c5fd; }
+  .file-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .file-table th { text-align: left; padding: 6px 10px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .file-table td { padding: 6px 10px; border-bottom: 1px solid #1a1a1a; vertical-align: top; }
+  .file-table td:first-child { font-family: var(--mono); color: #93c5fd; white-space: nowrap; }
+  .file-table td:last-child { color: #94a3b8; }
+  .kbd { display: inline-block; font-family: var(--mono); font-size: 11px; background: #1e1e1e; border: 1px solid #333; border-radius: 3px; padding: 1px 6px; color: #e2e8f0; }
+  .agent-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #1a1a1a; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .agent-name { font-size: 13px; font-weight: 500; min-width: 110px; }
+  .agent-cmd { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>agentic-ide</h1>
+  <div class="tagline">Desktop IDE shell for running AI coding agents — Tauri + Vue 3 + Rust PTY</div>
+
+  <h2>What it is</h2>
+  <p>
+    A native macOS desktop app (built with Tauri 2) designed as a minimal workspace shell around AI coding agents.
+    It is <strong>not</strong> a code editor — it has no text editor pane. Instead it provides:
+    a workspace picker, a real multi-tab split-pane terminal (PTY via Rust), a file explorer, a git panel,
+    and a one-click agent launcher toolbar. The core idea: open a folder, click an agent button, agent runs
+    in a terminal tab inside that workspace.
+  </p>
+
+  <h2>Architecture</h2>
+  <div class="arch">
+    <div class="layer layer-blue">
+      <div class="layer-title" style="color:var(--accent)">Frontend</div>
+      <ul style="font-size:12px;color:var(--muted);padding-left:16px;">
+        <li>Vue 3 + Pinia + TypeScript</li>
+        <li>Vite build</li>
+        <li>xterm.js (PTY rendering)</li>
+        <li>@phosphor-icons/vue</li>
+        <li>No router — single screen</li>
+      </ul>
+    </div>
+    <div class="layer layer-green">
+      <div class="layer-title" style="color:var(--green)">Tauri Bridge</div>
+      <ul style="font-size:12px;color:var(--muted);padding-left:16px;">
+        <li><code>invoke()</code> for commands</li>
+        <li><code>listen()</code> for PTY data events</li>
+        <li>Plugins: dialog, fs, os, shell</li>
+        <li>Capabilities: default.json</li>
+      </ul>
+    </div>
+    <div class="layer layer-yellow">
+      <div class="layer-title" style="color:var(--yellow)">Rust Backend</div>
+      <ul style="font-size:12px;color:var(--muted);padding-left:16px;">
+        <li>portable-pty (real PTYs)</li>
+        <li>rusqlite (SQLite workspaces)</li>
+        <li>serde / serde_json</li>
+        <li>Per-PTY reader thread → emit events</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Key Features</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Workspace Management</h3>
+      <ul>
+        <li>Open any folder as a workspace</li>
+        <li>Persisted in SQLite via Tauri backend</li>
+        <li>Multiple workspaces; switch without killing terminals</li>
+        <li>Sidebar shows all workspaces with path</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Terminal (PTY)</h3>
+      <ul>
+        <li>Real PTY via Rust <code>portable-pty</code></li>
+        <li>xterm.js renders output in Vue</li>
+        <li>Multi-tab: <span class="kbd">⌘T</span> new tab, <span class="kbd">⌘W</span> close</li>
+        <li>Split panes H/V: <span class="kbd">⌘D</span> / <span class="kbd">⌘⇧D</span></li>
+        <li>Tabs persist across workspace switches</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Agent Toolbar</h3>
+      <ul>
+        <li>Colored buttons per configured agent</li>
+        <li>Click → spawns agent in new terminal tab</li>
+        <li>Configurable: name, command, args, color, icon, shortcut</li>
+        <li>Stored in <code>localStorage</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Spotlight (⌘P)</h3>
+      <ul>
+        <li>Command palette overlay</li>
+        <li>Launch agent by name</li>
+        <li>Open new terminal / workspace</li>
+        <li>Open settings</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Right Panel — Explorer</h3>
+      <ul>
+        <li>File tree for active workspace</li>
+        <li>Recursive expand/collapse</li>
+        <li>Read via Tauri fs plugin</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Right Panel — Git</h3>
+      <ul>
+        <li>Branch display, refresh</li>
+        <li>Staged / unstaged / untracked files</li>
+        <li>Stage, unstage, stage-all</li>
+        <li>Diff viewer per file</li>
+        <li>Git init button if no repo</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Sub-agent delegation — <code>burrow</code> CLI</h3>
+      <ul>
+        <li>Agents run <code>burrow spawn claude "…"</code> to open a new tab and delegate work</li>
+        <li><code>burrow wait &lt;token&gt;</code> blocks and returns the sub-agent's final message</li>
+        <li>Transport = files in <code>$BURROW_SESSION_DIR</code> (no tty/socket); the app polls for requests</li>
+        <li>Subscription-safe: interactive only, never <code>claude -p</code></li>
+        <li><a href="burrow.html" style="color:var(--accent)">Full reference →</a></li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Default Agents</h2>
+  <div class="card" style="padding:8px 16px;">
+    <div class="agent-row">
+      <div class="dot" style="background:#a78bfa"></div>
+      <div class="agent-name">Claude Code</div>
+      <div class="agent-cmd">claude --dangerously-skip-permissions</div>
+    </div>
+    <div class="agent-row">
+      <div class="dot" style="background:#34d399"></div>
+      <div class="agent-name">Codex</div>
+      <div class="agent-cmd">codex</div>
+    </div>
+    <div class="agent-row">
+      <div class="dot" style="background:#60a5fa"></div>
+      <div class="agent-name">GitHub CLI</div>
+      <div class="agent-cmd">gh</div>
+    </div>
+    <div class="agent-row">
+      <div class="dot" style="background:#fbbf24"></div>
+      <div class="agent-name">Aider</div>
+      <div class="agent-cmd">aider</div>
+    </div>
+    <div class="agent-row" style="border-bottom:none">
+      <div class="dot" style="background:#f472b6"></div>
+      <div class="agent-name">Cursor AI</div>
+      <div class="agent-cmd">cursor-agent</div>
+    </div>
+  </div>
+
+  <h2>Key Files</h2>
+  <table class="file-table">
+    <thead>
+      <tr><th>Path</th><th>Purpose</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>src/App.vue</td><td>Root layout; keyboard shortcuts (⌘, ⌘P); workspace/terminal wiring</td></tr>
+      <tr><td>src/components/Terminal.vue</td><td>Multi-tab terminal shell; tab/pane lifecycle; persistence via invoke</td></tr>
+      <tr><td>src/components/XTerm.vue</td><td>xterm.js wrapper; PTY create/write/resize/listen</td></tr>
+      <tr><td>src/components/TerminalSplitView.vue</td><td>Recursive split tree (leaf | split{h,v}); renders XTerm at leaves</td></tr>
+      <tr><td>src/components/AgentToolbar.vue</td><td>Colored agent launch buttons + settings/spotlight shortcuts</td></tr>
+      <tr><td>src/components/Spotlight.vue</td><td>⌘P command palette overlay</td></tr>
+      <tr><td>src/components/Sidebar.vue</td><td>Workspace list; folder picker dialog; create/remove workspaces</td></tr>
+      <tr><td>src/components/RightPanel.vue</td><td>Tab panel: file explorer + git status/diff/stage</td></tr>
+      <tr><td>src/components/Settings.vue</td><td>Agent config editor (add/edit/remove/reset agents)</td></tr>
+      <tr><td>src/stores/workspace.ts</td><td>Pinia: workspaces list, active, opened — invoke list/create/remove/touch</td></tr>
+      <tr><td>src/stores/agents.ts</td><td>Pinia: agent configs — localStorage persistence, CRUD, commandLine()</td></tr>
+      <tr><td>src/stores/terminal.ts</td><td>Pinia: terminal tab state</td></tr>
+      <tr><td>src/stores/fileTree.ts</td><td>Pinia: file tree for explorer panel</td></tr>
+      <tr><td>src/stores/git.ts</td><td>Pinia: git status, branch, stage/unstage, diff, git init</td></tr>
+      <tr><td>src/lib/ptyId.ts</td><td>Global PTY ID counter (unique per session)</td></tr>
+      <tr><td>src-tauri/bin/burrow</td><td>POSIX sh CLI agents use to delegate: <code>spawn</code> / <code>wait</code> / <code>capture</code>. Embedded in the Rust binary, dropped to <code>&lt;app-data&gt;/bin</code> on PATH</td></tr>
+      <tr><td>src-tauri/src/lib.rs</td><td>Rust: PTY management, SQLite persistence, Tauri commands, burrow bin + agent-docs install</td></tr>
+      <tr><td>src-tauri/tauri.conf.json</td><td>App name, bundle ID, window config, plugins</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Tauri Commands (Rust → Frontend)</h2>
+  <table class="file-table">
+    <thead>
+      <tr><th>Command</th><th>What it does</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>create_pty(id, cwd, cols, rows)</td><td>Spawn PTY, start reader thread emitting <code>pty-data-{id}</code> events</td></tr>
+      <tr><td>write_pty(id, data)</td><td>Write bytes to PTY stdin</td></tr>
+      <tr><td>resize_pty(id, cols, rows)</td><td>Resize PTY window</td></tr>
+      <tr><td>kill_pty(id)</td><td>Close PTY and clean up</td></tr>
+      <tr><td>list_workspaces()</td><td>Return all workspaces from SQLite</td></tr>
+      <tr><td>create_workspace(name, path)</td><td>Insert workspace row</td></tr>
+      <tr><td>delete_workspace(id)</td><td>Delete workspace row</td></tr>
+      <tr><td>touch_workspace(id)</td><td>Update last_opened timestamp</td></tr>
+      <tr><td>list_terminal_tabs(workspaceId)</td><td>Load persisted tab list for workspace</td></tr>
+      <tr><td>save_terminal_tabs(workspaceId, tabs)</td><td>Persist tab list</td></tr>
+      <tr><td>get_pty_foreground(id)</td><td>Foreground process name (poll → tab title; never fabricates agent busy)</td></tr>
+      <tr><td>take_spawn_requests(cwd)</td><td>Claim <code>burrow spawn</code> request dirs routed to this workspace</td></tr>
+      <tr><td>get_hook_server_port()</td><td>Port of the local status-hook HTTP server</td></tr>
+      <tr><td>reinstall_status_hooks()</td><td>Re-merge the <code>burrow hook</code> status hook into Claude/Codex global config (idempotent)</td></tr>
+      <tr><td>remove_status_hooks()</td><td>Strip burrow's status hooks back out (leaves other hooks intact)</td></tr>
+      <tr><td>get_config_dirs()</td><td>List the agent config dirs hooks+docs install into (seeded with <code>~/.claude</code>, <code>~/.codex</code> + any <code>CLAUDE_CONFIG_DIR</code>/<code>CODEX_HOME</code> env)</td></tr>
+      <tr><td>set_config_dirs(claude, codex)</td><td>Persist a new config-dir list (to <code>&lt;app-data&gt;/config-dirs.json</code>) and re-install hooks + agent docs into each</td></tr>
+    </tbody>
+  </table>
+  <p style="color:var(--muted);font-size:13px">Agent status flows: globally-installed hooks → <code>burrow hook</code> → <code>burrow status</code> → HTTP server → <code>pty-hook-{id}</code> event → <code>XTerm.vue</code>. Hooks+docs install into every dir from <code>get_config_dirs</code> — editable in Settings → Agents → Config directories, for per-project <code>CLAUDE_CONFIG_DIR</code> setups. See <a href="burrow.html">burrow.html</a> for the full mechanism.</p>
+
+  <h2>Tech Stack</h2>
+  <div style="margin-bottom:8px;">
+    <span class="badge b-blue">Vue 3</span>
+    <span class="badge b-blue">TypeScript</span>
+    <span class="badge b-blue">Pinia</span>
+    <span class="badge b-blue">Vite</span>
+    <span class="badge b-blue">xterm.js 6</span>
+    <span class="badge b-green">Tauri 2</span>
+    <span class="badge b-yellow">Rust</span>
+    <span class="badge b-yellow">portable-pty</span>
+    <span class="badge b-yellow">rusqlite</span>
+    <span class="badge b-yellow">serde</span>
+    <span class="badge b-purple">@phosphor-icons/vue</span>
+    <span class="badge b-gray">pnpm workspaces</span>
+  </div>
+
+  <h2>Dev Commands</h2>
+  <table class="file-table">
+    <thead><tr><th>Command</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>pnpm tauri:dev</code></td><td>Hot-reload dev build (Vite + Rust watch)</td></tr>
+      <tr><td><code>pnpm tauri:build</code></td><td>Production .app bundle</td></tr>
+      <tr><td><code>pnpm dev</code></td><td>Vite only (no Tauri, no PTY)</td></tr>
+      <tr><td><code>pnpm build</code></td><td>tsc + Vite frontend build</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Keyboard Shortcuts</h2>
+  <table class="file-table">
+    <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td><span class="kbd">⌘P</span></td><td>Open Spotlight command palette</td></tr>
+      <tr><td><span class="kbd">⌘,</span></td><td>Open Settings</td></tr>
+      <tr><td><span class="kbd">⌘T</span></td><td>New terminal tab</td></tr>
+      <tr><td><span class="kbd">⌘W</span></td><td>Close focused pane/tab</td></tr>
+      <tr><td><span class="kbd">⌘D</span></td><td>Split pane horizontally</td></tr>
+      <tr><td><span class="kbd">⌘⇧D</span></td><td>Split pane vertically</td></tr>
+      <tr><td><span class="kbd">⌘1–5</span></td><td>Launch agents (default config)</td></tr>
+    </tbody>
+  </table>
+
+</div>
+</body>
+</html>

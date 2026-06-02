@@ -7,10 +7,10 @@
         class="agent-btn"
         :style="{ borderColor: a.color, color: a.color }"
         :disabled="!a.command.trim()"
-        :title="a.command || 'No command set'"
-        @click="a.command.trim() && $emit('launch', a.command)"
+        :title="store.commandLine(a) || 'No command set'"
+        @click="a.command.trim() && $emit('launch', store.commandLine(a))"
       >
-        <span class="dot" :style="{ background: a.color }" />
+        <component :is="iconFor(a.icon)" :size="12" :style="{ color: a.color }" />
         {{ a.name }}
       </button>
       <span v-if="store.agents.length === 0" class="no-agents">No agents configured</span>
@@ -27,22 +27,36 @@
 
     <div class="at-gap" />
     <PhActivity :size="14" class="toolbar-icon" />
-    <PhGear :size="14" class="toolbar-icon" title="Agent settings" @click="settingsOpen = true" />
-
-    <SettingsModal v-if="settingsOpen" @close="settingsOpen = false" />
+    <PhGear :size="14" class="toolbar-icon" title="Settings (⌘,)" @click="ui.openSettings()" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
-import { PhCaretRight, PhActivity, PhGear } from "@phosphor-icons/vue";
-import { useAgentsStore } from "@/stores/agents";
-import SettingsModal from "./SettingsModal.vue";
+import { PhCaretRight, PhActivity, PhGear, PhRobot, PhSparkle, PhCode, PhGitBranch, PhTerminal } from "@phosphor-icons/vue";
+import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
+import OpenAIIcon from "@/components/icons/OpenAIIcon.vue";
+import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
+import { useAgentsStore, type AgentIcon } from "@/stores/agents";
+import { useUIStore } from "@/stores/ui";
+
+const iconMap: Record<AgentIcon, unknown> = {
+  sparkle: PhSparkle,
+  code: PhCode,
+  "git-branch": PhGitBranch,
+  robot: PhRobot,
+  terminal: PhTerminal,
+  claude: ClaudeIcon,
+  openai: OpenAIIcon,
+  "github-copilot": GitHubCopilotIcon,
+};
+function iconFor(icon: AgentIcon) {
+  return iconMap[icon] ?? PhRobot;
+}
 
 defineEmits<{ launch: [cmd: string] }>();
 
 const store = useAgentsStore();
-const settingsOpen = ref(false);
+const ui = useUIStore();
 </script>
 
 <style scoped>
@@ -85,13 +99,6 @@ const settingsOpen = ref(false);
 .no-agents {
   font-size: 11px;
   color: var(--text-muted);
-}
-
-.dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
 }
 
 .at-divider {

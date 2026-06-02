@@ -2,19 +2,23 @@
   <div class="terminal-pane" @click="focusActive">
     <AgentToolbar @launch="spawnAgent" />
 
-    <div class="terminal-tabs">
+    <div v-if="tabs.length > 0" class="terminal-tabs">
       <button
         v-for="tab in tabs"
         :key="tab.id"
         class="tab"
-        :class="{ active: activeId === tab.id }"
+        :class="{ active: activeTabId === tab.id }"
         @click.stop="activateTab(tab.id)"
       >
-        <PhRobot v-if="tab.isAgent" :size="12" class="tab-agent-icon" />
+        <PhRobot v-if="tabIsAgent(tab)" :size="12" class="tab-agent-icon" />
         <PhTerminal v-else :size="12" class="tab-term-icon" />
-        <span class="tab-label">{{ tab.title }}</span>
+        <span
+          v-if="tabStatus(tab) !== 'idle'"
+          class="status-dot"
+          :class="`status-${tabStatus(tab)}`"
+        >{{ tabStatus(tab) === 'running' ? spinnerFrame : '' }}</span>
+        <span class="tab-label">{{ tabTitle(tab) }}</span>
         <PhX
-          v-if="tabs.length > 1"
           :size="9"
           weight="bold"
           class="tab-close"
@@ -26,88 +30,647 @@
       </button>
     </div>
 
-    <div class="terminal-body">
-      <XTerm
+    <div v-if="tabs.length > 0" class="terminal-body">
+      <div
         v-for="tab in tabs"
         :key="tab.id"
-        :pty-id="tab.id"
-        :cwd="cwd"
-        :initial-cmd="tab.initialCmd"
-        :class="{ hidden: activeId !== tab.id }"
-        :ref="(el) => setRef(tab.id, el)"
-        @title="(t) => onTitle(tab.id, t)"
-      />
+        class="terminal-tab-content"
+        v-show="activeTabId === tab.id"
+      >
+        <div
+          v-for="pane in paneLayout(tab)"
+          :key="pane.leaf.id"
+          class="pane"
+          :class="{ focused: focusedLeafId === pane.leaf.id && isTabSplit(tab) }"
+          :style="rectStyle(pane.rect)"
+          @mousedown.capture="onLeafFocus(pane.leaf.id)"
+        >
+          <div v-if="isTabSplit(tab)" class="pane-titlebar" @mousedown.stop>
+            <PhRobot v-if="pane.leaf.isAgent" :size="10" class="pane-title-icon agent" />
+            <PhTerminal v-else :size="10" class="pane-title-icon" />
+            <span
+              v-if="pane.leaf.status !== 'idle'"
+              class="status-dot"
+              :class="`status-${pane.leaf.status}`"
+            >{{ pane.leaf.status === 'running' ? spinnerFrame : '' }}</span>
+            <span class="pane-title-text">{{ pane.leaf.title }}</span>
+            <button class="pane-title-close" @click.stop="closePane(pane.leaf.id)" title="Close pane">
+              <PhX :size="9" weight="bold" />
+            </button>
+          </div>
+          <DiffTab
+            v-if="pane.leaf.leafType === 'diff'"
+            :diff-file="pane.leaf.diffFile!"
+            :diff-staged="pane.leaf.diffStaged ?? false"
+            :diff="pane.leaf.diff || ''"
+          />
+          <XTerm
+            v-else
+            :pty-id="pane.leaf.id"
+            :cwd="pane.leaf.cwd ?? cwd"
+            :initial-cmd="pane.leaf.initialCmd"
+            :result-token="pane.leaf.resultToken"
+            :ref="(el) => registerLeaf(pane.leaf.id, el)"
+            @title="(t) => onLeafTitle(pane.leaf.id, t)"
+            @busy="(b) => onLeafBusy(pane.leaf.id, b)"
+            @done="() => onLeafDone(pane.leaf.id)"
+            @needs-input="(b) => onLeafNeedsInput(pane.leaf.id, b)"
+            @spawn="(req) => addTab(req.cmd, { cwd: req.cwd || undefined, resultToken: req.token || undefined })"
+          />
+        </div>
+      </div>
+    </div>
+    <div v-else class="terminal-welcome">
+      <PhTerminalWindow :size="40" weight="thin" class="welcome-icon" />
+      <p class="welcome-title">No terminals open</p>
+      <p class="welcome-sub">Launch an agent above or open a new terminal</p>
+      <button class="welcome-btn" @click="addTab()">
+        <PhPlus :size="13" /> New Terminal
+      </button>
+    </div>
+
+    <div v-if="confirm" class="confirm-overlay" @mousedown.self="answerClose(false)">
+      <div class="confirm-modal">
+        <div class="confirm-title">Close terminal</div>
+        <div class="confirm-body">
+          "{{ confirm.name }}" has a running process. Close anyway?
+        </div>
+        <div class="confirm-actions">
+          <button class="confirm-btn" @click="answerClose(false)">Cancel</button>
+          <button class="confirm-btn danger" @click="answerClose(true)">Close</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from "vue";
-import { PhRobot, PhTerminal, PhX, PhPlus } from "@phosphor-icons/vue";
+import { ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus } from "@phosphor-icons/vue";
+import { invoke } from "@tauri-apps/api/core";
 import XTerm from "./XTerm.vue";
+import DiffTab from "./DiffTab.vue";
 import AgentToolbar from "./AgentToolbar.vue";
+import { type Leaf, type TreeNode } from "./TerminalSplitView.vue";
+import { nextPtyId, initPtyCounter } from "@/lib/ptyId";
+import { spinnerFrame } from "@/lib/spinner";
+import { useWorkspaceStore } from "@/stores/workspace";
+import { useTerminalTabsStore } from "@/stores/terminalTabs";
+import { useNotificationsStore } from "@/stores/notifications";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 
-defineProps<{ cwd: string }>();
+const props = defineProps<{ cwd: string; workspaceId: number }>();
+const wsStore = useWorkspaceStore();
+const tabsStore = useTerminalTabsStore();
+const notifStore = useNotificationsStore();
 
 interface Tab {
   id: number;
-  title: string;
-  defaultTitle: string;
-  isAgent: boolean;
-  initialCmd?: string;
+  root: TreeNode;
 }
 
-let nextId = 1;
-const tabs = ref<Tab[]>([{ id: nextId, title: "Terminal 1", defaultTitle: "Terminal 1", isAgent: false }]);
-nextId++;
-const activeId = ref(tabs.value[0].id);
-const xtermRefs = new Map<number, InstanceType<typeof XTerm>>();
+interface PersistedTab {
+  title: string | null;
+  initial_cmd: string | null;
+  pty_id: number | null;
+  cwd: string | null;
+}
 
-function setRef(id: number, el: unknown) {
+interface DaemonSession {
+  pty_id: number;
+  cwd: string;
+  title: string;
+  alive: boolean;
+}
+
+const tabs = ref<Tab[]>([]);
+const activeTabId = ref(0);
+const focusedLeafId = ref(0);
+const xtermRefs = new Map<number, InstanceType<typeof XTerm>>();
+let terminalCounter = 0;
+
+function registerLeaf(id: number, el: unknown) {
   if (el) xtermRefs.set(id, el as InstanceType<typeof XTerm>);
   else xtermRefs.delete(id);
 }
 
-function onTitle(id: number, title: string) {
-  const tab = tabs.value.find((t) => t.id === id);
-  if (!tab) return;
-  if (!title) {
-    tab.title = tab.defaultTitle;
-    tab.isAgent = false;
+// ── layout ──────────────────────────────────────────────────────────────────
+// Flatten the split tree into absolutely-positioned panes (in %). Splitting
+// only changes these rects, so existing XTerm instances/PTYs are reused — no
+// remount, no blink.
+interface Rect { left: number; top: number; width: number; height: number; }
+
+function paneLayout(tab: Tab): { leaf: Leaf; rect: Rect }[] {
+  const out: { leaf: Leaf; rect: Rect }[] = [];
+  walkLayout(tab.root, { left: 0, top: 0, width: 100, height: 100 }, out);
+  return out;
+}
+
+function walkLayout(node: TreeNode, rect: Rect, out: { leaf: Leaf; rect: Rect }[]) {
+  if (node.type === "leaf") {
+    out.push({ leaf: node, rect });
+    return;
+  }
+  if (node.direction === "h") {
+    const w = rect.width / 2;
+    walkLayout(node.first, { ...rect, width: w }, out);
+    walkLayout(node.second, { ...rect, left: rect.left + w, width: w }, out);
   } else {
-    tab.title = title.replace(/^🤖\s*/, "Claude");
-    tab.isAgent = title.includes("Claude") || title.toLowerCase().includes("claude");
+    const h = rect.height / 2;
+    walkLayout(node.first, { ...rect, height: h }, out);
+    walkLayout(node.second, { ...rect, top: rect.top + h, height: h }, out);
   }
 }
 
-function activateTab(id: number) {
-  activeId.value = id;
+function rectStyle(r: Rect) {
+  // 1px insets create thin gaps that show the body background as dividers.
+  return {
+    left: `calc(${r.left}% + ${r.left > 0 ? 1 : 0}px)`,
+    top: `calc(${r.top}% + ${r.top > 0 ? 1 : 0}px)`,
+    width: `calc(${r.width}% - ${r.left > 0 ? 1 : 0}px)`,
+    height: `calc(${r.height}% - ${r.top > 0 ? 1 : 0}px)`,
+  };
+}
+
+// ── tree helpers ────────────────────────────────────────────────────────────
+
+function findLeaf(node: TreeNode, id: number): Leaf | null {
+  if (node.type === "leaf") return node.id === id ? node : null;
+  return findLeaf(node.first, id) || findLeaf(node.second, id);
+}
+
+function getFirstLeaf(node: TreeNode): Leaf {
+  if (node.type === "leaf") return node;
+  return getFirstLeaf(node.first);
+}
+
+function getAllLeaves(node: TreeNode): Leaf[] {
+  if (node.type === "leaf") return [node];
+  return [...getAllLeaves(node.first), ...getAllLeaves(node.second)];
+}
+
+function removeLeaf(node: TreeNode, id: number): TreeNode | null {
+  if (node.type === "leaf") return node.id === id ? null : node;
+  const first = removeLeaf(node.first, id);
+  const second = removeLeaf(node.second, id);
+  if (!first) return second;
+  if (!second) return first;
+  return { ...node, first, second };
+}
+
+function insertSplit(
+  node: TreeNode,
+  targetId: number,
+  direction: "h" | "v",
+  newLeaf: Leaf,
+): TreeNode {
+  if (node.type === "leaf") {
+    if (node.id === targetId)
+      return { type: "split", direction, first: node, second: newLeaf };
+    return node;
+  }
+  return {
+    ...node,
+    first: insertSplit(node.first, targetId, direction, newLeaf),
+    second: insertSplit(node.second, targetId, direction, newLeaf),
+  };
+}
+
+// ── tab helpers ─────────────────────────────────────────────────────────────
+
+function tabTitle(tab: Tab): string {
+  const leaf =
+    activeTabId.value === tab.id
+      ? findLeaf(tab.root, focusedLeafId.value) ?? getFirstLeaf(tab.root)
+      : getFirstLeaf(tab.root);
+  return leaf.title;
+}
+
+function tabIsAgent(tab: Tab): boolean {
+  const leaf =
+    activeTabId.value === tab.id
+      ? findLeaf(tab.root, focusedLeafId.value) ?? getFirstLeaf(tab.root)
+      : getFirstLeaf(tab.root);
+  return leaf.isAgent;
+}
+
+const doneTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+function makeLeaf(initialCmd?: string, extra?: { cwd?: string; resultToken?: string; id?: number }): Leaf {
+  terminalCounter++;
+  return {
+    type: "leaf",
+    id: extra?.id ?? nextPtyId(),
+    title: `Terminal ${terminalCounter}`,
+    defaultTitle: `Terminal ${terminalCounter}`,
+    isAgent: false,
+    busy: false,
+    status: "idle",
+    initialCmd,
+    cwd: extra?.cwd,
+    resultToken: extra?.resultToken,
+  };
+}
+
+// ── events from split tree ──────────────────────────────────────────────────
+
+function onLeafFocus(id: number) {
+  focusedLeafId.value = id;
   nextTick(() => xtermRefs.get(id)?.focus());
 }
 
-function addTab(initialCmd?: string) {
-  const id = nextId++;
-  const defaultTitle = `Terminal ${tabs.value.length + 1}`;
-  tabs.value.push({ id, title: defaultTitle, defaultTitle, isAgent: false, initialCmd });
-  activeId.value = id;
-  nextTick(() => xtermRefs.get(id)?.focus());
+function onLeafTitle(id: number, title: string) {
+  for (const tab of tabs.value) {
+    const leaf = findLeaf(tab.root, id);
+    if (!leaf) continue;
+    if (!title) {
+      leaf.title = leaf.defaultTitle;
+      leaf.isAgent = false;
+    } else {
+      leaf.title = title.replace(/^🤖\s*/, "Claude");
+      leaf.isAgent = title.includes("Claude") || title.toLowerCase().includes("claude");
+    }
+    break;
+  }
+}
+
+// busy comes from the foreground-process poll only — NOT from OSC titles
+// (the shell sets the title to the cwd, which must not count as "running").
+function onLeafBusy(id: number, busy: boolean) {
+  for (const tab of tabs.value) {
+    const leaf = findLeaf(tab.root, id);
+    if (!leaf) continue;
+    const wasBusy = leaf.busy;
+    leaf.busy = busy;
+    if (busy) {
+      clearTimeout(doneTimers.get(id));
+      doneTimers.delete(id);
+      if (leaf.status !== "waiting") leaf.status = "running";
+    } else if (wasBusy) {
+      settleDone(leaf, tab);
+    }
+    break;
+  }
+}
+
+// True when the user is actively looking at this tab: its workspace is the
+// visible one, this tab is the active tab, and the window has OS focus.
+function isWatching(tab: Tab): boolean {
+  return (
+    wsStore.active?.id === props.workspaceId &&
+    activeTabId.value === tab.id &&
+    document.hasFocus()
+  );
+}
+
+// An agent turn finished. If the user is watching → transient "done" badge that
+// auto-clears after 4s. If they're on another tab/workspace/window → persistent
+// "review" badge (Superset-style) that survives until the tab is actually seen,
+// so cross-workspace completions aren't missed.
+function settleDone(leaf: Leaf, tab: Tab) {
+  leaf.busy = false;
+  clearTimeout(doneTimers.get(leaf.id));
+  if (isWatching(tab)) {
+    leaf.status = "done";
+    const t = setTimeout(() => { leaf.status = "idle"; doneTimers.delete(leaf.id); }, 4000);
+    doneTimers.set(leaf.id, t);
+  } else {
+    leaf.status = "review";
+    doneTimers.delete(leaf.id);
+  }
+  notifyDone(leaf.title);
+}
+
+// Mark every finished leaf in a tab as seen (user opened/returned to it).
+function markTabSeen(tab: Tab) {
+  for (const leaf of getAllLeaves(tab.root)) {
+    if (leaf.status === "done" || leaf.status === "review") {
+      clearTimeout(doneTimers.get(leaf.id));
+      doneTimers.delete(leaf.id);
+      leaf.status = "idle";
+    }
+  }
+}
+
+// OSC 9998;done fired — force done status regardless of poll-driven busy state
+function onLeafDone(id: number) {
+  for (const tab of tabs.value) {
+    const leaf = findLeaf(tab.root, id);
+    if (!leaf) continue;
+    if (leaf.status === "idle") break;
+    settleDone(leaf, tab);
+    break;
+  }
+}
+
+async function notifyDone(leafTitle: string) {
+  const toastTitle = "Task complete";
+  const body = leafTitle || "Agent finished";
+  // In-app toast always
+  notifStore.push({ type: "done", title: toastTitle, body });
+  // System notification when window not focused.
+  // Title = "Burrow" so the app name is visible even in dev mode
+  // (where macOS shows the terminal emulator name instead of the bundle name).
+  if (!document.hasFocus()) {
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      const perm = await requestPermission();
+      granted = perm === "granted";
+    }
+    if (granted) sendNotification({ title: "Burrow", body: `✓ ${body}` });
+  }
+}
+
+function onLeafNeedsInput(id: number, needs: boolean) {
+  for (const tab of tabs.value) {
+    const leaf = findLeaf(tab.root, id);
+    if (!leaf) continue;
+    if (leaf.busy) leaf.status = needs ? "waiting" : "running";
+    break;
+  }
+}
+
+function tabStatus(tab: Tab): "idle" | "running" | "waiting" | "done" | "review" {
+  const leaves = getAllLeaves(tab.root);
+  if (leaves.some((l) => l.status === "waiting")) return "waiting";
+  if (leaves.some((l) => l.status === "running")) return "running";
+  if (leaves.some((l) => l.status === "review")) return "review";
+  if (leaves.some((l) => l.status === "done")) return "done";
+  return "idle";
+}
+
+// ── in-app close confirmation ───────────────────────────────────────────────
+
+const confirm = ref<{ name: string; resolve: (ok: boolean) => void } | null>(null);
+
+function confirmClose(name: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    confirm.value = { name, resolve };
+  });
+}
+
+function answerClose(ok: boolean) {
+  confirm.value?.resolve(ok);
+  confirm.value = null;
+}
+
+// ── tab management ──────────────────────────────────────────────────────────
+
+function activateTab(id: number) {
+  activeTabId.value = id;
+  const tab = tabs.value.find((t) => t.id === id);
+  if (!tab) return;
+  // User is now looking at this tab — clear any done/review badge.
+  markTabSeen(tab);
+  const leaf = getFirstLeaf(tab.root);
+  focusedLeafId.value = leaf.id;
+  nextTick(() => xtermRefs.get(leaf.id)?.focus());
+}
+
+function addTab(initialCmd?: string, extra?: { cwd?: string; resultToken?: string }) {
+  const leaf = makeLeaf(initialCmd, extra);
+  const tab: Tab = { id: leaf.id, root: leaf };
+  tabs.value.push(tab);
+  activeTabId.value = tab.id;
+  focusedLeafId.value = leaf.id;
+  nextTick(() => xtermRefs.get(leaf.id)?.focus());
 }
 
 function spawnAgent(cmd: string) {
   addTab(cmd);
 }
 
-function closeTab(id: number) {
-  const idx = tabs.value.findIndex((t) => t.id === id);
+function openDiffInTab(file: string, staged: boolean, diff: string) {
+  terminalCounter++;
+  const leaf: Leaf = {
+    type: "leaf",
+    id: nextPtyId(),
+    title: `Diff: ${file}`,
+    defaultTitle: `Diff: ${file}`,
+    isAgent: false,
+    busy: false,
+    status: "idle",
+    leafType: "diff",
+    diffFile: file,
+    diffStaged: staged,
+    diff,
+  };
+  const tab: Tab = { id: leaf.id, root: leaf };
+  tabs.value.push(tab);
+  activeTabId.value = tab.id;
+}
+
+function splitFocused(direction: "h" | "v") {
+  const tab = tabs.value.find((t) => t.id === activeTabId.value);
+  if (!tab) return;
+  const newLeaf = makeLeaf();
+  tab.root = insertSplit(tab.root, focusedLeafId.value, direction, newLeaf);
+  focusedLeafId.value = newLeaf.id;
+  nextTick(() => xtermRefs.get(newLeaf.id)?.focus());
+}
+
+async function closeTab(tabId: number) {
+  const tab = tabs.value.find((t) => t.id === tabId);
+  if (!tab) return;
+
+  const leaves = getAllLeaves(tab.root);
+  const busyLeaf = leaves.find((l) => l.busy);
+  if (busyLeaf) {
+    const ok = await confirmClose(busyLeaf.title);
+    if (!ok) return;
+  }
+
+  // Explicitly kill PTYs so the daemon drops them (not a detach — user closed the tab)
+  for (const leaf of leaves) {
+    invoke("kill_pty", { id: leaf.id }).catch(() => {});
+  }
+
+  const idx = tabs.value.findIndex((t) => t.id === tabId);
   tabs.value.splice(idx, 1);
-  if (activeId.value === id) {
-    activeId.value = tabs.value[Math.max(0, idx - 1)]?.id ?? 0;
+
+  if (activeTabId.value === tabId && tabs.value.length > 0) {
+    const newTab = tabs.value[Math.max(0, idx - 1)];
+    activateTab(newTab.id);
+  }
+}
+
+function isTabSplit(tab: Tab): boolean {
+  return tab.root.type === 'split';
+}
+
+async function closePane(leafId: number) {
+  const tab = tabs.value.find((t) => findLeaf(t.root, leafId));
+  if (!tab) return;
+  const leaves = getAllLeaves(tab.root);
+  if (leaves.length === 1) {
+    await closeTab(tab.id);
+    return;
+  }
+  const leaf = findLeaf(tab.root, leafId);
+  if (leaf?.busy) {
+    const ok = await confirmClose(leaf.title);
+    if (!ok) return;
+  }
+  invoke("kill_pty", { id: leafId }).catch(() => {});
+  const newRoot = removeLeaf(tab.root, leafId)!;
+  tab.root = newRoot;
+  if (focusedLeafId.value === leafId) {
+    const remaining = getAllLeaves(newRoot);
+    focusedLeafId.value = remaining[0].id;
+    nextTick(() => xtermRefs.get(remaining[0].id)?.focus());
   }
 }
 
 function focusActive() {
-  xtermRefs.get(activeId.value)?.focus();
+  xtermRefs.get(focusedLeafId.value)?.focus();
 }
+
+function onKeydown(e: KeyboardEvent) {
+  if (wsStore.active?.id !== props.workspaceId) return;
+  if (e.ctrlKey && !e.metaKey && !e.altKey && /^[1-9]$/.test(e.key)) {
+    e.preventDefault();
+    const idx = parseInt(e.key) - 1;
+    const wsTabs = tabsStore.tabsByWs[props.workspaceId] ?? [];
+    if (wsTabs[idx]) activateTab(wsTabs[idx].id);
+    return;
+  }
+  if (!e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (k === "t") {
+    e.preventDefault();
+    addTab();
+  } else if (k === "w") {
+    e.preventDefault();
+    closePane(focusedLeafId.value);
+  } else if (k === "d") {
+    e.preventDefault();
+    splitFocused(e.shiftKey ? "v" : "h");
+  }
+}
+
+// ── persistence ─────────────────────────────────────────────────────────────
+
+function allLeaves(): Leaf[] {
+  return tabs.value.flatMap((t) => getAllLeaves(t.root));
+}
+
+function persist() {
+  const payload: PersistedTab[] = allLeaves().map((l) => ({
+    title: l.defaultTitle,
+    initial_cmd: l.initialCmd ?? null,
+    pty_id: l.id,
+    cwd: l.cwd ?? null,
+  }));
+  invoke("save_terminal_tabs", { workspaceId: props.workspaceId, tabs: payload });
+}
+
+watch(
+  () => allLeaves().map((l) => `${l.id}|${l.defaultTitle}`).join(","),
+  persist,
+);
+
+// ── sidebar mirror ──────────────────────────────────────────────────────────
+// Push tab summaries to the shared store so the Sidebar can list terminals
+// nested under this workspace, and react to clicks coming back from it.
+
+function syncStore() {
+  tabsStore.setTabs(
+    props.workspaceId,
+    tabs.value.map((t) => ({
+      id: t.id,
+      title: tabTitle(t),
+      isAgent: tabIsAgent(t),
+      busy: getAllLeaves(t.root).some((l) => l.busy),
+      status: tabStatus(t),
+    })),
+  );
+  tabsStore.setActive(props.workspaceId, activeTabId.value);
+}
+
+watch([tabs, activeTabId, focusedLeafId], syncStore, { deep: true });
+
+// When the user switches TO this workspace (with the window focused), treat its
+// active tab as seen so a "review" badge earned while it was hidden clears.
+watch(
+  () => wsStore.active?.id,
+  (id) => {
+    if (id !== props.workspaceId || !document.hasFocus()) return;
+    const tab = tabs.value.find((t) => t.id === activeTabId.value);
+    if (tab) markTabSeen(tab);
+  },
+);
+
+watch(
+  () => tabsStore.request,
+  (req) => {
+    if (!req || req.wsId !== props.workspaceId) return;
+    if (req.action === "activate" && req.tabId != null) activateTab(req.tabId);
+    else if (req.action === "add") addTab();
+    else if (req.action === "close" && req.tabId != null) closeTab(req.tabId);
+    else if (req.action === "reorder" && req.fromIdx != null && req.toIdx != null) {
+      const moved = tabs.value.splice(req.fromIdx, 1)[0];
+      if (moved) tabs.value.splice(req.toIdx, 0, moved);
+    }
+  },
+);
+
+onMounted(async () => {
+  window.addEventListener("keydown", onKeydown);
+
+  const [saved, daemonSessions] = await Promise.all([
+    invoke<PersistedTab[]>("list_terminal_tabs", { workspaceId: props.workspaceId }),
+    invoke<DaemonSession[]>("list_pty_sessions").catch(() => [] as DaemonSession[]),
+  ]);
+
+  // Build set of alive PTY ids from daemon for quick lookup
+  const alivePtys = new Set(daemonSessions.filter((s) => s.alive).map((s) => s.pty_id));
+
+  if (saved.length) {
+    // Advance counter past max saved id so new tabs don't collide
+    const maxSavedId = Math.max(...saved.map((s) => s.pty_id ?? 0));
+    initPtyCounter(maxSavedId);
+
+    saved.forEach((s) => {
+      // Use saved pty_id when the session is alive in daemon, otherwise get fresh id
+      const useSavedId = s.pty_id != null && alivePtys.has(s.pty_id);
+      const leaf = makeLeaf(undefined, {
+        cwd: s.cwd ?? undefined,
+        id: useSavedId ? s.pty_id! : undefined,
+      });
+      leaf.defaultTitle = s.title || leaf.defaultTitle;
+      leaf.title = leaf.defaultTitle;
+      const tab: Tab = { id: leaf.id, root: leaf };
+      tabs.value.push(tab);
+    });
+    activateTab(tabs.value[0].id);
+  }
+  syncStore();
+});
+
+// Poll for `burrow spawn` requests routed to this workspace (file-based, since
+// agents' Bash/hooks have no controlling tty for the OSC channel).
+let spawnPoll: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  spawnPoll = setInterval(async () => {
+    try {
+      const reqs = await invoke<{ cmd: string; token: string; cwd: string }[]>(
+        "take_spawn_requests",
+        { cwd: props.cwd },
+      );
+      for (const r of reqs) {
+        addTab(r.cmd, { cwd: r.cwd || undefined, resultToken: r.token || undefined });
+      }
+    } catch { /* ignore poll errors */ }
+  }, 1000);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKeydown);
+  if (spawnPoll) clearInterval(spawnPoll);
+  tabsStore.clear(props.workspaceId);
+});
+
+defineExpose({ addTab, spawnAgent, openDiffInTab });
 </script>
 
 <style scoped>
@@ -161,6 +724,37 @@ function focusActive() {
 .tab-agent-icon { color: var(--accent); flex-shrink: 0; }
 .tab-term-icon  { color: var(--text-muted); flex-shrink: 0; }
 
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  position: relative;
+}
+.status-dot.status-running {
+  background: transparent;
+  border-radius: 0;
+  width: auto;
+  height: auto;
+  color: #f97316;
+  font-size: 11px;
+  line-height: 1;
+  font-family: monospace;
+}
+.status-dot.status-waiting { background: #3b82f6; }
+.status-dot.status-done    { background: #84cc16; }
+/* review = agent finished while you weren't watching; persists until seen */
+.status-dot.status-review {
+  background: #22c55e;
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
+  animation: review-pulse 1.8s ease-out infinite;
+}
+@keyframes review-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
+  70%  { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+}
+
 .tab-close {
   opacity: 0.4;
   border-radius: 3px;
@@ -177,5 +771,153 @@ function focusActive() {
   position: relative;
 }
 
-.hidden { display: none; }
+.terminal-tab-content {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  background: var(--border);
+}
+
+.pane {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #0a0a0a;
+}
+
+.pane.focused::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  opacity: 0.35;
+  z-index: 1;
+}
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9000;
+}
+
+.confirm-modal {
+  width: 360px;
+  background: #111111;
+  border: 1px solid #2a2a2a;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.confirm-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.confirm-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 18px;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-btn {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.confirm-btn:hover { background: #222222; }
+
+.confirm-btn.danger {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #f87171;
+}
+.confirm-btn.danger:hover { background: rgba(239, 68, 68, 0.25); }
+
+.terminal-welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  background: #0a0a0a;
+}
+.welcome-icon { color: var(--text-muted); }
+.welcome-title { font-size: 14px; font-weight: 500; color: var(--text-primary); }
+.welcome-sub { font-size: 12px; color: var(--text-muted); }
+.welcome-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 7px 16px;
+  background: var(--accent);
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.welcome-btn:hover { background: var(--accent-dim); }
+
+.pane-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  background: #111111;
+  border-bottom: 1px solid #1e1e1e;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.pane-title-icon { color: var(--text-muted); flex-shrink: 0; }
+.pane-title-icon.agent { color: var(--accent); }
+.pane-title-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.pane-title-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  opacity: 0.4;
+}
+.pane-titlebar:hover .pane-title-close { opacity: 0.8; }
+.pane-title-close:hover { opacity: 1 !important; color: var(--red); background: rgba(239,68,68,0.15); }
 </style>

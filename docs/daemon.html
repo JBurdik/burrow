@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Burrow — PTY Daemon (perzistence terminálů)</title>
+  <style>
+    :root {
+      --bg: #0d0d0d;
+      --bg-panel: #141414;
+      --border: #2a2a2a;
+      --text: #e2e8f0;
+      --text-muted: #718096;
+      --accent: #3b82f6;
+      --green: #22c55e;
+      --yellow: #eab308;
+      --red: #ef4444;
+      --mono: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      line-height: 1.7;
+      padding: 48px 0;
+    }
+    .container { max-width: 860px; margin: 0 auto; padding: 0 32px; }
+    h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 8px; }
+    h2 { font-size: 18px; font-weight: 600; color: var(--accent); margin: 40px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    h3 { font-size: 14px; font-weight: 600; margin: 20px 0 8px; }
+    p { margin-bottom: 12px; color: #cbd5e1; }
+    code { font-family: var(--mono); font-size: 12.5px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: #93c5fd; }
+    pre {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+      overflow-x: auto;
+      margin: 12px 0 20px;
+      line-height: 1.6;
+      color: #e2e8f0;
+    }
+    pre .c { color: var(--text-muted); }
+    pre .k { color: #60a5fa; }
+    pre .s { color: #86efac; }
+    pre .n { color: #f9a8d4; }
+    pre .t { color: var(--yellow); }
+    pre .arrow { color: var(--text-muted); }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; }
+    th { text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); border-bottom: 1px solid var(--border); padding: 8px 12px; }
+    td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    td code { background: none; border: none; padding: 0; color: #86efac; }
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 3px;
+      margin-right: 4px;
+    }
+    .badge.new { background: rgba(34,197,94,0.12); color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
+    .badge.changed { background: rgba(234,179,8,0.12); color: var(--yellow); border: 1px solid rgba(234,179,8,0.3); }
+    .callout {
+      background: var(--bg-panel);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      padding: 12px 16px;
+      margin: 16px 0;
+    }
+    .callout p { margin: 0; }
+    .subtitle { color: var(--text-muted); font-size: 13px; margin-bottom: 32px; }
+    .section-note { font-size: 12px; color: var(--text-muted); margin-top: -8px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Burrow — PTY Daemon</h1>
+  <p class="subtitle">Perzistence terminálových sezení přes restarty aplikace</p>
+
+  <div class="callout">
+    <p>
+      <strong>Co to dělá:</strong> Claude Code (a jiné agenty) běžící v terminálu
+      přežijí zavření okna Burrow. Druhý den aplikaci znovu otevřeš a terminály
+      jsou tam přesně tam, kde jsi je nechal — živé procesy, žádné replay.
+    </p>
+  </div>
+
+  <h2>Proč daemon?</h2>
+  <p>
+    PTY (pseudo-terminál) je soubor v OS. Pokud ho vlastní Tauri proces a ten
+    skončí, PTY se zavře a shell/agent s ním. Řešení: přesunout vlastnictví PTY
+    do <strong>odděleného procesu</strong> (<code>burrow-daemon</code>), který
+    běží nezávisle. Tauri se k němu připojuje přes Unix socket a funguje jako
+    klient.
+  </p>
+  <p>
+    Stejný přístup používá <strong>superset.sh</strong> (detached Node.js daemon
+    + <code>node-pty</code>) a <strong>tmux</strong> (server-klient architektura).
+  </p>
+
+  <h2>Architektura</h2>
+  <pre><code><span class="c">┌─────────────────────────────────────────────────────────────────────────┐</span>
+<span class="c">│  burrow-daemon  (samostatný OS proces, žije navždy)                    │</span>
+<span class="c">│                                                                         │</span>
+<span class="c">│  PtySession { master, writer, ring_buffer, tx: broadcast::Sender }     │</span>
+<span class="c">│                         ↑                                               │</span>
+<span class="c">│           reader_thread (blokující čtení z PTY)                         │</span>
+<span class="c">│                                                                         │</span>
+<span class="c">│  Unix socket: ~/Library/Application Support/com.agenticide.app/daemon.sock │</span>
+<span class="c">│  Auth token:  ~/Library/Application Support/com.agenticide.app/daemon.token│</span>
+<span class="c">└────────────────────────────────┬────────────────────────────────────────┘</span>
+                                 <span class="c">│  JSON-newline přes Unix socket</span>
+<span class="c">┌────────────────────────────────┴────────────────────────────────────────┐</span>
+<span class="c">│  Burrow (Tauri app)                                                      │</span>
+<span class="c">│                                                                          │</span>
+<span class="c">│  DaemonClient { socket_path, token, streams: HashMap<pty_id, stop_flag> }│</span>
+<span class="c">│                                                                          │</span>
+<span class="c">│  create_pty  →  CreatePty + start_stream thread → pty-data-{id} event   │</span>
+<span class="c">│  write_pty   →  WritePty                                                 │</span>
+<span class="c">│  resize_pty  →  ResizePty                                                │</span>
+<span class="c">│  kill_pty    →  KillPty (explicitní zavření tabu)                        │</span>
+<span class="c">│  detach_pty  →  jen zavře stream (app zavírá okno, daemon PTY nechá žít) │</span>
+<span class="c">└──────────────────────────────────────────────────────────────────────────┘</span></code></pre>
+
+  <h2>Soubory</h2>
+  <table>
+    <tr>
+      <th>Soubor</th>
+      <th>Co dělá</th>
+      <th>Stav</th>
+    </tr>
+    <tr>
+      <td><code>src-tauri/src/daemon_main.rs</code></td>
+      <td>Daemon binary. Tokio async server, PTY management, ring buffer, JSON protocol.</td>
+      <td><span class="badge new">nový</span></td>
+    </tr>
+    <tr>
+      <td><code>src-tauri/src/daemon_client.rs</code></td>
+      <td>Synchronní klient pro lib.rs. Otevírá UnixStream, autentizuje, proxy příkazy.</td>
+      <td><span class="badge new">nový</span></td>
+    </tr>
+    <tr>
+      <td><code>src-tauri/src/lib.rs</code></td>
+      <td>Tauri příkazy přesměrovány na daemon. Odstraněn přímý portable-pty kód. Přidány <code>detach_pty</code>, <code>list_pty_sessions</code>.</td>
+      <td><span class="badge changed">upravený</span></td>
+    </tr>
+    <tr>
+      <td><code>src-tauri/Cargo.toml</code></td>
+      <td>Přidán <code>tokio</code>, nový <code>[[bin]] burrow-daemon</code>.</td>
+      <td><span class="badge changed">upravený</span></td>
+    </tr>
+    <tr>
+      <td><code>src/lib/ptyId.ts</code></td>
+      <td>Přidáno <code>initPtyCounter(min)</code> — zabrání kolizi nových ID s obnovenými.</td>
+      <td><span class="badge changed">upravený</span></td>
+    </tr>
+    <tr>
+      <td><code>src/components/XTerm.vue</code></td>
+      <td><code>onBeforeUnmount</code>: <code>kill_pty</code> → <code>detach_pty</code> (nechá PTY žít).</td>
+      <td><span class="badge changed">upravený</span></td>
+    </tr>
+    <tr>
+      <td><code>src/components/Terminal.vue</code></td>
+      <td>Explicitní <code>kill_pty</code> při zavření tabu. Obnova s uloženými <code>pty_id</code>. <code>list_pty_sessions</code> při mountu.</td>
+      <td><span class="badge changed">upravený</span></td>
+    </tr>
+  </table>
+
+  <h2>Protokol (JSON-newline)</h2>
+  <p class="section-note">Každá zpráva je JSON objekt ukončený <code>\n</code>. Klient → daemon nese <code>id</code> pro párování odpovědí.</p>
+
+  <h3>Klient → Daemon</h3>
+  <table>
+    <tr><th>Příkaz</th><th>Parametry</th><th>Popis</th></tr>
+    <tr><td><code>Auth</code></td><td><code>token</code></td><td>První zpráva na každém spojení. Povinná.</td></tr>
+    <tr><td><code>CreatePty</code></td><td><code>pty_id, cwd, cols, rows, env{}</code></td><td>Vytvoří nový PTY nebo reuse existující (pokud pty_id žije).</td></tr>
+    <tr><td><code>AttachPty</code></td><td><code>pty_id</code></td><td>Přepne spojení do stream módu: daemon začne posílat PtyData events. Terminální příkaz — žádné další příkazy na tomto spojení.</td></tr>
+    <tr><td><code>WritePty</code></td><td><code>pty_id, data</code> (base64)</td><td>Pošle vstupy do PTY.</td></tr>
+    <tr><td><code>ResizePty</code></td><td><code>pty_id, cols, rows</code></td><td>Změní velikost terminálu.</td></tr>
+    <tr><td><code>KillPty</code></td><td><code>pty_id</code></td><td>Zabije PTY a odstraní ho ze session mapy.</td></tr>
+    <tr><td><code>GetForeground</code></td><td><code>pty_id</code></td><td>Vrátí jméno foreground procesu (pro auto-title v UI).</td></tr>
+    <tr><td><code>ListSessions</code></td><td>—</td><td>Vrátí seznam všech sessions: pty_id, cwd, title, alive.</td></tr>
+  </table>
+
+  <h3>Daemon → Klient</h3>
+  <table>
+    <tr><th>Typ</th><th>Pole</th><th>Kdy</th></tr>
+    <tr><td><code>{"id":N,"ok":true}</code></td><td>—</td><td>Odpověď na příkaz.</td></tr>
+    <tr><td><code>{"type":"PtyData",...}</code></td><td><code>pty_id, data</code> (base64)</td><td>Výstup z PTY (po AttachPty).</td></tr>
+    <tr><td><code>{"type":"PtyExit",...}</code></td><td><code>pty_id</code></td><td>Shell/proces ukončen.</td></tr>
+  </table>
+
+  <h2>Životní cyklus daemona</h2>
+  <pre><code><span class="c">1. Tauri setup volá daemon_ensure(data_dir)</span>
+<span class="c">   ├── Pokud daemon.sock existuje a daemon.token je čitelný:</span>
+<span class="c">   │   └── Zkus ListSessions — pokud ok, daemon běží → připoj se</span>
+<span class="c">   └── Jinak: spawn burrow-daemon --env BURROW_DATA_DIR=...</span>
+<span class="c">       └── Čekej max 3s na daemon.sock + daemon.token</span>
+<span class="c">           └── Připoj se a ulož Arc<DaemonClient> do DaemonState</span>
+
+<span class="c">2. Při create_pty(id, cwd, cols, rows):</span>
+<span class="c">   ├── Pošli CreatePty daemonu</span>
+<span class="c">   │   ├── Pokud existing=true: PTY žije z minulé session → reuse</span>
+<span class="c">   │   └── Pokud existing=false: daemon spustil nový shell</span>
+<span class="c">   └── Spusť start_stream(id): background thread AttachPty → pty-data-{id} Tauri eventy</span>
+
+<span class="c">3. Zavření okna aplikace (onBeforeUnmount v XTerm.vue):</span>
+<span class="c">   └── detach_pty(id) → zavře stream thread, NEZABIJE PTY v daemonu</span>
+<span class="c">       → Claude Code běží dál v daemonu</span>
+
+<span class="c">4. Explicitní zavření tabu (Terminal.vue closeTab/closePane):</span>
+<span class="c">   └── kill_pty(id) → KillPty příkaz → daemon odstraní session</span>
+
+<span class="c">5. Druhý den — restart aplikace:</span>
+<span class="c">   ├── daemon_ensure: daemon stále běží → připoj se</span>
+<span class="c">   ├── list_pty_sessions: vrátí živé sessions</span>
+<span class="c">   ├── Terminal.vue onMounted: načte terminal_tabs z SQLite + daemon sessions</span>
+<span class="c">   │   └── Pro živé PTY: makeLeaf(savedId) → create_pty → CreatePty → existing=true → attach</span>
+<span class="c">   └── Ring buffer přehrán → uživatel vidí výstup z doby, kdy app byla zavřená</span></code></pre>
+
+  <h2>Ring buffer</h2>
+  <p>
+    Každý PTY má v paměti daemona kruhový buffer posledních <strong>512 KB</strong>
+    výstupu (<code>VecDeque&lt;Vec&lt;u8&gt;&gt;</code>). Při <code>AttachPty</code>
+    daemon nejprve pošle celý snapshot, pak živá data. Díky tomu uživatel po
+    reconnectu vidí vše, co se stalo v době, kdy byl odpojený.
+  </p>
+
+  <h2>SQLite změny</h2>
+  <p>Do tabulky <code>terminal_tabs</code> přibyla dvě pole (idempotentní migration v <code>init_db</code>):</p>
+  <pre><code>ALTER TABLE terminal_tabs ADD COLUMN pty_id INTEGER;  <span class="c">-- id PTY v daemonu</span>
+ALTER TABLE terminal_tabs ADD COLUMN cwd TEXT;         <span class="c">-- poslední pracovní adresář</span></code></pre>
+  <p>
+    <code>pty_id</code> se ukládá při každém <code>persist()</code> v Terminal.vue.
+    Při obnově: pokud <code>pty_id</code> je v daemon ListSessions jako <code>alive=true</code>,
+    leaf dostane ten samý id → <code>create_pty</code> ho připojí k existující session.
+  </p>
+
+  <h2>Kde najít daemon binary v development</h2>
+  <p>
+    V development módu Tauri neví o <code>burrow-daemon</code>. Daemon se nenajde
+    automaticky — nastav env proměnnou:
+  </p>
+  <pre><code><span class="c"># Nejprve build daemona:</span>
+cargo build --bin burrow-daemon
+
+<span class="c"># Pak spusť Tauri s path k binarce:</span>
+BURROW_DAEMON_BIN=target/debug/burrow-daemon pnpm tauri:dev</code></pre>
+  <p>
+    <code>find_daemon_binary</code> v lib.rs zkouší (v pořadí):
+    env <code>BURROW_DAEMON_BIN</code>, pak cestu vedle aktuálního exe,
+    pak Tauri resource dir (pro production bundle).
+  </p>
+
+  <h2>Production bundle</h2>
+  <p>
+    Před buildem produkční verze je potřeba zkopírovat <code>burrow-daemon</code>
+    do stejné složky jako hlavní binary. Tauri bundler pak oba soubory zabalí
+    do <code>Burrow.app/Contents/MacOS/</code>.
+  </p>
+  <pre><code><span class="c"># Build obou binarek:</span>
+cargo build --release --bin agentic-ide
+cargo build --release --bin burrow-daemon
+
+<span class="c"># Production bundle (pnpm tauri:build to udělá automaticky přes beforeBuildCommand):</span>
+pnpm tauri:build</code></pre>
+
+  <h2>Bezpečnost</h2>
+  <p>
+    Daemon přijímá pouze lokální Unix socket spojení (žádná síť). Auth token je
+    32 náhodných bajtů z <code>/dev/urandom</code>, uložený v
+    <code>daemon.token</code> (čitelný jen aktuálním uživatelem díky chmod).
+    Všechna spojení musí začít <code>Auth</code> příkazem.
+  </p>
+
+  <h2>Kdy updatovat tuto dokumentaci</h2>
+  <table>
+    <tr><th>Změna</th><th>Sekce k updatu</th></tr>
+    <tr><td>Nový protokolový příkaz</td><td>Tabulka příkazů</td></tr>
+    <tr><td>Změna ring buffer limitu (RING_LIMIT)</td><td>Ring buffer sekce</td></tr>
+    <tr><td>Změna cesty k socket/token souborům</td><td>Architektura diagram</td></tr>
+    <tr><td>Změna logiky hledání daemon binary</td><td>Development + Production sekce</td></tr>
+    <tr><td>Nové SQLite sloupce</td><td>SQLite změny sekce</td></tr>
+  </table>
+
+</div>
+</body>
+</html>

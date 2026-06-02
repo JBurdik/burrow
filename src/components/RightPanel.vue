@@ -49,7 +49,15 @@
 
         <template v-else>
           <!-- Staged -->
-          <div class="section-label">Staged</div>
+          <div class="section-label section-label-row">
+            Staged
+            <button
+              v-if="git.staged.length > 0"
+              class="stage-all-btn"
+              @click="openAllDiffInTab(true)"
+              title="Open all staged diffs in new tab"
+            ><PhArrowUpRight :size="10" /> View</button>
+          </div>
           <div v-if="git.staged.length === 0" class="empty-hint">Nothing staged</div>
           <div
             v-for="f in git.staged"
@@ -63,7 +71,24 @@
           </div>
 
           <!-- Unstaged + untracked -->
-          <div class="section-label" style="margin-top: 8px;">Changes</div>
+          <div class="section-label section-label-row" style="margin-top: 8px;">
+            Changes
+            <div class="section-actions">
+              <button
+                v-if="git.unstaged.length > 0"
+                class="stage-all-btn"
+                @click="openAllDiffInTab(false)"
+                title="Open all unstaged diffs in new tab"
+              ><PhArrowUpRight :size="10" /> View</button>
+              <button
+                v-if="git.unstaged.length > 0 || git.untracked.length > 0"
+                class="stage-all-btn"
+                :disabled="git.loading"
+                @click="git.stageAll()"
+                title="Stage all"
+              >+ All</button>
+            </div>
+          </div>
           <div v-if="git.unstaged.length === 0 && git.untracked.length === 0" class="empty-hint">
             Working tree clean
           </div>
@@ -93,7 +118,7 @@
               v-model="git.commitMsg"
               class="commit-input"
               placeholder="Commit message…"
-              rows="2"
+              rows="3"
               @keydown.ctrl.enter="git.commit()"
             />
             <button
@@ -129,10 +154,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, watch, inject } from "vue";
 import {
   PhFiles, PhGitBranch, PhGitCommit,
-  PhArrowClockwise, PhWarning, PhX,
+  PhArrowClockwise, PhWarning, PhX, PhArrowUpRight,
 } from "@phosphor-icons/vue";
 import { useGitStore } from "@/stores/git";
 import { useFileTreeStore } from "@/stores/fileTree";
@@ -141,11 +166,18 @@ import FileTreeNode from "./FileTreeNode.vue";
 const props = defineProps<{ cwd: string }>();
 const git = useGitStore();
 const fileTree = useFileTreeStore();
-const activeTab = ref("explorer");
+const activeTab = ref("git");
+const activeTerm = inject<() => any>('activeTerm', () => undefined);
+
+async function openAllDiffInTab(staged: boolean) {
+  const diff = await git.fetchAllDiff(staged);
+  if (!diff) return;
+  activeTerm()?.openDiffInTab(staged ? "Staged changes" : "Unstaged changes", staged, diff);
+}
 
 const tabs = [
-  { id: "explorer", label: "Explorer", icon: PhFiles },
   { id: "git",      label: "Git",      icon: PhGitBranch },
+  { id: "explorer", label: "Explorer", icon: PhFiles },
 ];
 
 watch(() => props.cwd, (p) => {
@@ -303,6 +335,33 @@ function diffLineClass(line: string) {
   padding: 2px 10px 4px;
 }
 
+.section-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stage-all-btn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.stage-all-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.stage-all-btn:disabled { opacity: 0.4; cursor: default; }
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .empty-hint {
   font-size: 11px;
   color: var(--text-muted);
@@ -376,8 +435,12 @@ function diffLineClass(line: string) {
   line-height: 1.5;
   outline: none;
   padding: 6px 8px;
-  resize: none;
+  resize: vertical;
   width: 100%;
+  overflow-x: hidden;
+  min-height: 58px;
+  max-height: 120px;
+  box-sizing: border-box;
 }
 .commit-input:focus { border-color: var(--accent); }
 

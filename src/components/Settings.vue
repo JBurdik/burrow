@@ -1,0 +1,1321 @@
+<template>
+  <div class="settings-page">
+    <!-- Header -->
+    <div class="s-header">
+      <PhGearSix :size="15" class="s-head-icon" />
+      <span class="s-title">Settings</span>
+      <div class="s-spacer" />
+      <button class="s-close" title="Close (Esc)" @click="$emit('close')">
+        <PhX :size="15" />
+      </button>
+    </div>
+
+    <div class="s-body">
+      <!-- Nav -->
+      <nav class="s-nav">
+        <template v-for="item in navItems" :key="item.id">
+          <div v-if="item.divider" class="nav-divider" />
+          <button
+            v-else
+            class="nav-item"
+            :class="{ active: active === item.id }"
+            @click="active = item.id!"
+          >
+            <component :is="item.icon" :size="14" class="nav-icon" />
+            <span class="nav-label">{{ item.label }}</span>
+          </button>
+        </template>
+      </nav>
+
+      <!-- Content -->
+      <div class="s-content">
+        <!-- Agents -->
+        <section v-if="active === 'agents'" class="section">
+          <div v-if="flagEditId || iconPickerId || showTemplatePicker" class="flag-backdrop" @click="flagEditId = null; iconPickerId = null; showTemplatePicker = false" />
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Agents</h2>
+              <span class="sec-sub">Quick-launch terminal commands</span>
+            </div>
+            <div class="add-area">
+              <button class="add-btn" @click="store.add()">
+                <PhPlus :size="11" /> Add Agent
+              </button>
+              <div class="template-wrap">
+                <button class="add-btn template-btn" title="Add from template" @click.stop="showTemplatePicker = !showTemplatePicker">
+                  <PhCaretDown :size="11" />
+                </button>
+                <div v-if="showTemplatePicker" class="template-pop" @click.stop>
+                  <div class="tp-head">Quick add from template</div>
+                  <button v-for="t in TEMPLATES" :key="t.id" class="tp-row" @click="addFromTemplate(t); showTemplatePicker = false">
+                    <span class="tp-icon" :style="{ background: t.color + '22', borderColor: t.color + '44' }">
+                      <component :is="iconFor(t.icon)" :size="12" :style="{ color: t.color }" />
+                    </span>
+                    <span class="tp-name">{{ t.name }}</span>
+                    <code class="tp-cmd">{{ t.command }}</code>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <div class="tbl">
+            <div class="tbl-head">
+              <span class="col col-agent">Agent</span>
+              <span class="col col-cmd">Command</span>
+              <span class="col col-args">Args / Flags</span>
+              <span class="col col-kbd">Shortcut</span>
+              <span class="col col-act" />
+            </div>
+
+            <div v-for="a in store.agents" :key="a.id" class="row">
+              <!-- Agent -->
+              <div class="col-agent cell-agent">
+                <!-- Color picker on the dot -->
+                <label class="dot-label" title="Pick color">
+                  <span class="dot" :style="{ background: a.color }" />
+                  <input
+                    type="color"
+                    class="color-input"
+                    :value="a.color"
+                    @input="store.update(a.id, { color: val($event) })"
+                  />
+                </label>
+                <!-- Icon picker popover -->
+                <div class="icon-wrap">
+                  <button
+                    class="icon-box"
+                    :style="{ background: a.color + '22', borderColor: a.color + '55' }"
+                    title="Pick icon"
+                    @click.stop="toggleIconPicker(a.id)"
+                  >
+                    <component :is="iconFor(a.icon)" :size="13" :style="{ color: a.color }" />
+                  </button>
+                  <div v-if="iconPickerId === a.id" class="icon-pop" @click.stop>
+                    <button
+                      v-for="ic in ICON_OPTIONS"
+                      :key="ic.key"
+                      class="ip-btn"
+                      :class="{ active: a.icon === ic.key }"
+                      :title="ic.label"
+                      @click="store.update(a.id, { icon: ic.key }); iconPickerId = null"
+                    >
+                      <component :is="ic.component" :size="14" />
+                    </button>
+                  </div>
+                </div>
+                <input
+                  class="inp name-inp"
+                  :value="a.name"
+                  placeholder="Agent name"
+                  @input="store.update(a.id, { name: val($event) })"
+                />
+              </div>
+
+              <!-- Command -->
+              <div class="col-cmd">
+                <div class="pill">
+                  <input
+                    class="inp mono cmd-inp"
+                    :style="{ color: a.color }"
+                    :value="a.command"
+                    placeholder="command"
+                    @input="store.update(a.id, { command: val($event) })"
+                  />
+                </div>
+              </div>
+
+              <!-- Args -->
+              <div class="col-args">
+                <input
+                  class="inp mono args-inp"
+                  :value="a.args"
+                  placeholder="--flags"
+                  @input="store.update(a.id, { args: val($event) })"
+                />
+                <button
+                  class="flag-edit"
+                  :class="{ on: flagEditId === a.id }"
+                  title="Edit flags"
+                  @click="toggleFlagEditor(a.id)"
+                >
+                  <PhListBullets :size="13" />
+                </button>
+
+                <!-- Flag editor popover -->
+                <div v-if="flagEditId === a.id" class="flag-pop" @click.stop>
+                  <div class="fp-head">
+                    <span class="fp-title">Flags</span>
+                    <span class="fp-sub">one per line</span>
+                    <button class="fp-close" @click="flagEditId = null">
+                      <PhX :size="12" />
+                    </button>
+                  </div>
+                  <textarea
+                    class="fp-area mono"
+                    rows="6"
+                    spellcheck="false"
+                    placeholder="--flag&#10;--key value"
+                    :value="flagDraft"
+                    @input="onFlagInput(a.id, $event)"
+                  />
+                  <div class="fp-foot">
+                    <code class="fp-preview">{{ store.commandLine(a) || "—" }}</code>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Shortcut -->
+              <div class="col-kbd">
+                <div class="kbd">
+                  <input
+                    class="inp kbd-inp"
+                    :value="a.shortcut"
+                    placeholder="—"
+                    maxlength="4"
+                    @input="store.update(a.id, { shortcut: val($event) })"
+                  />
+                </div>
+              </div>
+
+              <!-- Actions -->
+              <div class="col-act">
+                <button class="row-del" title="Remove agent" @click="store.remove(a.id)">
+                  <PhTrash :size="13" />
+                </button>
+              </div>
+            </div>
+
+            <div v-if="store.agents.length === 0" class="tbl-empty">
+              No agents. Click "Add Agent".
+            </div>
+          </div>
+
+          <!-- Config directories: where Burrow installs its status hooks + agent docs -->
+          <div class="settings-group cfg-dirs">
+            <span class="group-label">Config directories</span>
+            <p class="cfg-hint">
+              Burrow installs its status hooks (<code>settings.json</code> / <code>hooks.json</code>)
+              and the <code>burrow</code> agent docs into these dirs. Add the dir an agent uses if
+              you point it elsewhere — e.g. a per-project <code>CLAUDE_CONFIG_DIR</code> or
+              <code>CODEX_HOME</code>. Defaults (<code>~/.claude</code>, <code>~/.codex</code>) plus
+              any value set in Burrow's own environment at launch are seeded automatically.
+            </p>
+
+            <div class="cfg-col">
+              <span class="cfg-col-label">Claude (<code>CLAUDE_CONFIG_DIR</code>)</span>
+              <div v-for="(_, i) in claudeDirs" :key="'c' + i" class="cfg-row">
+                <input v-model="claudeDirs[i]" class="select cfg-inp" placeholder="/path/to/.claude" spellcheck="false" />
+                <button class="row-del" title="Remove" @click="claudeDirs.splice(i, 1)">
+                  <PhTrash :size="13" />
+                </button>
+              </div>
+              <button class="add-btn cfg-add" @click="claudeDirs.push('')">
+                <PhPlus :size="11" /> Add Claude dir
+              </button>
+            </div>
+
+            <div class="cfg-col">
+              <span class="cfg-col-label">Codex (<code>CODEX_HOME</code>)</span>
+              <div v-for="(_, i) in codexDirs" :key="'x' + i" class="cfg-row">
+                <input v-model="codexDirs[i]" class="select cfg-inp" placeholder="/path/to/.codex" spellcheck="false" />
+                <button class="row-del" title="Remove" @click="codexDirs.splice(i, 1)">
+                  <PhTrash :size="13" />
+                </button>
+              </div>
+              <button class="add-btn cfg-add" @click="codexDirs.push('')">
+                <PhPlus :size="11" /> Add Codex dir
+              </button>
+            </div>
+
+            <div class="cfg-actions">
+              <button class="add-btn cfg-save" :disabled="cfgSaving" @click="saveConfigDirs">
+                <PhArrowCounterClockwise v-if="cfgSaving" :size="11" />
+                {{ cfgSaving ? "Installing…" : "Save & install hooks" }}
+              </button>
+              <span v-if="cfgStatus" class="cfg-status">{{ cfgStatus }}</span>
+            </div>
+          </div>
+
+          <div class="sec-foot">
+            <button class="reset-btn" @click="store.reset()">
+              <PhArrowCounterClockwise :size="12" /> Reset to defaults
+            </button>
+          </div>
+        </section>
+
+        <!-- General -->
+        <section v-else-if="active === 'general'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">General</h2>
+              <span class="sec-sub">Fonts &amp; appearance</span>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <div class="settings-group">
+            <span class="group-label">Interface</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">UI font</span>
+                <span class="field-desc">Font used across the app interface</span>
+              </div>
+              <select
+                class="select"
+                :value="ui.uiFont"
+                :style="{ fontFamily: ui.uiFont }"
+                @change="ui.uiFont = val($event)"
+              >
+                <option v-for="f in UI_FONTS" :key="f.value" :value="f.value" :style="{ fontFamily: f.value }">
+                  {{ f.label }}
+                </option>
+              </select>
+            </div>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">UI font size</span>
+                <span class="field-desc">Base interface text size (10–20)</span>
+              </div>
+              <div class="size-ctl">
+                <input
+                  class="select size-inp"
+                  type="number"
+                  min="10"
+                  max="20"
+                  :value="ui.uiFontSize"
+                  @input="ui.uiFontSize = clampRange(val($event), 10, 20, 13)"
+                />
+                <span class="size-unit">px</span>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">UI scale</span>
+                <span class="field-desc">Zoom the entire interface</span>
+              </div>
+              <select
+                class="select"
+                :value="String(ui.uiScale)"
+                @change="ui.uiScale = Number(val($event))"
+              >
+                <option value="0.8">80%</option>
+                <option value="0.9">90%</option>
+                <option value="1">100%</option>
+                <option value="1.1">110%</option>
+                <option value="1.25">125%</option>
+                <option value="1.5">150%</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <span class="group-label">Terminal</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Terminal font</span>
+                <span class="field-desc">Monospace font for terminal panes</span>
+              </div>
+              <select
+                class="select"
+                :value="ui.terminalFont"
+                :style="{ fontFamily: ui.terminalFont }"
+                @change="ui.terminalFont = val($event)"
+              >
+                <option v-for="f in TERMINAL_FONTS" :key="f.value" :value="f.value" :style="{ fontFamily: f.value }">
+                  {{ f.label }}
+                </option>
+              </select>
+            </div>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Terminal font size</span>
+                <span class="field-desc">Size in pixels (8–24)</span>
+              </div>
+              <div class="size-ctl">
+                <input
+                  class="select size-inp"
+                  type="number"
+                  min="8"
+                  max="24"
+                  :value="ui.terminalFontSize"
+                  @input="ui.terminalFontSize = clampRange(val($event), 8, 24, 13)"
+                />
+                <span class="size-unit">px</span>
+              </div>
+            </div>
+            <div class="term-preview" :style="{ fontFamily: ui.terminalFont, fontSize: ui.terminalFontSize + 'px' }">
+              <span class="tp-prompt">~/agentic-ide $</span> claude --resume
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <span class="group-label">Layout</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Swap panel sides</span>
+                <span class="field-desc">Move primary panel to the right</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" :checked="ui.swapPanels" @change="ui.swapPanels = ($event.target as HTMLInputElement).checked" />
+                <span class="toggle-track"><span class="toggle-thumb" /></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="sec-foot">
+            <button class="reset-btn" @click="ui.resetFonts()">
+              <PhArrowCounterClockwise :size="12" /> Reset fonts
+            </button>
+          </div>
+        </section>
+
+        <!-- Keybindings -->
+        <section v-else-if="active === 'keybindings'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Keyboard Shortcuts</h2>
+              <span class="sec-sub">Read-only reference — all app shortcuts</span>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <div v-for="group in SHORTCUT_GROUPS" :key="group.label" class="settings-group">
+            <span class="group-label">{{ group.label }}</span>
+            <div v-for="s in group.shortcuts" :key="s.keys" class="kb-row">
+              <span class="kb-desc">{{ s.desc }}</span>
+              <span class="kb-keys">
+                <kbd v-for="k in s.keys.split(' ')" :key="k" class="kb-key">{{ k }}</kbd>
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Workspaces -->
+        <section v-else-if="active === 'workspaces'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Workspaces</h2>
+              <span class="sec-sub">Customize project icons</span>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <div class="ws-list">
+            <div v-for="w in wsStore.workspaces" :key="w.id" class="ws-row">
+              <button class="ws-icon-btn" title="Change icon" @click="pickWsIcon(w.id)">
+                <img v-if="wsStore.icons[w.id]" :src="wsStore.icons[w.id]" class="ws-icon-img" />
+                <PhFolder v-else :size="18" weight="fill" class="ws-icon-fb" />
+                <span class="ws-icon-edit"><PhPencilSimple :size="10" /></span>
+              </button>
+              <div class="ws-meta">
+                <span class="ws-name">{{ w.name }}</span>
+                <span class="ws-path">{{ w.path }}</span>
+              </div>
+              <button
+                v-if="wsStore.icons[w.id]"
+                class="ws-clear"
+                title="Reset to default icon"
+                @click="wsStore.clearIcon(w.id)"
+              >
+                <PhArrowCounterClockwise :size="13" />
+              </button>
+            </div>
+
+            <div v-if="wsStore.workspaces.length === 0" class="tbl-empty">
+              No workspaces yet. Open a folder first.
+            </div>
+          </div>
+        </section>
+
+        <!-- Other panels (placeholder) -->
+        <section v-else class="section placeholder">
+          <component :is="activeIcon" :size="22" />
+          <span>{{ activeLabel }} settings coming soon</span>
+        </section>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, type Component } from "vue";
+import {
+  PhGearSix, PhX, PhPlus, PhTrash, PhArrowCounterClockwise,
+  PhSlidersHorizontal, PhFolderOpen, PhRobot, PhPalette, PhKeyboard,
+  PhPuzzlePiece, PhInfo, PhSparkle, PhCode, PhGitBranch, PhTerminal,
+  PhListBullets, PhCaretDown, PhFolder, PhPencilSimple,
+} from "@phosphor-icons/vue";
+import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
+import OpenAIIcon from "@/components/icons/OpenAIIcon.vue";
+import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
+import { useAgentsStore, type AgentIcon } from "@/stores/agents";
+import { useWorkspaceStore } from "@/stores/workspace";
+import { useUIStore, UI_FONTS, TERMINAL_FONTS } from "@/stores/ui";
+
+defineEmits<{ close: [] }>();
+
+const store = useAgentsStore();
+const wsStore = useWorkspaceStore();
+const ui = useUIStore();
+
+function mimeForPath(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  if (ext === "svg") return "image/svg+xml";
+  if (ext === "ico") return "image/x-icon";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  return "image/png";
+}
+
+async function pickWsIcon(id: number) {
+  const selected = await openDialog({
+    multiple: false,
+    filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "svg", "ico"] }],
+  });
+  if (!selected || typeof selected !== "string") return;
+  const b64 = await invoke<string>("read_file_base64", { path: selected });
+  wsStore.setIcon(id, `data:${mimeForPath(selected)};base64,${b64}`);
+}
+const active = ref("general");
+const flagEditId = ref<string | null>(null);
+
+// Agent config dirs (where Burrow installs hooks + docs). Loaded from the backend,
+// which seeds defaults (~/.claude, ~/.codex) + any CLAUDE_CONFIG_DIR/CODEX_HOME env.
+const claudeDirs = ref<string[]>([]);
+const codexDirs = ref<string[]>([]);
+const cfgSaving = ref(false);
+const cfgStatus = ref("");
+
+async function loadConfigDirs() {
+  try {
+    const cd = await invoke<{ claude: string[]; codex: string[] }>("get_config_dirs");
+    claudeDirs.value = cd.claude;
+    codexDirs.value = cd.codex;
+  } catch (e) {
+    console.error("get_config_dirs failed", e);
+  }
+}
+
+async function saveConfigDirs() {
+  cfgSaving.value = true;
+  cfgStatus.value = "";
+  try {
+    const cd = await invoke<{ claude: string[]; codex: string[] }>("set_config_dirs", {
+      claude: claudeDirs.value.map((s) => s.trim()).filter(Boolean),
+      codex: codexDirs.value.map((s) => s.trim()).filter(Boolean),
+    });
+    claudeDirs.value = cd.claude;
+    codexDirs.value = cd.codex;
+    cfgStatus.value = `Installed into ${cd.claude.length + cd.codex.length} dir(s).`;
+  } catch (e) {
+    cfgStatus.value = `Failed: ${e}`;
+  } finally {
+    cfgSaving.value = false;
+  }
+}
+
+loadConfigDirs();
+const flagDraft = ref("");
+const iconPickerId = ref<string | null>(null);
+const showTemplatePicker = ref(false);
+
+function toggleIconPicker(id: string) {
+  iconPickerId.value = iconPickerId.value === id ? null : id;
+  flagEditId.value = null;
+}
+
+function addFromTemplate(t: typeof TEMPLATES[0]) {
+  store.addFromTemplate(t);
+}
+
+function toggleFlagEditor(id: string) {
+  if (flagEditId.value === id) {
+    flagEditId.value = null;
+    return;
+  }
+  const a = store.agents.find((x) => x.id === id);
+  flagDraft.value = argsToLines(a?.args ?? "");
+  flagEditId.value = id;
+}
+
+// Seed editor: split args on whitespace, one token per line.
+function argsToLines(args: string): string {
+  return args.trim().split(/\s+/).filter(Boolean).join("\n");
+}
+// Collapse lines back to a single args string (newlines + extra spaces -> single space).
+function linesToArgs(text: string): string {
+  return text.split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
+}
+
+function onFlagInput(id: string, e: Event) {
+  flagDraft.value = (e.target as HTMLTextAreaElement).value;
+  store.update(id, { args: linesToArgs(flagDraft.value) });
+}
+
+const ICON_OPTIONS: { key: AgentIcon; label: string; component: unknown }[] = [
+  { key: "claude",        label: "Claude",          component: ClaudeIcon },
+  { key: "openai",        label: "OpenAI / Codex",  component: OpenAIIcon },
+  { key: "github-copilot",label: "GitHub Copilot",  component: GitHubCopilotIcon },
+  { key: "robot",         label: "Robot",            component: PhRobot },
+  { key: "sparkle",       label: "Sparkle",          component: PhSparkle },
+  { key: "code",          label: "Code",             component: PhCode },
+  { key: "git-branch",    label: "Git branch",       component: PhGitBranch },
+  { key: "terminal",      label: "Terminal",         component: PhTerminal },
+];
+
+interface TemplateConfig {
+  id: string;
+  name: string;
+  command: string;
+  args: string;
+  color: string;
+  icon: AgentIcon;
+}
+
+const TEMPLATES: TemplateConfig[] = [
+  { id: "tpl-claude",      name: "Claude Code",     command: "claude",        args: "--dangerously-skip-permissions", color: "#d97757", icon: "claude" },
+  { id: "tpl-claude-opus", name: "Claude (Opus)",   command: "claude",        args: "--model claude-opus-4-8 --dangerously-skip-permissions", color: "#f59e0b", icon: "claude" },
+  { id: "tpl-codex",       name: "Codex",           command: "codex",         args: "",                              color: "#34d399", icon: "openai" },
+  { id: "tpl-copilot",     name: "GitHub Copilot",  command: "copilot",       args: "",                              color: "#8957e5", icon: "github-copilot" },
+  { id: "tpl-aider",       name: "Aider",           command: "aider",         args: "",                              color: "#fbbf24", icon: "robot" },
+  { id: "tpl-gemini",      name: "Gemini CLI",      command: "gemini",        args: "",                              color: "#4285f4", icon: "sparkle" },
+];
+
+interface NavItem {
+  id?: string;
+  label?: string;
+  icon?: Component;
+  divider?: boolean;
+}
+
+const navItems: NavItem[] = [
+  { id: "general", label: "General", icon: PhSlidersHorizontal },
+  { id: "workspaces", label: "Workspaces", icon: PhFolderOpen },
+  { id: "agents", label: "Agents", icon: PhRobot },
+  { divider: true },
+  { id: "appearance", label: "Appearance", icon: PhPalette },
+  { id: "keybindings", label: "Keybindings", icon: PhKeyboard },
+  { id: "extensions", label: "Extensions", icon: PhPuzzlePiece },
+  { id: "about", label: "About", icon: PhInfo },
+];
+
+const iconMap = {
+  sparkle: PhSparkle,
+  code: PhCode,
+  "git-branch": PhGitBranch,
+  robot: PhRobot,
+  terminal: PhTerminal,
+  claude: ClaudeIcon,
+  openai: OpenAIIcon,
+  "github-copilot": GitHubCopilotIcon,
+};
+function iconFor(icon: AgentIcon) {
+  return iconMap[icon] ?? PhRobot;
+}
+
+const activeLabel = computed(
+  () => navItems.find((i) => i.id === active.value)?.label ?? "",
+);
+const activeIcon = computed(
+  () => navItems.find((i) => i.id === active.value)?.icon ?? PhInfo,
+);
+
+function val(e: Event): string {
+  return (e.target as HTMLInputElement).value;
+}
+
+function clampRange(v: string, min: number, max: number, fallback: number): number {
+  const n = Number(v);
+  if (Number.isNaN(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+const SHORTCUT_GROUPS = [
+  {
+    label: "Global",
+    shortcuts: [
+      { keys: "⌘ ,",   desc: "Open Settings" },
+      { keys: "⌘ P",   desc: "Command Palette (Spotlight)" },
+      { keys: "⌘ /",   desc: "Toggle Keyboard Shortcut Cheatsheet" },
+      { keys: "Esc",   desc: "Close Settings / Cheatsheet" },
+    ],
+  },
+  {
+    label: "Tabs & Panes",
+    shortcuts: [
+      { keys: "⌘ T",   desc: "New tab" },
+      { keys: "⌘ W",   desc: "Close pane" },
+      { keys: "⌘ D",   desc: "Split pane horizontally" },
+      { keys: "⌘ ⇧ D", desc: "Split pane vertically" },
+    ],
+  },
+  {
+    label: "Terminal Input",
+    shortcuts: [
+      { keys: "⇧ ↵",  desc: "Insert newline (Claude multiline input)" },
+    ],
+  },
+  {
+    label: "Agents",
+    shortcuts: [
+      { keys: "⌘ 1",  desc: "Launch Claude Code" },
+      { keys: "⌘ 2",  desc: "Launch Codex" },
+      { keys: "⌘ 3",  desc: "Launch GitHub Copilot" },
+      { keys: "⌘ 4",  desc: "Launch Aider" },
+      { keys: "⌘ 5",  desc: "Launch Cursor AI" },
+    ],
+  },
+  {
+    label: "Spotlight",
+    shortcuts: [
+      { keys: "↑ ↓",  desc: "Navigate results" },
+      { keys: "↵",    desc: "Activate selected item" },
+      { keys: "⌘ ↵",  desc: "Open in new tab" },
+      { keys: "Esc",  desc: "Close Spotlight" },
+    ],
+  },
+];
+</script>
+
+<style scoped>
+.settings-page {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #0a0a0a;
+  z-index: 1000;
+}
+
+/* Header */
+.s-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 24px;
+  background: #0d0d0d;
+  border-bottom: 1px solid #1e1e1e;
+  flex-shrink: 0;
+}
+.s-head-icon { color: #555; }
+.s-title { font-size: 14px; font-weight: 600; color: #e2e2e2; }
+.s-spacer { flex: 1; }
+.s-close {
+  background: none;
+  border: none;
+  color: #444;
+  cursor: pointer;
+  display: flex;
+  padding: 4px;
+  border-radius: 4px;
+}
+.s-close:hover { color: #e2e2e2; background: var(--bg-hover); }
+
+.s-body { display: flex; flex: 1; overflow: hidden; }
+
+/* Nav */
+.s-nav {
+  width: 220px;
+  background: #0d0d0d;
+  border-right: 1px solid #1e1e1e;
+  padding: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex-shrink: 0;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 16px;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  color: #666;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+.nav-icon { color: #555; flex-shrink: 0; }
+.nav-item:hover { background: #121212; }
+.nav-item.active {
+  background: #161616;
+  border-left-color: #7c3aed;
+  color: #e2e2e2;
+}
+.nav-item.active .nav-icon { color: #a78bfa; }
+.nav-divider { height: 1px; background: #1a1a1a; margin: 8px 0; }
+
+/* Content */
+.s-content { flex: 1; overflow-y: auto; padding: 32px 40px; background: #0a0a0a; }
+
+.section { display: flex; flex-direction: column; gap: 14px; }
+
+.sec-head { display: flex; align-items: center; gap: 10px; }
+.sec-titles { display: flex; align-items: baseline; gap: 10px; }
+.sec-title { font-size: 15px; font-weight: 600; color: #e8e8e8; }
+.sec-sub { font-size: 12px; color: #3a3a3a; }
+.sec-head .add-btn { margin-left: auto; }
+
+.add-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #161616;
+  border: 1px solid #2a2a2a;
+  border-radius: 5px;
+  color: #999;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 12px;
+}
+.add-btn:hover { color: #e2e2e2; border-color: #444; }
+
+.sec-divider { height: 1px; background: #1a1a1a; }
+
+/* Table */
+.tbl { display: flex; flex-direction: column; gap: 8px; }
+.tbl-head {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 16px;
+}
+.col { font-size: 11px; font-weight: 500; color: #3a3a3a; }
+.col-agent { width: 200px; flex-shrink: 0; }
+.col-cmd { width: 165px; flex-shrink: 0; }
+.col-args { flex: 1; min-width: 0; }
+.col-kbd { width: 84px; flex-shrink: 0; display: flex; justify-content: center; }
+.col-act { width: 52px; flex-shrink: 0; display: flex; justify-content: flex-end; }
+
+.row {
+  display: flex;
+  align-items: center;
+  height: 50px;
+  padding: 0 16px;
+  background: #0f0f0f;
+  border: 1px solid #1e1e1e;
+  border-radius: 6px;
+}
+
+.cell-agent { display: flex; align-items: center; gap: 8px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+.icon-box {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  overflow: hidden;
+}
+.color-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+}
+
+.inp {
+  background: none;
+  border: none;
+  outline: none;
+  color: #e2e2e2;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  width: 100%;
+  min-width: 0;
+}
+.inp::placeholder { color: #3a3a3a; }
+.inp.mono { font-family: var(--font-mono); font-size: 12px; }
+
+.name-inp { font-weight: 500; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  background: #161616;
+  border: 1px solid #252525;
+  border-radius: 4px;
+  padding: 3px 8px;
+  max-width: 140px;
+}
+.cmd-inp { font-size: 12px; }
+
+.col-args { position: relative; display: flex; align-items: center; gap: 6px; }
+.args-inp { color: #555; font-size: 11px; }
+
+.flag-edit {
+  background: none;
+  border: 1px solid #252525;
+  border-radius: 4px;
+  color: #555;
+  cursor: pointer;
+  display: flex;
+  padding: 4px;
+  flex-shrink: 0;
+}
+.flag-edit:hover { color: #999; border-color: #3a3a3a; }
+.flag-edit.on { color: #a78bfa; border-color: #7c3aed55; background: #7c3aed14; }
+
+.flag-backdrop { position: fixed; inset: 0; z-index: 20; }
+
+.flag-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 21;
+  width: 280px;
+  background: #131313;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fp-head { display: flex; align-items: baseline; gap: 8px; }
+.fp-title { font-size: 12px; font-weight: 600; color: #e2e2e2; }
+.fp-sub { font-size: 10px; color: #555; }
+.fp-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  display: flex;
+  padding: 2px;
+  border-radius: 3px;
+}
+.fp-close:hover { color: #e2e2e2; background: var(--bg-hover); }
+.fp-area {
+  background: #0c0c0c;
+  border: 1px solid #252525;
+  border-radius: 5px;
+  color: #e2e2e2;
+  font-size: 12px;
+  line-height: 1.6;
+  outline: none;
+  padding: 8px 10px;
+  resize: vertical;
+  width: 100%;
+}
+.fp-area:focus { border-color: var(--accent); }
+.fp-area::placeholder { color: #3a3a3a; }
+.fp-foot { display: flex; }
+.fp-preview {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #666;
+  background: #0c0c0c;
+  border: 1px solid #1e1e1e;
+  border-radius: 4px;
+  padding: 5px 8px;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #141414;
+  border: 1px solid #252525;
+  border-radius: 4px;
+  padding: 3px 7px;
+  width: 44px;
+}
+.kbd-inp {
+  color: #777;
+  font-size: 11px;
+  text-align: center;
+}
+
+.row-del {
+  background: none;
+  border: none;
+  color: #3a2020;
+  cursor: pointer;
+  display: flex;
+  padding: 5px;
+  border-radius: 4px;
+}
+.row-del:hover { color: var(--red); background: rgba(239, 68, 68, 0.12); }
+
+.tbl-empty { font-size: 12px; color: #444; padding: 20px; text-align: center; }
+
+.sec-foot { margin-top: 8px; }
+.reset-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid #1e1e1e;
+  border-radius: 5px;
+  color: #555;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 5px 10px;
+}
+.reset-btn:hover { color: #888; border-color: #333; }
+
+/* Config directories */
+.cfg-dirs { margin-top: 22px; gap: 12px; }
+.cfg-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #777;
+}
+.cfg-hint code {
+  font-size: 10.5px;
+  background: #161616;
+  border: 1px solid #262626;
+  border-radius: 3px;
+  padding: 0 4px;
+  color: #aaa;
+}
+.cfg-col { display: flex; flex-direction: column; gap: 6px; }
+.cfg-col-label { font-size: 11px; color: #888; }
+.cfg-col-label code { font-size: 10px; color: #999; }
+.cfg-row { display: flex; align-items: center; gap: 6px; }
+.cfg-inp { flex: 1; font-family: var(--font-mono, monospace); font-size: 12px; }
+.cfg-add { align-self: flex-start; }
+.cfg-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+.cfg-save:disabled { opacity: 0.6; cursor: default; }
+.cfg-status { font-size: 11px; color: #6ee7b7; }
+
+/* General panel */
+.settings-group { display: flex; flex-direction: column; gap: 10px; }
+.group-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #555;
+}
+.field {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  background: #0f0f0f;
+  border: 1px solid #1e1e1e;
+  border-radius: 6px;
+}
+.field-info { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.field-name { font-size: 13px; font-weight: 500; color: #e2e2e2; }
+.field-desc { font-size: 11px; color: #555; }
+
+.select {
+  background: #161616;
+  border: 1px solid #252525;
+  border-radius: 5px;
+  color: #e2e2e2;
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+  cursor: pointer;
+  min-width: 200px;
+}
+.select:hover { border-color: #333; }
+.select:focus { border-color: var(--accent); }
+
+.size-ctl { display: flex; align-items: center; gap: 6px; }
+.size-inp { min-width: 0; width: 64px; cursor: text; text-align: center; }
+.size-unit { font-size: 12px; color: #555; }
+
+.term-preview {
+  background: #0a0a0a;
+  border: 1px solid #1e1e1e;
+  border-radius: 6px;
+  padding: 12px 14px;
+  color: #e2e8f0;
+  line-height: 1.4;
+}
+.tp-prompt { color: #22c55e; }
+
+.placeholder {
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #333;
+  font-size: 13px;
+  gap: 12px;
+}
+
+.kb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid #141414;
+  gap: 12px;
+}
+.kb-row:last-child { border-bottom: none; }
+.kb-desc { font-size: 12px; color: #94a3b8; }
+.kb-keys { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.kb-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  color: #cbd5e1;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.toggle { display: flex; align-items: center; cursor: pointer; flex-shrink: 0; }
+.toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.toggle-track {
+  width: 36px;
+  height: 20px;
+  background: #252525;
+  border: 1px solid #333;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.toggle input:checked ~ .toggle-track {
+  background: #7c3aed;
+  border-color: #7c3aed;
+}
+.toggle-thumb {
+  width: 14px;
+  height: 14px;
+  background: #555;
+  border-radius: 50%;
+  transition: transform 0.15s, background 0.15s;
+}
+.toggle input:checked ~ .toggle-track .toggle-thumb {
+  transform: translateX(16px);
+  background: #fff;
+}
+
+/* Add area with template picker */
+.add-area {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+.add-area .add-btn { border-radius: 5px 0 0 5px; border-right: none; }
+.template-btn { border-radius: 0 5px 5px 0 !important; padding: 5px 8px !important; }
+.template-wrap { position: relative; }
+.template-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  width: 280px;
+  background: #131313;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tp-head {
+  font-size: 10px;
+  font-weight: 600;
+  color: #555;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  padding: 4px 8px 6px;
+}
+.tp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 5px;
+  background: none;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  text-align: left;
+  width: 100%;
+}
+.tp-row:hover { background: #1e1e1e; color: #e2e2e2; }
+.tp-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  border: 1px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.tp-name { flex: 1; font-weight: 500; }
+.tp-cmd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #555;
+  background: #0c0c0c;
+  border: 1px solid #1e1e1e;
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+
+/* Dot as color picker */
+.dot-label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.dot-label .color-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+}
+.dot-label:hover .dot { transform: scale(1.3); }
+.dot { transition: transform 0.1s; }
+
+/* Icon picker */
+.icon-wrap { position: relative; flex-shrink: 0; }
+.icon-box {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: none;
+  padding: 0;
+}
+.icon-box:hover { filter: brightness(1.2); }
+.icon-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 25;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px;
+  background: #131313;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  width: 168px;
+}
+.ip-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: #1a1a1a;
+  border: 1px solid #252525;
+  color: #888;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ip-btn:hover { background: #252525; color: #e2e2e2; }
+.ip-btn.active { background: #7c3aed22; border-color: #7c3aed66; color: #a78bfa; }
+
+/* Workspaces list */
+.ws-list { display: flex; flex-direction: column; gap: 6px; }
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  background: var(--bg-elev, #1a1a1a);
+}
+.ws-icon-btn {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: #202020;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+}
+.ws-icon-btn:hover { border-color: #7c3aed66; }
+.ws-icon-img { width: 100%; height: 100%; object-fit: cover; }
+.ws-icon-fb { color: #60a5fa; }
+.ws-icon-edit {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px 0 6px 0;
+  background: #7c3aed;
+  color: #fff;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.ws-icon-btn:hover .ws-icon-edit { display: flex; }
+.ws-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.ws-name { font-size: 13px; color: #e2e2e2; font-weight: 500; }
+.ws-path {
+  font-size: 11px;
+  color: #777;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-clear {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: none;
+  color: #888;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.ws-clear:hover { color: #e2e2e2; background: #252525; }
+</style>

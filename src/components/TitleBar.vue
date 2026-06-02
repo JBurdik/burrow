@@ -1,31 +1,41 @@
 <template>
   <!-- data-tauri-drag-region makes the whole bar draggable with native decorations: true -->
-  <div class="titlebar" data-tauri-drag-region>
+  <div class="titlebar" :class="{ dev: isDev }" data-tauri-drag-region>
     <!-- Spacer for native macOS traffic lights (~72px) -->
-    <div class="traffic-light-spacer" />
+    <div class="traffic-light-spacer" data-tauri-drag-region />
 
-    <div class="titlebar-center">
+    <div class="titlebar-center" data-tauri-drag-region>
       <button v-if="workspaceName" class="back-btn" @click="$emit('back')" title="Switch workspace">
         <PhHouse :size="13" />
       </button>
-      <span class="project-name">{{ workspaceName || "Agentic IDE" }}</span>
+      <span class="project-name" data-tauri-drag-region>{{ workspaceName || "Burrow" }}</span>
+      <span v-if="branch" class="branch-name" data-tauri-drag-region>
+        <PhGitBranch :size="11" />
+        {{ branch }}
+      </span>
     </div>
 
-    <div class="titlebar-end" />
+    <div class="titlebar-end" data-tauri-drag-region />
   </div>
 </template>
 
 <script setup lang="ts">
-import { PhHouse } from "@phosphor-icons/vue";
+import { PhHouse, PhGitBranch } from "@phosphor-icons/vue";
 
-defineProps<{ workspaceName?: string }>();
+defineProps<{ workspaceName?: string; branch?: string }>();
 defineEmits(["back"]);
+
+const isDev = import.meta.env.DEV;
 </script>
 
 <style scoped>
 .titlebar {
   height: var(--titlebar-height);
   background: var(--bg-panel);
+}
+
+.titlebar.dev {
+  background: #5c1a1a;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -66,6 +76,15 @@ defineEmits(["back"]);
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.branch-name {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
 .titlebar-end {

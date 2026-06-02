@@ -3,7 +3,7 @@
     <div class="ws-header">
       <div class="ws-logo">
         <PhTerminalWindow :size="28" weight="duotone" class="logo-icon" />
-        <span class="logo-name">Agentic IDE</span>
+        <span class="logo-name">Burrow</span>
       </div>
       <p class="ws-subtitle">Select or create a workspace to start</p>
     </div>
