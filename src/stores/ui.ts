@@ -144,6 +144,8 @@ export const useUIStore = defineStore("ui", () => {
     if (t.xterm.background) root.style.setProperty("--terminal-bg", t.xterm.background);
     // Optional full-window meme wallpaper (joke themes); `none` clears it.
     root.style.setProperty("--bg-image", t.bgImage ?? "none");
+    // Frosted-glass backdrop for translucent themes (Lime Void); else none.
+    root.style.setProperty("--backdrop-blur", t.backdropBlur ?? "none");
     root.style.colorScheme = t.isDark ? "dark" : "light";
   }
 

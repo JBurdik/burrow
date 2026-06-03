@@ -78,6 +78,8 @@ const isDev = import.meta.env.DEV;
 .titlebar {
   height: var(--titlebar-height);
   background: var(--bg-panel);
+  backdrop-filter: var(--backdrop-blur, none);
+  -webkit-backdrop-filter: var(--backdrop-blur, none);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;

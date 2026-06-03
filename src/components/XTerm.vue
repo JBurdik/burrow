@@ -198,6 +198,9 @@ onMounted(async () => {
     cursorBlink: true,
     cursorStyle: "bar",
     allowProposedApi: true,
+    // Lets themes use rgba/transparent xterm backgrounds so the window
+    // wallpaper / OS vibrancy shows through the terminal (meme + lime themes).
+    allowTransparency: true,
     scrollback: 5000,
   });
 

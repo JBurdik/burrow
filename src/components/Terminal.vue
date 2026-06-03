@@ -120,12 +120,14 @@ import { playSound } from "@/lib/sounds";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { useNotificationsStore } from "@/stores/notifications";
+import { useGitStore } from "@/stores/git";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 
 const props = defineProps<{ cwd: string; workspaceId: number }>();
 const wsStore = useWorkspaceStore();
 const tabsStore = useTerminalTabsStore();
 const notifStore = useNotificationsStore();
+const gitStore = useGitStore();
 
 interface Tab {
   id: number;
@@ -360,6 +362,9 @@ function settleDone(leaf: Leaf, tab: Tab) {
     playSound("done");
   }
   notifyDone(leaf.title);
+  // Agent turn finished → likely touched files. Refresh git panel silently if
+  // it's showing this workspace's repo.
+  if (gitStore.cwd === props.cwd) gitStore.refresh(true);
 }
 
 // Mark every finished leaf in a tab as seen (user opened/returned to it).
@@ -764,6 +769,8 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, insertContext });
   display: flex;
   flex-direction: column;
   background: var(--terminal-bg);
+  backdrop-filter: var(--backdrop-blur, none);
+  -webkit-backdrop-filter: var(--backdrop-blur, none);
   overflow: hidden;
   min-width: 0;
 }

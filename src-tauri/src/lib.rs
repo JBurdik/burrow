@@ -1007,6 +1007,177 @@ fn read_file_base64(path: String) -> Result<String, String> {
     Ok(general_purpose::STANDARD.encode(&bytes))
 }
 
+// ── Skills manager ────────────────────────────────────────────────────────────
+// Claude skills live as <claude-dir>/skills/<name>/SKILL.md (YAML frontmatter with
+// `name` + `description`). Disabling a skill renames its SKILL.md → SKILL.md.off so
+// Claude stops loading it (the dir is ignored without a SKILL.md), reversibly.
+
+#[derive(Serialize)]
+struct SkillInfo {
+    name: String,
+    description: String,
+    dir: String,
+    enabled: bool,
+}
+
+/// Pull `name:`/`description:` out of a SKILL.md YAML frontmatter block. Plain line
+/// scan — the frontmatter values are single-line in every skill we ship.
+fn parse_skill_frontmatter(md: &str) -> (Option<String>, Option<String>) {
+    let mut name = None;
+    let mut desc = None;
+    let mut in_fm = false;
+    for (i, line) in md.lines().enumerate() {
+        let t = line.trim();
+        if t == "---" {
+            if i == 0 { in_fm = true; continue; }
+            if in_fm { break; }
+        }
+        if !in_fm { continue; }
+        if let Some(v) = t.strip_prefix("name:") {
+            name = Some(v.trim().trim_matches('"').to_string());
+        } else if let Some(v) = t.strip_prefix("description:") {
+            desc = Some(v.trim().trim_matches('"').to_string());
+        }
+    }
+    (name, desc)
+}
+
+#[tauri::command]
+fn list_skills(app: AppHandle) -> Vec<SkillInfo> {
+    let mut out: Vec<SkillInfo> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for cdir in &load_config_dirs(&app).claude {
+        let skills_dir = Path::new(cdir).join("skills");
+        let Ok(entries) = std::fs::read_dir(&skills_dir) else { continue };
+        for e in entries.filter_map(|e| e.ok()) {
+            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            let dir = e.path();
+            let on = dir.join("SKILL.md");
+            let off = dir.join("SKILL.md.off");
+            let (enabled, md_path) = if on.exists() {
+                (true, on)
+            } else if off.exists() {
+                (false, off)
+            } else {
+                continue;
+            };
+            let dir_str = dir.to_string_lossy().into_owned();
+            if !seen.insert(dir_str.clone()) { continue; }
+            let md = std::fs::read_to_string(&md_path).unwrap_or_default();
+            let (fm_name, fm_desc) = parse_skill_frontmatter(&md);
+            out.push(SkillInfo {
+                name: fm_name.unwrap_or_else(|| e.file_name().to_string_lossy().into_owned()),
+                description: fm_desc.unwrap_or_default(),
+                dir: dir_str,
+                enabled,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+#[tauri::command]
+fn set_skill_enabled(dir: String, enabled: bool) -> Result<(), String> {
+    let on = Path::new(&dir).join("SKILL.md");
+    let off = Path::new(&dir).join("SKILL.md.off");
+    if enabled {
+        if off.exists() { std::fs::rename(&off, &on).map_err(|e| e.to_string())?; }
+    } else if on.exists() {
+        std::fs::rename(&on, &off).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_skill(dir: String) -> Result<(), String> {
+    // Guard: only remove a dir that actually looks like a skill.
+    let p = Path::new(&dir);
+    if !p.join("SKILL.md").exists() && !p.join("SKILL.md.off").exists() {
+        return Err("not a skill directory".into());
+    }
+    std::fs::remove_dir_all(p).map_err(|e| e.to_string())
+}
+
+// ── MCP server manager ────────────────────────────────────────────────────────
+// Claude Code stores MCP servers under the top-level `mcpServers` key of
+// ~/.claude.json. serde_json's preserve_order feature keeps the rest of that large
+// file byte-stable across the round-trip; we only touch `mcpServers`.
+
+fn claude_json_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path().home_dir().map(|h| h.join(".claude.json")).map_err(|e| e.to_string())
+}
+
+fn read_claude_json(app: &AppHandle) -> Result<serde_json::Value, String> {
+    let path = claude_json_path(app)?;
+    let txt = std::fs::read_to_string(&path).unwrap_or_default();
+    if txt.trim().is_empty() { return Ok(json!({})); }
+    serde_json::from_str(&txt).map_err(|e| e.to_string())
+}
+
+fn write_claude_json(app: &AppHandle, root: &serde_json::Value) -> Result<(), String> {
+    let path = claude_json_path(app)?;
+    if let Ok(prev) = std::fs::read_to_string(&path) {
+        if !prev.trim().is_empty() {
+            let _ = std::fs::write(path.with_extension("json.burrow-bak"), &prev);
+        }
+    }
+    let s = serde_json::to_string_pretty(root).map_err(|e| e.to_string())?;
+    std::fs::write(&path, s).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct McpServer {
+    name: String,
+    /// The raw config object, re-serialized to a string for the frontend to display.
+    config: String,
+}
+
+#[tauri::command]
+fn list_mcp_servers(app: AppHandle) -> Result<Vec<McpServer>, String> {
+    let root = read_claude_json(&app)?;
+    let mut out = Vec::new();
+    if let Some(servers) = root.get("mcpServers").and_then(|v| v.as_object()) {
+        for (name, cfg) in servers {
+            out.push(McpServer {
+                name: name.clone(),
+                config: serde_json::to_string_pretty(cfg).unwrap_or_default(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Add or replace an MCP server. `config` is the JSON object as a string (so the
+/// frontend can hand over whatever shape the user typed — stdio command, http url…).
+#[tauri::command]
+fn add_mcp_server(app: AppHandle, name: String, config: String) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() { return Err("server name is required".into()); }
+    let cfg: serde_json::Value = serde_json::from_str(config.trim())
+        .map_err(|e| format!("config is not valid JSON: {e}"))?;
+    if !cfg.is_object() { return Err("config must be a JSON object".into()); }
+
+    let mut root = read_claude_json(&app)?;
+    if !root.is_object() { return Err("~/.claude.json is not a JSON object".into()); }
+    let obj = root.as_object_mut().unwrap();
+    let servers = obj.entry("mcpServers").or_insert_with(|| json!({}));
+    let Some(servers) = servers.as_object_mut() else {
+        return Err("mcpServers is not an object".into());
+    };
+    servers.insert(name, cfg);
+    write_claude_json(&app, &root)
+}
+
+#[tauri::command]
+fn remove_mcp_server(app: AppHandle, name: String) -> Result<(), String> {
+    let mut root = read_claude_json(&app)?;
+    if let Some(servers) = root.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+        servers.remove(&name);
+    }
+    write_claude_json(&app, &root)
+}
+
 /// Save a base64-encoded image (pasted from the clipboard) to a temp file and
 /// return its path, so the frontend can type that path into a PTY for an agent
 /// (Claude Code et al.) to read. Drag-dropped files already have a real path, so
@@ -1083,6 +1254,16 @@ pub fn run() {
                 use tauri_plugin_decorum::WebviewWindowExt;
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_traffic_lights_inset(13.0, 10.0);
+                    // OS-level backdrop blur (vibrancy). Always applied; only
+                    // shows where a theme leaves bg-base/panels translucent
+                    // (the "Lime Void" theme). Opaque themes fully cover it.
+                    use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+                    let _ = apply_vibrancy(
+                        &win,
+                        NSVisualEffectMaterial::UnderWindowBackground,
+                        None,
+                        None,
+                    );
                 }
             }
 
@@ -1134,6 +1315,12 @@ pub fn run() {
             save_temp_image,
             get_hook_server_port,
             set_max_agents,
+            list_skills,
+            set_skill_enabled,
+            delete_skill,
+            list_mcp_servers,
+            add_mcp_server,
+            remove_mcp_server,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

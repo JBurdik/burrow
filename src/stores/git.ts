@@ -8,6 +8,14 @@ export interface GitFile {
   y: string;
 }
 
+export interface GitCommit {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  author: string;
+  relTime: string;
+}
+
 interface GitOutput {
   stdout: string;
   stderr: string;
@@ -56,10 +64,16 @@ export const useGitStore = defineStore("git", () => {
   const loading = ref(false);
   const error = ref<string | null>(null);
   const commitMsg = ref("");
+  const ahead = ref(0);
+  const behind = ref(0);
+  const hasUpstream = ref(false);
+  const pushing = ref(false);
+  const log = ref<GitCommit[]>([]);
+  const logLoading = ref(false);
 
-  async function refresh() {
+  async function refresh(silent = false) {
     if (!cwd.value) return;
-    loading.value = true;
+    if (!silent) loading.value = true;
     error.value = null;
     try {
       const [statusOut, branchOut] = await Promise.all([
@@ -71,14 +85,72 @@ export const useGitStore = defineStore("git", () => {
       unstaged.value = parsed.unstaged;
       untracked.value = parsed.untracked;
       branch.value = branchOut.trim();
+      await refreshUpstream();
+      await refreshLog();
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : "git error";
       staged.value = [];
       unstaged.value = [];
       untracked.value = [];
       branch.value = "";
+      ahead.value = 0;
+      behind.value = 0;
+      hasUpstream.value = false;
+      log.value = [];
     } finally {
-      loading.value = false;
+      if (!silent) loading.value = false;
+    }
+  }
+
+  async function refreshUpstream() {
+    try {
+      // counts: "<behind>\t<ahead>" relative to upstream
+      const out = await runGit(cwd.value, [
+        "rev-list", "--left-right", "--count", "@{upstream}...HEAD",
+      ]);
+      const [b, a] = out.trim().split(/\s+/);
+      behind.value = parseInt(b, 10) || 0;
+      ahead.value = parseInt(a, 10) || 0;
+      hasUpstream.value = true;
+    } catch {
+      // no upstream configured
+      ahead.value = 0;
+      behind.value = 0;
+      hasUpstream.value = false;
+    }
+  }
+
+  async function refreshLog() {
+    try {
+      const out = await runGit(cwd.value, [
+        "log", "-30", "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%cr",
+      ]);
+      log.value = out
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .map((l) => {
+          const [hash, shortHash, subject, author, relTime] = l.split("\x1f");
+          return { hash, shortHash, subject, author, relTime };
+        });
+    } catch {
+      log.value = [];
+    }
+  }
+
+  async function push() {
+    if (!cwd.value) return;
+    pushing.value = true;
+    error.value = null;
+    try {
+      const args = hasUpstream.value
+        ? ["push"]
+        : ["push", "-u", "origin", branch.value];
+      await runGit(cwd.value, args);
+      await refresh();
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : "git push failed";
+    } finally {
+      pushing.value = false;
     }
   }
 
@@ -160,6 +232,8 @@ export const useGitStore = defineStore("git", () => {
     cwd, branch, staged, unstaged, untracked,
     diff, diffFile, diffStaged,
     loading, error, commitMsg,
+    ahead, behind, hasUpstream, pushing, log, logLoading,
     setCwd, refresh, stageFile, unstageFile, stageAll, commit, showDiff, clearDiff, fetchAllDiff, gitInit,
+    push, refreshLog,
   };
 });

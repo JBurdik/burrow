@@ -30,10 +30,25 @@
         <div class="branch-tag">
           <PhGitBranch :size="12" />
           <span>{{ git.branch || "—" }}</span>
+          <span v-if="git.ahead > 0" class="ahead-tag" title="Commits ahead of upstream">↑{{ git.ahead }}</span>
+          <span v-if="git.behind > 0" class="behind-tag" title="Commits behind upstream">↓{{ git.behind }}</span>
         </div>
-        <button class="icon-btn" :disabled="git.loading" @click="git.refresh()" title="Refresh">
-          <PhArrowClockwise :size="13" :class="{ spin: git.loading }" />
-        </button>
+        <div class="header-actions">
+          <button
+            v-if="!git.error"
+            class="push-btn"
+            :disabled="git.pushing || git.loading || (git.hasUpstream && git.ahead === 0)"
+            @click="git.push()"
+            :title="git.hasUpstream ? 'git push' : 'git push -u origin ' + git.branch"
+          >
+            <PhArrowUp :size="11" :class="{ spin: git.pushing }" />
+            {{ git.hasUpstream ? "Push" : "Publish" }}
+            <span v-if="git.ahead > 0">({{ git.ahead }})</span>
+          </button>
+          <button class="icon-btn" :disabled="git.loading" @click="git.refresh()" title="Refresh">
+            <PhArrowClockwise :size="13" :class="{ spin: git.loading }" />
+          </button>
+        </div>
       </div>
 
       <div class="git-body">
@@ -120,6 +135,7 @@
               placeholder="Commit message…"
               rows="3"
               @keydown.ctrl.enter="git.commit()"
+              @keydown.meta.enter="git.commit()"
             />
             <button
               class="commit-btn"
@@ -147,6 +163,27 @@
             >{{ line }}
 </span></pre>
           </div>
+
+          <!-- History -->
+          <div class="history-section">
+            <div class="section-label section-label-row history-toggle" @click="showHistory = !showHistory">
+              <span class="history-title"><PhCaretRight :size="9" :class="{ open: showHistory }" /> History</span>
+            </div>
+            <template v-if="showHistory">
+              <div v-if="git.log.length === 0" class="empty-hint">No commits</div>
+              <div
+                v-for="c in git.log"
+                :key="c.hash"
+                class="log-row"
+                :title="c.subject + '\n' + c.author"
+                @click="openCommitDiff(c)"
+              >
+                <span class="log-hash">{{ c.shortHash }}</span>
+                <span class="log-subject">{{ c.subject }}</span>
+                <span class="log-meta">{{ c.relTime }}</span>
+              </div>
+            </template>
+          </div>
         </template>
       </div>
     </div>
@@ -154,12 +191,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, inject } from "vue";
+import { ref, watch, inject, onMounted, onBeforeUnmount } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import {
   PhFiles, PhGitBranch, PhGitCommit,
   PhArrowClockwise, PhWarning, PhX, PhArrowUpRight,
+  PhArrowUp, PhCaretRight,
 } from "@phosphor-icons/vue";
-import { useGitStore } from "@/stores/git";
+import { useGitStore, type GitCommit } from "@/stores/git";
 import { useFileTreeStore } from "@/stores/fileTree";
 import FileTreeNode from "./FileTreeNode.vue";
 
@@ -167,12 +206,22 @@ const props = defineProps<{ cwd: string }>();
 const git = useGitStore();
 const fileTree = useFileTreeStore();
 const activeTab = ref("git");
+const showHistory = ref(false);
 const activeTerm = inject<() => any>('activeTerm', () => undefined);
 
 async function openAllDiffInTab(staged: boolean) {
   const diff = await git.fetchAllDiff(staged);
   if (!diff) return;
   activeTerm()?.openDiffInTab(staged ? "Staged changes" : "Unstaged changes", staged, diff);
+}
+
+async function openCommitDiff(c: GitCommit) {
+  const out = await invoke<{ stdout: string; stderr: string; code: number }>("run_git", {
+    cwd: props.cwd,
+    args: ["show", c.hash],
+  });
+  if (out.code !== 0 || !out.stdout) return;
+  activeTerm()?.openDiffInTab(`${c.shortHash} ${c.subject}`, false, out.stdout);
 }
 
 const tabs = [
@@ -195,6 +244,32 @@ function diffLineClass(line: string) {
   if (line.startsWith("@@")) return "diff-hunk";
   return "diff-ctx";
 }
+
+// --- Auto-refresh: window focus + git-tab visible poll ---
+function autoRefresh() {
+  if (activeTab.value === "git" && props.cwd && !document.hidden) {
+    git.refresh(true);
+  }
+}
+
+let pollId: number | undefined;
+function onFocus() { autoRefresh(); }
+function onVisible() { if (!document.hidden) autoRefresh(); }
+
+// refresh when switching to the git tab
+watch(activeTab, (t) => { if (t === "git") autoRefresh(); });
+
+onMounted(() => {
+  window.addEventListener("focus", onFocus);
+  document.addEventListener("visibilitychange", onVisible);
+  pollId = window.setInterval(autoRefresh, 5000);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("focus", onFocus);
+  document.removeEventListener("visibilitychange", onVisible);
+  if (pollId) clearInterval(pollId);
+});
 </script>
 
 <style scoped>
@@ -202,6 +277,8 @@ function diffLineClass(line: string) {
   width: var(--right-panel-width, 300px);
   flex: 0 0 var(--right-panel-width, 300px);
   background: var(--bg-panel);
+  backdrop-filter: var(--backdrop-blur, none);
+  -webkit-backdrop-filter: var(--backdrop-blur, none);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -276,6 +353,32 @@ function diffLineClass(line: string) {
   font-size: 11px;
   font-weight: 600;
 }
+
+.ahead-tag { color: var(--green); font-size: 10px; font-weight: 600; }
+.behind-tag { color: var(--yellow); font-size: 10px; font-weight: 600; }
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.push-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  padding: 2px 8px;
+}
+.push-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); border-color: var(--accent); }
+.push-btn:disabled { opacity: 0.4; cursor: default; }
 
 .icon-btn {
   background: none;
@@ -511,4 +614,48 @@ function diffLineClass(line: string) {
 .diff-del  { color: var(--red); display: block; }
 .diff-hunk { color: var(--accent); display: block; }
 .diff-ctx  { color: var(--text-secondary); display: block; }
+
+/* History */
+.history-section {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 6px;
+  flex-shrink: 0;
+}
+
+.history-toggle { cursor: pointer; user-select: none; }
+.history-title { display: flex; align-items: center; gap: 4px; }
+.history-title :deep(svg) { transition: transform 0.12s; }
+.history-title .open { transform: rotate(90deg); }
+
+.log-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  cursor: pointer;
+  margin: 0 4px;
+  border-radius: 3px;
+}
+.log-row:hover { background: var(--bg-hover); }
+
+.log-hash {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--yellow);
+  flex-shrink: 0;
+}
+.log-subject {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+.log-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
 </style>

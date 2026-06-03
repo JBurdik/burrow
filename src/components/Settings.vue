@@ -2,9 +2,10 @@
   <div class="settings-page">
     <!-- Header -->
     <div class="s-header">
-      <PhGearSix :size="15" class="s-head-icon" />
-      <span class="s-title">Settings</span>
-      <div class="s-spacer" />
+      <div class="s-head-title">
+        <PhGearSix :size="15" class="s-head-icon" />
+        <span class="s-title">Settings</span>
+      </div>
       <button class="s-close" title="Close (Esc)" @click="$emit('close')">
         <PhX :size="15" />
       </button>
@@ -731,6 +732,141 @@
           </div>
         </section>
 
+        <!-- Skills -->
+        <section v-else-if="active === 'skills'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Skills</h2>
+              <span class="sec-sub">Agent skills installed in <code>~/.claude/skills</code></span>
+            </div>
+            <button class="add-btn" :disabled="skillsLoading" @click="loadSkills">
+              <PhArrowClockwise :size="11" :class="{ spin: skillsLoading }" /> Refresh
+            </button>
+          </div>
+          <div class="sec-divider" />
+
+          <div class="ext-list">
+            <div v-for="s in skills" :key="s.dir" class="ext-row" :class="{ off: !s.enabled }">
+              <div class="ext-icon"><PhSparkle :size="15" /></div>
+              <div class="ext-main">
+                <div class="ext-name">{{ s.name }}</div>
+                <div class="ext-desc">{{ s.description || "No description" }}</div>
+              </div>
+              <div class="ext-actions">
+                <button
+                  class="icon-act"
+                  :title="s.enabled ? 'Disable skill' : 'Enable skill'"
+                  @click="toggleSkill(s)"
+                >
+                  <component :is="s.enabled ? PhToggleRight : PhToggleLeft" :size="20"
+                    :style="{ color: s.enabled ? 'var(--green)' : 'var(--text-secondary)' }" />
+                </button>
+                <button class="icon-act" title="Reveal in Finder" @click="revealSkill(s)">
+                  <PhArrowSquareOut :size="14" />
+                </button>
+                <button class="icon-act danger" title="Delete skill" @click="deleteSkill(s)">
+                  <PhTrash :size="14" />
+                </button>
+              </div>
+            </div>
+            <div v-if="!skillsLoading && skills.length === 0" class="tbl-empty">
+              No skills found. Install one via Claude Code or the skill marketplace.
+            </div>
+          </div>
+        </section>
+
+        <!-- MCP Servers -->
+        <section v-else-if="active === 'mcp'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">MCP Servers</h2>
+              <span class="sec-sub">Model Context Protocol servers in <code>~/.claude.json</code></span>
+            </div>
+            <button class="add-btn" @click="startAddMcp">
+              <PhPlus :size="11" /> Add Server
+            </button>
+          </div>
+          <div class="sec-divider" />
+
+          <!-- Add / edit form -->
+          <div v-if="mcpFormOpen" class="mcp-form">
+            <div class="mcp-form-head">
+              <span class="group-label">{{ mcpEditName ? "Edit" : "New" }} MCP server</span>
+              <button class="fp-close" @click="mcpFormOpen = false"><PhX :size="12" /></button>
+            </div>
+            <input
+              class="inp mcp-name"
+              v-model="mcpName"
+              :disabled="!!mcpEditName"
+              placeholder="server-name"
+              spellcheck="false"
+            />
+            <textarea
+              class="fp-area mono mcp-config"
+              v-model="mcpConfig"
+              rows="7"
+              spellcheck="false"
+              placeholder='{ "command": "npx", "args": ["-y", "@some/mcp-server"] }'
+            />
+            <div class="mcp-form-foot">
+              <span v-if="mcpError" class="mcp-err">{{ mcpError }}</span>
+              <span class="s-spacer" />
+              <button class="reset-btn" @click="mcpFormOpen = false">Cancel</button>
+              <button class="reset-btn primary" :disabled="mcpSaving" @click="saveMcp">
+                {{ mcpSaving ? "Saving…" : "Save" }}
+              </button>
+            </div>
+          </div>
+
+          <div class="ext-list">
+            <div v-for="m in mcpServers" :key="m.name" class="ext-row">
+              <div class="ext-icon"><PhPlugsConnected :size="15" /></div>
+              <div class="ext-main">
+                <div class="ext-name">{{ m.name }}</div>
+                <pre class="ext-config mono">{{ m.config }}</pre>
+              </div>
+              <div class="ext-actions">
+                <button class="icon-act" title="Edit" @click="editMcp(m)">
+                  <PhPencilSimple :size="14" />
+                </button>
+                <button class="icon-act danger" title="Remove server" @click="removeMcp(m)">
+                  <PhTrash :size="14" />
+                </button>
+              </div>
+            </div>
+            <div v-if="mcpServers.length === 0 && !mcpFormOpen" class="tbl-empty">
+              No MCP servers configured. Add one to give every Claude session new tools.
+            </div>
+          </div>
+        </section>
+
+        <!-- Extensions (browser — planned) -->
+        <section v-else-if="active === 'extensions'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Extensions</h2>
+              <span class="sec-sub">Browser &amp; editor integrations</span>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <div class="ext-list">
+            <div class="ext-row planned">
+              <div class="ext-icon"><PhBrowser :size="15" /></div>
+              <div class="ext-main">
+                <div class="ext-name">
+                  Browser extension
+                  <span class="planned-badge">Planned</span>
+                </div>
+                <div class="ext-desc">
+                  Drive a real browser tab from inside Burrow — let agents open pages,
+                  fill forms, and read the DOM without leaving the IDE.
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- Other panels (placeholder) -->
         <section v-else class="section placeholder">
           <component :is="activeIcon" :size="22" />
@@ -742,13 +878,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, type Component } from "vue";
+import { ref, computed, watch, type Component } from "vue";
 import {
   PhGearSix, PhX, PhPlus, PhTrash, PhArrowCounterClockwise,
   PhSlidersHorizontal, PhFolderOpen, PhRobot, PhPalette, PhKeyboard,
   PhPuzzlePiece, PhInfo, PhSparkle, PhCode, PhGitBranch, PhTerminal,
   PhListBullets, PhCaretDown, PhFolder, PhPencilSimple, PhCheck, PhBell, PhPlay,
   PhDotsSixVertical, PhArrowClockwise, PhDownloadSimple, PhTerminalWindow,
+  PhPlugsConnected, PhBrowser, PhToggleLeft, PhToggleRight, PhArrowSquareOut,
 } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -868,6 +1005,117 @@ async function saveConfigDirs() {
 }
 
 loadConfigDirs();
+
+// ── Skills manager ────────────────────────────────────────────────────────────
+type SkillInfo = { name: string; description: string; dir: string; enabled: boolean };
+const skills = ref<SkillInfo[]>([]);
+const skillsLoading = ref(false);
+
+async function loadSkills() {
+  skillsLoading.value = true;
+  try {
+    skills.value = await invoke<SkillInfo[]>("list_skills");
+  } catch (e) {
+    console.error("list_skills failed", e);
+  } finally {
+    skillsLoading.value = false;
+  }
+}
+
+async function toggleSkill(s: SkillInfo) {
+  try {
+    await invoke("set_skill_enabled", { dir: s.dir, enabled: !s.enabled });
+    s.enabled = !s.enabled;
+  } catch (e) {
+    console.error("set_skill_enabled failed", e);
+  }
+}
+
+function revealSkill(s: SkillInfo) {
+  invoke("open_path_in", { path: s.dir, target: "finder" }).catch(() => {});
+}
+
+async function deleteSkill(s: SkillInfo) {
+  if (!confirm(`Delete skill "${s.name}"? This removes its folder permanently.`)) return;
+  try {
+    await invoke("delete_skill", { dir: s.dir });
+    skills.value = skills.value.filter((x) => x.dir !== s.dir);
+  } catch (e) {
+    console.error("delete_skill failed", e);
+  }
+}
+
+// ── MCP server manager ────────────────────────────────────────────────────────
+type McpServer = { name: string; config: string };
+const mcpServers = ref<McpServer[]>([]);
+const mcpFormOpen = ref(false);
+const mcpEditName = ref<string | null>(null);
+const mcpName = ref("");
+const mcpConfig = ref("");
+const mcpError = ref("");
+const mcpSaving = ref(false);
+
+async function loadMcp() {
+  try {
+    mcpServers.value = await invoke<McpServer[]>("list_mcp_servers");
+  } catch (e) {
+    console.error("list_mcp_servers failed", e);
+  }
+}
+
+function startAddMcp() {
+  mcpEditName.value = null;
+  mcpName.value = "";
+  mcpConfig.value = '{\n  "command": "npx",\n  "args": ["-y", "@some/mcp-server"]\n}';
+  mcpError.value = "";
+  mcpFormOpen.value = true;
+}
+
+function editMcp(m: McpServer) {
+  mcpEditName.value = m.name;
+  mcpName.value = m.name;
+  mcpConfig.value = m.config;
+  mcpError.value = "";
+  mcpFormOpen.value = true;
+}
+
+async function saveMcp() {
+  mcpError.value = "";
+  if (!mcpName.value.trim()) { mcpError.value = "Name is required."; return; }
+  try {
+    JSON.parse(mcpConfig.value);
+  } catch (e) {
+    mcpError.value = `Invalid JSON: ${e instanceof Error ? e.message : e}`;
+    return;
+  }
+  mcpSaving.value = true;
+  try {
+    await invoke("add_mcp_server", { name: mcpName.value.trim(), config: mcpConfig.value });
+    mcpFormOpen.value = false;
+    await loadMcp();
+  } catch (e) {
+    mcpError.value = String(e);
+  } finally {
+    mcpSaving.value = false;
+  }
+}
+
+async function removeMcp(m: McpServer) {
+  if (!confirm(`Remove MCP server "${m.name}"?`)) return;
+  try {
+    await invoke("remove_mcp_server", { name: m.name });
+    mcpServers.value = mcpServers.value.filter((x) => x.name !== m.name);
+  } catch (e) {
+    console.error("remove_mcp_server failed", e);
+  }
+}
+
+// Lazy-load each panel's data the first time it's opened.
+watch(active, (id) => {
+  if (id === "skills" && skills.value.length === 0) loadSkills();
+  if (id === "mcp" && mcpServers.value.length === 0) loadMcp();
+});
+
 const flagDraft = ref("");
 const iconPickerId = ref<string | null>(null);
 const showTemplatePicker = ref(false);
@@ -1010,6 +1258,8 @@ const navItems: NavItem[] = [
   { id: "general", label: "General", icon: PhSlidersHorizontal },
   { id: "workspaces", label: "Workspaces", icon: PhFolderOpen },
   { id: "agents", label: "Agents", icon: PhRobot },
+  { id: "skills", label: "Skills", icon: PhSparkle },
+  { id: "mcp", label: "MCP Servers", icon: PhPlugsConnected },
   { divider: true },
   { id: "appearance", label: "Appearance", icon: PhPalette },
   { id: "notifications", label: "Notifications", icon: PhBell },
@@ -1109,14 +1359,23 @@ const SHORTCUT_GROUPS = [
 
 /* Header */
 .s-header {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-end;
   height: 52px;
   padding: 0 24px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+}
+.s-head-title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .s-head-icon { color: var(--text-muted); }
 .s-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
@@ -1912,4 +2171,97 @@ const SHORTCUT_GROUPS = [
 }
 .spin { animation: upd-spin 0.9s linear infinite; }
 @keyframes upd-spin { to { transform: rotate(360deg); } }
+
+/* ── Skills / MCP / Extensions lists ───────────────────────────────────────── */
+.ext-list { display: flex; flex-direction: column; gap: 8px; }
+.ext-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.ext-row.off { opacity: 0.55; }
+.ext-row.planned { border-style: dashed; }
+.ext-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 7px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.ext-main { flex: 1; min-width: 0; }
+.ext-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ext-desc { margin-top: 3px; font-size: 11.5px; line-height: 1.45; color: var(--text-secondary); }
+.ext-config {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+}
+.ext-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.icon-act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.icon-act:hover { background: var(--bg-hover); color: var(--text-primary); }
+.icon-act.danger:hover { color: var(--red); }
+.planned-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 16%, transparent);
+}
+
+/* MCP add/edit form */
+.mcp-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.mcp-form-head { display: flex; align-items: center; }
+.mcp-form-head .group-label { margin: 0; }
+.mcp-form-head .fp-close { margin-left: auto; }
+.mcp-name { max-width: 280px; }
+.mcp-config { width: 100%; box-sizing: border-box; }
+.mcp-form-foot { display: flex; align-items: center; gap: 8px; }
+.mcp-err { font-size: 11px; color: var(--red); }
 </style>

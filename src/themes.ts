@@ -31,6 +31,10 @@ export interface Theme {
   // etc.) painted on <body> behind the chrome. Panels with rgba()/transparent
   // bg vars let it peek through. Used by joke/meme themes; omit for normal ones.
   bgImage?: string;
+  // Optional CSS `backdrop-filter` value (e.g. "blur(24px)") applied to the
+  // app's translucent surfaces. Pairs with rgba bg vars + OS window vibrancy to
+  // make a see-through, frosted window. Omit → "none".
+  backdropBlur?: string;
 }
 
 // Inline meme wallpaper for the "Stonks" theme: tiled neon emoji + ALL-CAPS
@@ -346,7 +350,8 @@ export const THEMES: Theme[] = [
       red: "#ff2079",
     },
     xterm: {
-      background: "#0a0012",
+      // Transparent so the meme wallpaper shows under the terminal text.
+      background: "rgba(10, 0, 18, 0.45)",
       foreground: "#f5e9ff",
       cursor: "#39ff14",
       cursorAccent: "#0a0012",
@@ -370,6 +375,55 @@ export const THEMES: Theme[] = [
     },
     shiki: "synthwave-84",
     bgImage: STONKS_BG,
+  },
+  {
+    key: "lime-void",
+    label: "Lime Void 🟢 (glass)",
+    isDark: true,
+    // Fully see-through window: bg-base transparent so the OS vibrancy blur of
+    // whatever's behind the window shows. Panels are barely-there translucent
+    // black, frosted by backdropBlur. Electric lime is the one loud accent.
+    vars: {
+      "bg-base": "transparent",
+      "bg-panel": "rgba(8, 14, 8, 0.42)",
+      "bg-hover": "rgba(174, 255, 0, 0.14)",
+      "bg-selected": "rgba(174, 255, 0, 0.22)",
+      border: "rgba(174, 255, 0, 0.35)",
+      "text-primary": "#eaffd6",
+      "text-secondary": "#b6e89a",
+      "text-muted": "#7fa86a",
+      accent: "#aeff00",
+      "accent-dim": "#7ab800",
+      green: "#aeff00",
+      yellow: "#eaff00",
+      red: "#ff5470",
+    },
+    xterm: {
+      // Translucent so the frosted backdrop shows behind terminal text too.
+      background: "rgba(6, 10, 6, 0.34)",
+      foreground: "#eaffd6",
+      cursor: "#aeff00",
+      cursorAccent: "#060a06",
+      selectionBackground: "rgba(174, 255, 0, 0.25)",
+      black: "#0a0f0a",
+      red: "#ff5470",
+      green: "#aeff00",
+      yellow: "#eaff00",
+      blue: "#5cf0c8",
+      magenta: "#c8ff5c",
+      cyan: "#7affd6",
+      white: "#eaffd6",
+      brightBlack: "#5a6b4a",
+      brightRed: "#ff7a90",
+      brightGreen: "#c6ff4d",
+      brightYellow: "#f4ff4d",
+      brightBlue: "#7affd6",
+      brightMagenta: "#d6ff7a",
+      brightCyan: "#a6ffe6",
+      brightWhite: "#ffffff",
+    },
+    shiki: "github-dark",
+    backdropBlur: "blur(28px) saturate(160%)",
   },
 ];
 

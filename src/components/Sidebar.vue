@@ -456,6 +456,8 @@ async function confirmCreate() {
   width: var(--sidebar-width, 220px);
   flex: 0 0 var(--sidebar-width, 220px);
   background: var(--bg-panel);
+  backdrop-filter: var(--backdrop-blur, none);
+  -webkit-backdrop-filter: var(--backdrop-blur, none);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
