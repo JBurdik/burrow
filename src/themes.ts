@@ -27,7 +27,37 @@ export interface Theme {
   xterm: ITheme;
   // A @pierre/diffs theme name (accepts any shiki BundledTheme).
   shiki: string;
+  // Optional full-window background. A CSS `background` value (url(), gradient,
+  // etc.) painted on <body> behind the chrome. Panels with rgba()/transparent
+  // bg vars let it peek through. Used by joke/meme themes; omit for normal ones.
+  bgImage?: string;
 }
+
+// Inline meme wallpaper for the "Stonks" theme: tiled neon emoji + ALL-CAPS
+// hype text on a deep purple void, baked as a data-URI SVG so it ships offline
+// (no network fetch in the desktop app). Crazy on purpose.
+const STONKS_BG =
+  "url(\"data:image/svg+xml," +
+  encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' width='340' height='240'>
+      <defs>
+        <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+          <stop offset='0' stop-color='#16001f'/>
+          <stop offset='1' stop-color='#04000a'/>
+        </linearGradient>
+      </defs>
+      <rect width='340' height='240' fill='url(#g)'/>
+      <text x='14' y='52' font-size='40' opacity='0.10'>🚀</text>
+      <text x='250' y='44' font-size='40' opacity='0.10'>💎</text>
+      <text x='150' y='150' font-size='44' opacity='0.10'>🐕</text>
+      <text x='40' y='200' font-size='40' opacity='0.10'>🔥</text>
+      <text x='270' y='210' font-size='40' opacity='0.10'>💸</text>
+      <text x='80' y='110' font-family='Impact, sans-serif' font-size='26' fill='#39ff14' opacity='0.12' transform='rotate(-12 80 110)'>STONKS</text>
+      <text x='180' y='90' font-family='Impact, sans-serif' font-size='20' fill='#ff2079' opacity='0.12' transform='rotate(8 180 90)'>MUCH WOW</text>
+      <text x='30' y='230' font-family='Impact, sans-serif' font-size='18' fill='#00f0ff' opacity='0.12'>TO THE MOON</text>
+    </svg>`,
+  ) +
+  "\")";
 
 export const THEMES: Theme[] = [
   {
@@ -293,6 +323,53 @@ export const THEMES: Theme[] = [
       brightWhite: "#ffffff",
     },
     shiki: "dracula",
+  },
+  {
+    key: "stonks",
+    label: "Stonks 🚀 (meme)",
+    isDark: true,
+    // Panel bgs are rgba with alpha so the meme wallpaper bleeds through every
+    // surface. Accents are eye-melting neon — magenta/cyan/acid-green.
+    vars: {
+      "bg-base": "#0a0012",
+      "bg-panel": "rgba(22, 0, 38, 0.62)",
+      "bg-hover": "rgba(255, 32, 121, 0.18)",
+      "bg-selected": "rgba(0, 240, 255, 0.22)",
+      border: "#ff2079",
+      "text-primary": "#f5e9ff",
+      "text-secondary": "#c9a8ff",
+      "text-muted": "#8a6bb0",
+      accent: "#39ff14",
+      "accent-dim": "#00f0ff",
+      green: "#39ff14",
+      yellow: "#ffe600",
+      red: "#ff2079",
+    },
+    xterm: {
+      background: "#0a0012",
+      foreground: "#f5e9ff",
+      cursor: "#39ff14",
+      cursorAccent: "#0a0012",
+      selectionBackground: "#3a006a",
+      black: "#1a0030",
+      red: "#ff2079",
+      green: "#39ff14",
+      yellow: "#ffe600",
+      blue: "#00f0ff",
+      magenta: "#d400ff",
+      cyan: "#00f0ff",
+      white: "#f5e9ff",
+      brightBlack: "#6b4a8f",
+      brightRed: "#ff5c9d",
+      brightGreen: "#7dff5c",
+      brightYellow: "#fff04d",
+      brightBlue: "#5cf0ff",
+      brightMagenta: "#e85cff",
+      brightCyan: "#5cf0ff",
+      brightWhite: "#ffffff",
+    },
+    shiki: "synthwave-84",
+    bgImage: STONKS_BG,
   },
 ];
 

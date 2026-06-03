@@ -142,6 +142,8 @@ export const useUIStore = defineStore("ui", () => {
     // Match the terminal frame/pane exactly to the xterm canvas background, so
     // there's no tonal "border" around the terminal content.
     if (t.xterm.background) root.style.setProperty("--terminal-bg", t.xterm.background);
+    // Optional full-window meme wallpaper (joke themes); `none` clears it.
+    root.style.setProperty("--bg-image", t.bgImage ?? "none");
     root.style.colorScheme = t.isDark ? "dark" : "light";
   }
 

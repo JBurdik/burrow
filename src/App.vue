@@ -284,7 +284,10 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 body {
-  background: var(--bg-base);
+  background-color: var(--bg-base);
+  /* Meme themes set --bg-image to a tiled wallpaper; normal themes = none. */
+  background-image: var(--bg-image, none);
+  background-attachment: fixed;
   color: var(--text-primary);
   font-family: var(--font-ui);
   overflow: hidden;
