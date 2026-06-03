@@ -106,10 +106,19 @@ export const useAgentsStore = defineStore("agents", () => {
     agents.value = clone(DEFAULTS);
   }
 
+  // Reorder: move the agent at index `from` to index `to`. Toolbar renders in
+  // array order, so this drives the toolbar order too.
+  function move(from: number, to: number) {
+    const list = agents.value;
+    if (from < 0 || from >= list.length || to < 0 || to >= list.length || from === to) return;
+    const [item] = list.splice(from, 1);
+    list.splice(to, 0, item);
+  }
+
   // Full command line used to launch the agent in a terminal.
   function commandLine(a: AgentConfig): string {
     return a.args.trim() ? `${a.command} ${a.args}`.trim() : a.command.trim();
   }
 
-  return { agents, add, addFromTemplate, update, remove, reset, commandLine };
+  return { agents, add, addFromTemplate, update, remove, move, reset, commandLine };
 });

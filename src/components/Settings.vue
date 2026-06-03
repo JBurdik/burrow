@@ -62,6 +62,7 @@
 
           <div class="tbl">
             <div class="tbl-head">
+              <span class="col col-grip" />
               <span class="col col-agent">Agent</span>
               <span class="col col-cmd">Command</span>
               <span class="col col-args">Args / Flags</span>
@@ -69,7 +70,25 @@
               <span class="col col-act" />
             </div>
 
-            <div v-for="a in store.agents" :key="a.id" class="row">
+            <div
+              v-for="(a, i) in store.agents"
+              :key="a.id"
+              class="row"
+              :class="{ dragging: dragIndex === i, 'drag-over': dragOverIndex === i }"
+              @dragover.prevent="onDragOver(i)"
+              @drop.prevent="onDrop(i)"
+            >
+              <!-- Drag handle -->
+              <div
+                class="col-grip grip"
+                draggable="true"
+                title="Drag to reorder"
+                @dragstart="onDragStart(i, $event)"
+                @dragend="onDragEnd"
+              >
+                <PhDotsSixVertical :size="14" />
+              </div>
+
               <!-- Agent -->
               <div class="col-agent cell-agent">
                 <!-- Color picker on the dot -->
@@ -166,17 +185,26 @@
                 </div>
               </div>
 
-              <!-- Shortcut -->
+              <!-- Shortcut: click to record a key combo -->
               <div class="col-kbd">
-                <div class="kbd">
-                  <input
-                    class="inp kbd-inp"
-                    :value="a.shortcut"
-                    placeholder="—"
-                    maxlength="4"
-                    @input="store.update(a.id, { shortcut: val($event) })"
-                  />
-                </div>
+                <button
+                  class="kbd-rec"
+                  :class="{ recording: recordingId === a.id, set: !!a.shortcut }"
+                  :title="recordingId === a.id ? 'Press keys… (Esc to cancel)' : 'Click to set shortcut'"
+                  @click="startRecording(a.id)"
+                  @keydown="onRecordKey(a.id, $event)"
+                  @blur="recordingId === a.id && (recordingId = null)"
+                >
+                  {{ recordingId === a.id ? "Press…" : (a.shortcut || "—") }}
+                </button>
+                <button
+                  v-if="a.shortcut && recordingId !== a.id"
+                  class="kbd-clear"
+                  title="Clear shortcut"
+                  @click.stop="store.update(a.id, { shortcut: '' })"
+                >
+                  <PhX :size="11" />
+                </button>
               </div>
 
               <!-- Actions -->
@@ -618,6 +646,7 @@ import {
   PhSlidersHorizontal, PhFolderOpen, PhRobot, PhPalette, PhKeyboard,
   PhPuzzlePiece, PhInfo, PhSparkle, PhCode, PhGitBranch, PhTerminal,
   PhListBullets, PhCaretDown, PhFolder, PhPencilSimple, PhCheck, PhBell, PhPlay,
+  PhDotsSixVertical,
 } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -716,6 +745,64 @@ loadConfigDirs();
 const flagDraft = ref("");
 const iconPickerId = ref<string | null>(null);
 const showTemplatePicker = ref(false);
+
+// --- Reorder (drag & drop) ---
+const dragIndex = ref<number | null>(null);
+const dragOverIndex = ref<number | null>(null);
+
+function onDragStart(i: number, e: DragEvent) {
+  dragIndex.value = i;
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+}
+function onDragOver(i: number) {
+  if (dragIndex.value !== null) dragOverIndex.value = i;
+}
+function onDrop(i: number) {
+  if (dragIndex.value !== null) store.move(dragIndex.value, i);
+  dragIndex.value = null;
+  dragOverIndex.value = null;
+}
+function onDragEnd() {
+  dragIndex.value = null;
+  dragOverIndex.value = null;
+}
+
+// --- Shortcut recorder ---
+const recordingId = ref<string | null>(null);
+
+function startRecording(id: string) {
+  recordingId.value = recordingId.value === id ? null : id;
+}
+
+// Build a shortcut string ("⌘⇧1") from a keydown event; null if only modifiers held.
+function eventToShortcut(e: KeyboardEvent): string | null {
+  const k = e.key;
+  if (["Meta", "Shift", "Alt", "Control"].includes(k)) return null;
+  let s = "";
+  if (e.metaKey) s += "⌘";
+  if (e.altKey) s += "⌥";
+  if (e.ctrlKey) s += "⌃";
+  if (e.shiftKey) s += "⇧";
+  // Digits via code so Shift/Option remapping (Shift+1 → "!") doesn't leak.
+  if (/^Digit[0-9]$/.test(e.code)) s += e.code.slice(5);
+  else if (k.length === 1) s += k.toUpperCase();
+  else s += k; // named keys (Enter, ArrowUp, …)
+  return s;
+}
+
+function onRecordKey(id: string, e: KeyboardEvent) {
+  if (recordingId.value !== id) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === "Escape") {
+    recordingId.value = null;
+    return;
+  }
+  const sc = eventToShortcut(e);
+  if (!sc) return; // wait for a non-modifier key
+  store.update(id, { shortcut: sc });
+  recordingId.value = null;
+}
 
 function toggleIconPicker(id: string) {
   iconPickerId.value = iconPickerId.value === id ? null : id;
@@ -985,10 +1072,11 @@ const SHORTCUT_GROUPS = [
   padding: 0 16px;
 }
 .col { font-size: 11px; font-weight: 500; color: #3a3a3a; }
+.col-grip { width: 22px; flex-shrink: 0; display: flex; justify-content: center; }
 .col-agent { width: 200px; flex-shrink: 0; }
 .col-cmd { width: 165px; flex-shrink: 0; }
 .col-args { flex: 1; min-width: 0; }
-.col-kbd { width: 84px; flex-shrink: 0; display: flex; justify-content: center; }
+.col-kbd { width: 84px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 4px; }
 .col-act { width: 52px; flex-shrink: 0; display: flex; justify-content: flex-end; }
 
 .row {
@@ -1000,6 +1088,17 @@ const SHORTCUT_GROUPS = [
   border: 1px solid #1e1e1e;
   border-radius: 6px;
 }
+
+.row.dragging { opacity: 0.4; }
+.row.drag-over { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+
+.grip {
+  color: #3a3a3a;
+  cursor: grab;
+  align-items: center;
+}
+.grip:hover { color: #888; }
+.grip:active { cursor: grabbing; }
 
 .cell-agent { display: flex; align-items: center; gap: 8px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
@@ -1128,21 +1227,40 @@ const SHORTCUT_GROUPS = [
   text-overflow: ellipsis;
 }
 
-.kbd {
+.kbd-rec {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: #141414;
   border: 1px solid #252525;
   border-radius: 4px;
-  padding: 3px 7px;
-  width: 44px;
-}
-.kbd-inp {
+  padding: 4px 7px;
+  min-width: 44px;
   color: #777;
+  font-family: var(--font-ui);
   font-size: 11px;
-  text-align: center;
+  cursor: pointer;
 }
+.kbd-rec:hover { color: #aaa; border-color: #3a3a3a; }
+.kbd-rec.set { color: #cbd5e1; }
+.kbd-rec.recording {
+  color: #a78bfa;
+  border-color: #7c3aed66;
+  background: #7c3aed14;
+}
+.kbd-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #444;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.kbd-clear:hover { color: var(--red); background: rgba(239,68,68,0.12); }
 
 .row-del {
   background: none;

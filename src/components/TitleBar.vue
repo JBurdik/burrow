@@ -15,15 +15,61 @@
       </span>
     </div>
 
-    <div class="titlebar-end" data-tauri-drag-region />
+    <div class="titlebar-end">
+      <div class="tb-menu-wrap">
+        <button
+          class="tb-btn"
+          title="Open folder in…"
+          :disabled="!folderPath"
+          @click.stop="menuOpen = !menuOpen"
+        >
+          <PhFolderOpen :size="14" />
+          <PhCaretDown :size="9" />
+        </button>
+        <div v-if="menuOpen" class="tb-menu" @click.stop>
+          <button class="tb-menu-item" @click="openIn('finder')"><PhFolderNotchOpen :size="14" />Reveal in Finder</button>
+          <button class="tb-menu-item" @click="openIn('vscode')"><PhCode :size="14" />Open in VS Code</button>
+          <button class="tb-menu-item" @click="openIn('zed')"><PhLightning :size="14" />Open in Zed</button>
+        </div>
+      </div>
+      <button
+        class="tb-btn"
+        :class="{ on: rightPanelVisible }"
+        :title="rightPanelVisible ? 'Hide explorer & git' : 'Show explorer & git'"
+        @click="$emit('toggle-rightpanel')"
+      >
+        <PhSidebarSimple :size="14" />
+      </button>
+      <button class="tb-btn" title="Settings (⌘,)" @click="$emit('open-settings')">
+        <PhGear :size="14" />
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { PhHouse, PhGitBranch } from "@phosphor-icons/vue";
+import { ref, onMounted, onBeforeUnmount } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning } from "@phosphor-icons/vue";
 
-defineProps<{ workspaceName?: string; branch?: string }>();
-defineEmits(["back"]);
+const props = defineProps<{ workspaceName?: string; branch?: string; folderPath?: string; rightPanelVisible?: boolean }>();
+defineEmits(["back", "toggle-rightpanel", "open-settings"]);
+
+const menuOpen = ref(false);
+
+async function openIn(target: "finder" | "vscode" | "zed") {
+  menuOpen.value = false;
+  if (!props.folderPath) return;
+  try {
+    await invoke("open_path_in", { path: props.folderPath, target });
+  } catch (e) {
+    console.error("open_path_in failed", e);
+  }
+}
+
+function onDocClick() { menuOpen.value = false; }
+onMounted(() => window.addEventListener("click", onDocClick));
+onBeforeUnmount(() => window.removeEventListener("click", onDocClick));
 
 const isDev = import.meta.env.DEV;
 </script>
@@ -88,7 +134,60 @@ const isDev = import.meta.env.DEV;
 }
 
 .titlebar-end {
-  width: 72px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 8px;
   flex-shrink: 0;
+  -webkit-app-region: no-drag;
 }
+
+.tb-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 4px 5px;
+  border-radius: 4px;
+  -webkit-app-region: no-drag;
+}
+.tb-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.tb-btn.on { color: var(--accent); }
+.tb-btn:disabled { opacity: 0.35; cursor: default; }
+.tb-btn:disabled:hover { background: none; color: var(--text-secondary); }
+
+.tb-menu-wrap { position: relative; display: flex; }
+
+.tb-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 168px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+}
+
+.tb-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.tb-menu-item:hover { background: var(--bg-hover); color: var(--text-primary); }
 </style>

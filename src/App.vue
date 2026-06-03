@@ -1,6 +1,14 @@
 <template>
   <div class="ide-root">
-    <TitleBar :workspace-name="ws.active?.name" :branch="git.branch" @back="ws.close()" />
+    <TitleBar
+      :workspace-name="ws.active?.name"
+      :branch="git.branch"
+      :folder-path="ws.active?.path"
+      :right-panel-visible="ui.rightPanelVisible"
+      @back="ws.close()"
+      @toggle-rightpanel="ui.toggleRightPanel()"
+      @open-settings="ui.openSettings()"
+    />
     <Settings v-if="ui.settingsOpen" @close="ui.closeSettings()" />
     <div class="ide-body" :class="{ 'panels-swapped': ui.swapPanels }" :style="panelStyles">
       <Sidebar class="panel-sidebar" />

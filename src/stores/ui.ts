@@ -122,6 +122,11 @@ export const useUIStore = defineStore("ui", () => {
   // and the diff viewer (DiffTab.vue), which can't read CSS vars.
   const activeTheme = computed(() => findTheme(theme.value));
 
+  // Whole-UI zoom factor applied to #app. The terminal must counter-zoom by 1/this
+  // and scale its own font by this instead — CSS `zoom` on an ancestor breaks
+  // xterm.js mouse-selection coordinate math (selection lands on the wrong rows).
+  const effectiveScale = computed(() => uiScale.value * (uiFontSize.value / BASE_FONT_SIZE));
+
   // Apply the active theme's colors as CSS custom properties on :root, so all
   // chrome styled via var(--bg-base) etc. repaints. Font + layout vars are left
   // alone (they're not part of a theme).
@@ -171,7 +176,7 @@ export const useUIStore = defineStore("ui", () => {
       // scale with the font-size ratio (relative to the baseline). Use CSS `zoom`
       // (not `transform: scale`) so text re-rasterizes crisply at the real DPI —
       // `transform` scales a 1x bitmap and looks blurry on macOS WKWebView.
-      const scale = uiScale.value * (uiFontSize.value / BASE_FONT_SIZE);
+      const scale = effectiveScale.value;
       const app = document.getElementById("app");
       if (app) {
         // zoom magnifies layout, so shrink the box by 1/scale first — after zoom it
@@ -214,6 +219,7 @@ export const useUIStore = defineStore("ui", () => {
     uiFont,
     uiFontSize,
     uiScale,
+    effectiveScale,
     terminalFont,
     terminalFontSize,
     swapPanels,

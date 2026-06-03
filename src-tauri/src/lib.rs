@@ -643,6 +643,57 @@ fn run_git(cwd: String, args: Vec<String>) -> GitOutput {
     }
 }
 
+// ── Open path in external app ─────────────────────────────────────────────────
+// target: "finder" (reveal in Finder/Explorer), "vscode", "zed".
+#[cfg(target_os = "macos")]
+fn first_existing(paths: &[&str]) -> Option<String> {
+    paths.iter().find(|p| std::path::Path::new(p).exists()).map(|p| p.to_string())
+}
+
+#[tauri::command]
+fn open_path_in(path: String, target: String) -> Result<(), String> {
+    // On macOS, `open -a App <folder>` just foregrounds an already-running editor
+    // instead of opening the folder. Use the editor's own CLI (which opens the
+    // path as a project/workspace), falling back to `open -a` if no CLI is found.
+    #[cfg(target_os = "macos")]
+    let mut cmd = match target.as_str() {
+        "vscode" => {
+            match first_existing(&[
+                "/opt/homebrew/bin/code",
+                "/usr/local/bin/code",
+                "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+            ]) {
+                Some(bin) => { let mut c = std::process::Command::new(bin); c.arg(&path); c }
+                None => { let mut c = std::process::Command::new("open"); c.args(["-a", "Visual Studio Code", &path]); c }
+            }
+        }
+        "zed" => {
+            match first_existing(&[
+                "/opt/homebrew/bin/zed",
+                "/usr/local/bin/zed",
+                "/Applications/Zed.app/Contents/MacOS/cli",
+            ]) {
+                Some(bin) => { let mut c = std::process::Command::new(bin); c.arg(&path); c }
+                None => { let mut c = std::process::Command::new("open"); c.args(["-a", "Zed", &path]); c }
+            }
+        }
+        _ => { let mut c = std::process::Command::new("open"); c.arg(&path); c }
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = match target.as_str() {
+        "vscode" => { let mut c = std::process::Command::new("code"); c.arg(&path); c }
+        "zed" => { let mut c = std::process::Command::new("zed"); c.arg(&path); c }
+        _ => { let mut c = std::process::Command::new("explorer"); c.arg(&path); c }
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = match target.as_str() {
+        "vscode" => { let mut c = std::process::Command::new("code"); c.arg(&path); c }
+        "zed" => { let mut c = std::process::Command::new("zed"); c.arg(&path); c }
+        _ => { let mut c = std::process::Command::new("xdg-open"); c.arg(&path); c }
+    };
+    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 // ── File system commands ──────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -841,9 +892,20 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_decorum::init())
         .setup(|app| {
             let conn = init_db(app.handle()).expect("DB init failed");
             app.manage(DbState { conn: Mutex::new(conn) });
+
+            // Vertically center the native traffic lights in the 36px titlebar.
+            // (--titlebar-height = 36; button cluster ~16px tall → y ≈ 10.)
+            #[cfg(target_os = "macos")]
+            {
+                use tauri_plugin_decorum::WebviewWindowExt;
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_traffic_lights_inset(13.0, 10.0);
+                }
+            }
 
             // Connect to (or spawn) burrow-daemon
             let data_dir = app.path().app_data_dir().expect("no app data dir");
@@ -877,6 +939,7 @@ pub fn run() {
             get_config_dirs,
             set_config_dirs,
             run_git,
+            open_path_in,
             read_dir_shallow,
             list_workspaces,
             create_workspace,

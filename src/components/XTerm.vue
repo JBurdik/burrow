@@ -1,9 +1,9 @@
 <template>
-  <div class="xterm-host" ref="hostEl" />
+  <div class="xterm-host" :style="hostStyle" ref="hostEl" />
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -16,6 +16,20 @@ const props = defineProps<{ ptyId: number; cwd: string; initialCmd?: string; res
 const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string]; agent: [b: boolean] }>();
 
 const ui = useUIStore();
+
+// The UI is magnified with CSS `zoom` on #app (see ui.ts). xterm.js measures its
+// cell size from `offsetHeight` (UNZOOMED layout px) but computes mouse coords from
+// `getBoundingClientRect` + clientY (ZOOMED visual px) — under any ancestor zoom the
+// two disagree and the selection lands a row or two BELOW the cursor. Fix: counter-
+// zoom the host back to net-zoom-1 (so both measurements share one coordinate space)
+// and re-grow it to `scale*100%` so it still fills the pane in WebKit's zoom model.
+// Text size is then preserved by scaling xterm's own fontSize by the same factor.
+const hostStyle = computed(() => {
+  const s = ui.effectiveScale;
+  if (s === 1) return {};
+  return { flex: "none", zoom: String(1 / s), width: `${s * 100}%`, height: `${s * 100}%` };
+});
+const scaledFontSize = () => ui.terminalFontSize * ui.effectiveScale;
 
 const hostEl = ref<HTMLElement>();
 let term: Terminal;
@@ -57,7 +71,7 @@ onMounted(async () => {
   term = new Terminal({
     theme: ui.activeTheme.xterm,
     fontFamily: ui.terminalFont,
-    fontSize: ui.terminalFontSize,
+    fontSize: scaledFontSize(),
     lineHeight: 1.4,
     cursorBlink: true,
     cursorStyle: "bar",
@@ -256,13 +270,16 @@ onBeforeUnmount(async () => {
   term?.dispose();
 });
 
-// Live-apply terminal font preference changes.
+// Live-apply terminal font + UI-scale changes. fontSize carries the zoom factor
+// (the host is counter-zoomed to net 1, so the real visual size comes from here).
+// The hostStyle box change also nudges the ResizeObserver; refit here too so the
+// font change alone re-fits even when the box dimensions are unchanged.
 watch(
-  () => [ui.terminalFont, ui.terminalFontSize],
-  ([font, size]) => {
+  () => [ui.terminalFont, ui.terminalFontSize, ui.effectiveScale],
+  ([font]) => {
     if (!term) return;
     term.options.fontFamily = font as string;
-    term.options.fontSize = size as number;
+    term.options.fontSize = scaledFontSize();
     fitAddon?.fit();
     invoke("resize_pty", { id: props.ptyId, cols: term.cols, rows: term.rows });
   },

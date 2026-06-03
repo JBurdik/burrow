@@ -35,12 +35,11 @@
       :title="ui.rightPanelVisible ? 'Hide side panel' : 'Show side panel'"
       @click="ui.toggleRightPanel()"
     />
-    <PhGear :size="14" class="toolbar-icon" title="Settings (⌘,)" @click="ui.openSettings()" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { PhCaretRight, PhActivity, PhGear, PhSidebar, PhRobot, PhSparkle, PhCode, PhGitBranch, PhTerminal } from "@phosphor-icons/vue";
+import { PhCaretRight, PhActivity, PhSidebar, PhRobot, PhSparkle, PhCode, PhGitBranch, PhTerminal } from "@phosphor-icons/vue";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import OpenAIIcon from "@/components/icons/OpenAIIcon.vue";
 import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
