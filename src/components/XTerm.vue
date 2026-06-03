@@ -165,20 +165,6 @@ onMounted(async () => {
   term.loadAddon(new WebLinksAddon());
   term.open(hostEl.value!);
 
-  // Neutralize synchronized-output mode (DEC private mode 2026). The GitHub
-  // Copilot CLI (and other Ink TUIs) wrap every frame in `?2026h … frame … ?2026l`.
-  // xterm.js 6.0.0 buffers all row repaints while the mode is on and only paints
-  // on the closing `?2026l`; inside Burrow that flush never lands, so copilot's
-  // alt-screen stayed permanently blank (Claude Code, which doesn't use 2026,
-  // was fine). Swallow just the 2026 set/reset so the mode never engages — every
-  // frame paints immediately, exactly like a terminal that doesn't advertise 2026,
-  // where copilot renders correctly. Only consume a lone `?2026`, so combined
-  // sequences (e.g. `?1049;2026h`) still reach xterm's built-in handler.
-  const isLone2026 = (params: (number | number[])[]) =>
-    params.length === 1 && (Array.isArray(params[0]) ? params[0][0] : params[0]) === 2026;
-  term.parser.registerCsiHandler({ prefix: "?", final: "h" }, isLone2026);
-  term.parser.registerCsiHandler({ prefix: "?", final: "l" }, isLone2026);
-
   applyCounterZoom();
   safeFit();
   deferredFit();

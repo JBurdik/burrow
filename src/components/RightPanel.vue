@@ -199,7 +199,8 @@ function diffLineClass(line: string) {
 
 <style scoped>
 .right-panel {
-  width: var(--right-panel-width);
+  width: var(--right-panel-width, 300px);
+  flex: 0 0 var(--right-panel-width, 300px);
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
   display: flex;

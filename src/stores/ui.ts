@@ -185,9 +185,13 @@ export const useUIStore = defineStore("ui", () => {
       if (app) {
         // zoom magnifies layout, so shrink the box by 1/scale first — after zoom it
         // lands exactly at the window size (otherwise content overflows on the right).
+        // Counter-size in `%` (of the unzoomed <body>), NOT vw/vh: macOS WKWebView
+        // evaluates viewport units against the *zoomed* viewport, double-counting the
+        // scale, so `(100/scale)vw` landed short and left empty bands on the right and
+        // bottom when scale ≠ 1. `%` resolves against <body>, which isn't zoomed.
         app.style.setProperty("zoom", scale === 1 ? "" : String(scale));
-        app.style.width = scale === 1 ? "" : `${100 / scale}vw`;
-        app.style.height = scale === 1 ? "" : `${100 / scale}vh`;
+        app.style.width = scale === 1 ? "" : `${100 / scale}%`;
+        app.style.height = scale === 1 ? "" : `${100 / scale}%`;
       }
     },
     { immediate: true },

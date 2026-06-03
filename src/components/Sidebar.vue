@@ -453,7 +453,8 @@ async function confirmCreate() {
 
 <style scoped>
 .sidebar {
-  width: var(--sidebar-width);
+  width: var(--sidebar-width, 220px);
+  flex: 0 0 var(--sidebar-width, 220px);
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex;
