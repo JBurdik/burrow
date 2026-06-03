@@ -1,6 +1,6 @@
 [package]
 name = "agentic-ide"
-version = "0.2.6"
+version = "0.2.7"
 description = "Burrow - AI-powered terminal IDE"
 authors = []
 license = ""
