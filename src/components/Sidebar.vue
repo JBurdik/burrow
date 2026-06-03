@@ -600,10 +600,17 @@ async function confirmCreate() {
   border-radius: 0;
   width: auto;
   height: auto;
-  color: #f97316;
-  font-size: 11px;
+  color: #fb923c;
+  font-size: 14px;
   line-height: 1;
   font-family: monospace;
+  font-weight: 700;
+  text-shadow: 0 0 6px rgba(249, 115, 22, 0.9), 0 0 12px rgba(249, 115, 22, 0.5);
+  animation: running-glow 1.4s ease-in-out infinite;
+}
+@keyframes running-glow {
+  0%, 100% { opacity: 0.7; text-shadow: 0 0 4px rgba(249, 115, 22, 0.7); }
+  50%      { opacity: 1;   text-shadow: 0 0 8px rgba(249, 115, 22, 1), 0 0 14px rgba(249, 115, 22, 0.6); }
 }
 .status-dot.status-waiting { background: #3b82f6; }
 .status-dot.status-done    { background: #84cc16; }

@@ -27,7 +27,9 @@ use tokio::sync::{broadcast, RwLock};
 // ── Ring buffer ───────────────────────────────────────────────────────────────
 
 const RING_LIMIT: usize = 512 * 1024; // 512 KB per PTY
-const BROADCAST_CAP: usize = 512;
+// Generous so a bursty TUI repaint (Copilot/Claude) doesn't overrun a momentarily
+// busy client before it drains; on overrun we still resync via the ring snapshot.
+const BROADCAST_CAP: usize = 8192;
 
 struct RingBuffer {
     chunks: VecDeque<Vec<u8>>,
@@ -245,6 +247,13 @@ async fn cmd_attach(msg: &Value, id: u64, w: &WriterRef, state: &Arc<DaemonState
                     return Ok(());
                 }
             }
+            // Client fell behind and the channel dropped messages (a TUI flooding
+            // frames faster than the IPC drains). Just skip ahead — do NOT replay the
+            // ring snapshot here: the snapshot contains the app's terminal QUERIES
+            // (DA, DECRQM, OSC color), which xterm would answer AGAIN, feeding
+            // duplicate responses back into the app → a redraw/flood feedback loop
+            // (observed as Copilot emitting 500KB+ and never painting). The larger
+            // BROADCAST_CAP makes lag rare in the first place.
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(_) => return Ok(()),
         }
@@ -322,10 +331,6 @@ async fn spawn_session(
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut cmd = CommandBuilder::new(&shell);
-    // Login shell so ~/.zprofile / ~/.zlogin run — that's where many setups
-    // (nvm, fnm, homebrew shellenv, copilot) put PATH. Non-login only sourced
-    // ~/.zshrc, so those tools were missing inside Burrow PTYs.
-    cmd.arg("-l");
     cmd.cwd(&cwd);
     for (k, v) in &env {
         if let Some(s) = v.as_str() {

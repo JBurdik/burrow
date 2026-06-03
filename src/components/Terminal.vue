@@ -76,6 +76,7 @@
             @agent="(b) => onLeafAgent(pane.leaf.id, b)"
             @agent-state="(s) => onAgentState(pane.leaf.id, s)"
             @needs-input="(b) => onLeafNeedsInput(pane.leaf.id, b)"
+            @interrupt="() => onLeafInterrupt(pane.leaf.id)"
             @spawn="(req) => addTab(req.cmd, { cwd: req.cwd || undefined, resultToken: req.token || undefined })"
           />
         </div>
@@ -339,6 +340,13 @@ function isWatching(tab: Tab): boolean {
 // "review" badge (Superset-style) that survives until the tab is actually seen,
 // so cross-workspace completions aren't missed.
 function settleDone(leaf: Leaf, tab: Tab) {
+  // A single finished turn can emit two "done" signals back-to-back: a spawned
+  // sub-agent's per-launch `capture` Stop hook AND the global `burrow hook` Stop
+  // (both map to done), or the idle Notification ping that follows the Stop.
+  // Settle only once — if the leaf is already settled (not busy, already
+  // done/review) and no new turn has resurrected it via "running", ignore the
+  // duplicate so the sound + notification don't fire twice.
+  if (!leaf.busy && (leaf.status === "done" || leaf.status === "review")) return;
   leaf.busy = false;
   clearTimeout(doneTimers.get(leaf.id));
   if (isWatching(tab)) {
@@ -404,6 +412,26 @@ async function notifyDone(leafTitle: string) {
       granted = perm === "granted";
     }
     if (granted) sendNotification({ title: "Burrow", body: `✓ ${body}` });
+  }
+}
+
+// User pressed ESC / Ctrl+C in the PTY — an agent interrupt. Agents emit no Stop
+// hook when a turn is cancelled and the foreground poll never clears an agent's
+// "running" (it stays foreground at its prompt), so without this the dot sticks
+// orange. The turn was CANCELLED, not completed → settle straight to idle (no
+// "done"/"review" badge, no sound). Only act on a live running/waiting leaf so a
+// stray ESC at an idle prompt is a harmless no-op.
+function onLeafInterrupt(id: number) {
+  for (const tab of tabs.value) {
+    const leaf = findLeaf(tab.root, id);
+    if (!leaf) continue;
+    if (leaf.status === "running" || leaf.status === "waiting") {
+      clearTimeout(doneTimers.get(id));
+      doneTimers.delete(id);
+      leaf.busy = false;
+      leaf.status = "idle";
+    }
+    break;
   }
 }
 
@@ -779,10 +807,17 @@ defineExpose({ addTab, spawnAgent, openDiffInTab });
   border-radius: 0;
   width: auto;
   height: auto;
-  color: #f97316;
-  font-size: 11px;
+  color: #fb923c;
+  font-size: 14px;
   line-height: 1;
   font-family: monospace;
+  font-weight: 700;
+  text-shadow: 0 0 6px rgba(249, 115, 22, 0.9), 0 0 12px rgba(249, 115, 22, 0.5);
+  animation: running-glow 1.4s ease-in-out infinite;
+}
+@keyframes running-glow {
+  0%, 100% { opacity: 0.7; text-shadow: 0 0 4px rgba(249, 115, 22, 0.7); }
+  50%      { opacity: 1;   text-shadow: 0 0 8px rgba(249, 115, 22, 1), 0 0 14px rgba(249, 115, 22, 0.6); }
 }
 .status-dot.status-waiting { background: #3b82f6; }
 .status-dot.status-done    { background: #84cc16; }

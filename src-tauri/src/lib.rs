@@ -62,6 +62,8 @@ fn burrow_session_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
 struct ConfigDirs {
     claude: Vec<String>,
     codex: Vec<String>,
+    #[serde(default)]
+    copilot: Vec<String>,
 }
 
 fn config_dirs_path(app: &AppHandle) -> Option<PathBuf> {
@@ -80,7 +82,17 @@ fn load_config_dirs(app: &AppHandle) -> ConfigDirs {
     if let Some(path) = config_dirs_path(app) {
         if let Ok(s) = std::fs::read_to_string(&path) {
             if let Ok(cd) = serde_json::from_str::<ConfigDirs>(&s) {
-                return ConfigDirs { claude: dedup(cd.claude), codex: dedup(cd.codex) };
+                // Seed Copilot defaults for configs persisted before Copilot support existed.
+                let copilot = if cd.copilot.is_empty() {
+                    default_copilot_dirs(app)
+                } else {
+                    cd.copilot
+                };
+                return ConfigDirs {
+                    claude: dedup(cd.claude),
+                    codex: dedup(cd.codex),
+                    copilot: dedup(copilot),
+                };
             }
         }
     }
@@ -98,7 +110,23 @@ fn load_config_dirs(app: &AppHandle) -> ConfigDirs {
     if let Ok(d) = std::env::var("CODEX_HOME") {
         codex.push(d);
     }
-    ConfigDirs { claude: dedup(claude), codex: dedup(codex) }
+    ConfigDirs {
+        claude: dedup(claude),
+        codex: dedup(codex),
+        copilot: dedup(default_copilot_dirs(app)),
+    }
+}
+
+/// Copilot CLI config dirs: ~/.copilot plus any $COPILOT_HOME the app inherited.
+fn default_copilot_dirs(app: &AppHandle) -> Vec<String> {
+    let mut copilot = Vec::new();
+    if let Ok(h) = app.path().home_dir() {
+        copilot.push(h.join(".copilot").to_string_lossy().to_string());
+    }
+    if let Ok(d) = std::env::var("COPILOT_HOME") {
+        copilot.push(d);
+    }
+    copilot
 }
 
 fn save_config_dirs(app: &AppHandle, cd: &ConfigDirs) {
@@ -222,6 +250,50 @@ fn install_status_hooks(app: &AppHandle) {
     for d in &dirs.codex {
         merge_status_hooks(&Path::new(d).join("hooks.json"), &codex_events, &cmd);
     }
+
+    // Copilot CLI: a *separate* schema — its own file per hook config at
+    // <copilot-dir>/hooks/<name>.json (NOT merged into a shared settings file),
+    // camelCase event names, and command objects keyed by "bash" not "command".
+    // Because each event has its own array, we bake the target state straight into
+    // the command (`burrow status <state>`) instead of routing through `burrow hook`
+    // and parsing Copilot's stdin schema. We own the whole `burrow.json` file, so we
+    // write/remove it wholesale rather than merging.
+    for d in &dirs.copilot {
+        write_copilot_hooks(&Path::new(d).join("hooks").join("burrow.json"), &burrow);
+    }
+}
+
+// Build + write Copilot's dedicated hooks file. State is embedded per-event; the
+// command no-ops outside a Burrow PTY (BURROW_PTY_ID unset).
+fn write_copilot_hooks(path: &Path, burrow: &Path) {
+    let bash = |state: &str| {
+        json!([{
+            "type": "command",
+            "bash": format!("[ -n \"$BURROW_PTY_ID\" ] && '{}' status {} || true", burrow.display(), state),
+            "timeoutSec": 5
+        }])
+    };
+    let doc = json!({
+        "version": 1,
+        "hooks": {
+            "userPromptSubmitted": bash("running"),
+            "preToolUse": bash("running"),
+            "postToolUse": bash("running"),
+            // Copilot fires `notification` when it needs the user (permission/input
+            // prompt) — verified empirically: it fires on a permission request but
+            // NOT on a normal `--allow-all` turn. Map it to `waiting` so the tab gets
+            // the blue need-input dot, mirroring Claude's Notification handling.
+            "notification": bash("waiting"),
+            "agentStop": bash("done"),
+            "sessionEnd": bash("done"),
+        }
+    });
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(s) = serde_json::to_string_pretty(&doc) {
+        let _ = std::fs::write(path, s);
+    }
 }
 
 // Reverse of merge_status_hooks: drop every hook group whose command is ours
@@ -267,6 +339,10 @@ fn uninstall_status_hooks(app: &AppHandle) {
     for d in &dirs.codex {
         unmerge_status_hooks(&Path::new(d).join("hooks.json"));
     }
+    // Copilot: we own the whole file, so just delete it.
+    for d in &dirs.copilot {
+        let _ = std::fs::remove_file(Path::new(d).join("hooks").join("burrow.json"));
+    }
 }
 
 /// Re-install the global status hooks (idempotent). Exposed so the UI/CLI can
@@ -292,8 +368,8 @@ fn get_config_dirs(app: AppHandle) -> ConfigDirs {
 /// Persist a new set of agent config dirs, then re-install hooks + docs into them.
 /// Returns the cleaned/deduped list that was saved.
 #[tauri::command]
-fn set_config_dirs(app: AppHandle, claude: Vec<String>, codex: Vec<String>) -> ConfigDirs {
-    let cd = ConfigDirs { claude: dedup(claude), codex: dedup(codex) };
+fn set_config_dirs(app: AppHandle, claude: Vec<String>, codex: Vec<String>, copilot: Vec<String>) -> ConfigDirs {
+    let cd = ConfigDirs { claude: dedup(claude), codex: dedup(codex), copilot: dedup(copilot) };
     save_config_dirs(&app, &cd);
     ensure_burrow_bin(&app);
     install_status_hooks(&app);
@@ -899,6 +975,8 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_decorum::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let conn = init_db(app.handle()).expect("DB init failed");
             app.manage(DbState { conn: Mutex::new(conn) });

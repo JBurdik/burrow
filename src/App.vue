@@ -38,6 +38,7 @@
       @open-settings="ui.openSettings()"
     />
     <ToastStack />
+    <UpdateBanner />
 
     <!-- Keyboard cheatsheet overlay (⌘/) -->
     <Teleport to="body">
@@ -75,10 +76,12 @@ import RightPanel from "@/components/RightPanel.vue";
 import Settings from "@/components/Settings.vue";
 import Spotlight from "@/components/Spotlight.vue";
 import ToastStack from "@/components/ToastStack.vue";
+import UpdateBanner from "@/components/UpdateBanner.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
 import { useGitStore } from "@/stores/git";
 import { useAgentsStore } from "@/stores/agents";
+import { useUpdateStore } from "@/stores/update";
 import { matchesShortcut } from "@/lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
@@ -131,6 +134,7 @@ const ws = useWorkspaceStore();
 const ui = useUIStore();
 const git = useGitStore();
 const agents = useAgentsStore();
+const update = useUpdateStore();
 const spotlightRef = ref<InstanceType<typeof Spotlight> | null>(null);
 const cheatsheetOpen = ref(false);
 
@@ -193,16 +197,23 @@ async function openNewWorkspace() {
   await ws.create(name, dir);
 }
 
+// Check for updates at startup (after a short delay so it doesn't compete with
+// the initial PTY/workspace load) and every 6 hours after. Silent: failures in
+// browser-only dev (no Tauri) are swallowed.
+let updateTimer: number | undefined;
 onMounted(() => {
   ws.load();
   window.addEventListener("keydown", onKeydown);
   window.addEventListener('mousemove', onResizeMove);
   window.addEventListener('mouseup', onResizeUp);
+  setTimeout(() => update.check({ silent: true }), 3000);
+  updateTimer = window.setInterval(() => update.check({ silent: true }), 6 * 60 * 60 * 1000);
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
   window.removeEventListener('mousemove', onResizeMove);
   window.removeEventListener('mouseup', onResizeUp);
+  if (updateTimer) clearInterval(updateTimer);
 });
 
 function onKeydown(e: KeyboardEvent) {

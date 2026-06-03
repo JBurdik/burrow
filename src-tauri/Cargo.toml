@@ -1,6 +1,6 @@
 [package]
 name = "agentic-ide"
-version = "0.1.0"
+version = "0.2.0"
 description = "Burrow - AI-powered terminal IDE"
 authors = []
 license = ""
@@ -40,6 +40,8 @@ base64 = "0.22"
 log = "0.4"
 tiny_http = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros"] }
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
 
 [profile.release]
 panic = "abort"

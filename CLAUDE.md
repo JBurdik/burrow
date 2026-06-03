@@ -93,7 +93,7 @@ Frontend: each `Terminal.vue` polls `take_spawn_requests(cwd)` every 1 s; the Ru
 
 **Agent docs install** (`install_agent_docs`, called once at Tauri `setup`): teaches agents the CLI. Claude → global skill `~/.claude/skills/burrow/SKILL.md`; Codex → managed `<!-- BURROW:BEGIN/END -->` block in `~/.codex/AGENTS.md` (non-destructive merge). Doc strings are `BURROW_SKILL_MD` / `BURROW_AGENT_DOC` consts in `lib.rs`.
 
-**Status hooks install** (`install_status_hooks`, also at `setup`): merges the `burrow hook` status hook into `~/.claude/settings.json` + `~/.codex/hooks.json` via `merge_status_hooks` (parse → append-if-absent → `.burrow-bak`). Skips files it can't parse. This is what gives every agent session a status dot. Reverse via `unmerge_status_hooks` (drops only entries matching the `BURROW_PTY_ID`+`hook` marker, leaving the user's/Superset's hooks). Exposed as Tauri commands `reinstall_status_hooks` / `remove_status_hooks` for repair/teardown without a restart.
+**Status hooks install** (`install_status_hooks`, also at `setup`): merges the `burrow hook` status hook into `~/.claude/settings.json` + `~/.codex/hooks.json` via `merge_status_hooks` (parse → append-if-absent → `.burrow-bak`). **Copilot CLI** uses a different schema (its own file per config at `~/.copilot/hooks/<name>.json`, camelCase events, `"bash"` field not `"command"`), so it gets a dedicated `write_copilot_hooks` that writes a self-owned `hooks/burrow.json` wholesale (each event bakes in `burrow status <state>` directly — no `burrow hook` stdin parse needed; deleted wholesale on uninstall). Skips files it can't parse. This is what gives every agent session a status dot. Reverse via `unmerge_status_hooks` (drops only entries matching the `BURROW_PTY_ID`+`hook` marker, leaving the user's/Superset's hooks). Exposed as Tauri commands `reinstall_status_hooks` / `remove_status_hooks` for repair/teardown without a restart.
 
 ### Backend (`src-tauri/src/lib.rs`)
 
@@ -112,6 +112,16 @@ All Tauri commands are in `lib.rs`. Key areas:
 | `\x1b]9998;done\x07` | PTY → app | Claude hook: turn complete |
 
 OSC 9998 status writes go to `/dev/tty` with `2>/dev/null || true` (tolerated when no tty; status then falls back to `get_pty_foreground` polling). **`burrow spawn`/`wait`/`capture` do NOT use OSC** — they exchange files in `BURROW_SESSION_DIR` (`requests/` dirs in, `<token>.result`/`.done` out), because agent subprocesses have no controlling tty. `XTerm.vue` retains a latent `OSC 9999;spawn` parser but nothing emits it.
+
+## Auto-update
+
+Tauri's official updater (`tauri-plugin-updater` + `@tauri-apps/plugin-updater`, plus `tauri-plugin-process` for relaunch). Updates hosted on **GitHub Releases** at `JBurdik/burrow` (public). Endpoint in `tauri.conf.json`: `https://github.com/JBurdik/burrow/releases/latest/download/latest.json` — GitHub's `latest/download` alias always resolves to the newest release's `latest.json`, so the endpoint never changes per version.
+
+**Signing:** updater artifacts signed with an ed25519 keypair (separate from the Apple codesign identity). Private key `~/.tauri/burrow_updater.key`, password in login Keychain (`BURROW_UPDATER_PWD`). **Public** key baked into `tauri.conf.json` `plugins.updater.pubkey`. `bundle.createUpdaterArtifacts: true` makes the build emit `Burrow.app.tar.gz` + `.sig` next to the dmg.
+
+**Frontend:** `src/stores/update.ts` (Pinia) wraps `check()`/`downloadAndInstall()`/`relaunch()` — plugin imports are lazy so browser-only `pnpm dev` (no Tauri) doesn't crash. `App.vue` calls `update.check({silent:true})` 3 s after mount and every 6 h. `UpdateBanner.vue` = persistent floating card (bottom-right): *available* → Install/Later (Later dismisses **per-version** via localStorage so a newer one re-nags), *downloading* → progress bar, *installed* → Restart. Settings → **About** tab mirrors it with the live app version (`@tauri-apps/api/app` `getVersion`) + manual "Check for updates".
+
+**Releasing (`just release [patch|minor|major]`, default patch):** `just bump` lifts the version in lockstep across `tauri.conf.json` + `package.json` + `Cargo.toml`; then build (signed) → notarize/staple dmg → generate `latest.json` (version, notes from git log since last tag, `pub_date`, `darwin-aarch64` url + signature) → commit bump → tag `vX.Y.Z` → push → `gh release create` with dmg + `Burrow.app.tar.gz` + `.sig` + `latest.json`. `version :=` in the justfile reads `tauri.conf.json` live (single source of truth). First-time only: `just gh-init` creates the public repo + `origin` remote. Keychain creds: `BURROW_NOTARY_PWD` (Apple) + `BURROW_UPDATER_PWD` (updater key).
 
 ## Documentation (`docs/`)
 

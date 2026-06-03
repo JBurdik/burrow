@@ -46,6 +46,7 @@ interface Prefs {
   soundWaitingCustomPath: string;
   soundVolume: number; // 0-100
   maxAgents: number; // soft per-workspace sub-agent cap for the /burrow skill
+  debugOverlay: boolean; // show the per-terminal diagnostic overlay (XTerm.vue)
 }
 
 // The px sizes in the stylesheets are authored at this baseline. `zoom` scales
@@ -71,6 +72,7 @@ const DEFAULT_PREFS: Prefs = {
   soundWaitingCustomPath: "",
   soundVolume: 70,
   maxAgents: 3,
+  debugOverlay: false,
 };
 
 function loadPrefs(): Prefs {
@@ -109,6 +111,7 @@ export const useUIStore = defineStore("ui", () => {
   const soundWaitingCustomPath = ref(loaded.soundWaitingCustomPath);
   const soundVolume = ref(loaded.soundVolume);
   const maxAgents = ref(loaded.maxAgents);
+  const debugOverlay = ref(loaded.debugOverlay);
 
   // Publish the soft sub-agent cap to a file the `burrow` CLI can read (it can't
   // see localStorage). No-op in browser-only dev where Tauri invoke is absent.
@@ -146,7 +149,7 @@ export const useUIStore = defineStore("ui", () => {
   watch(
     [uiFont, uiFontSize, uiScale, terminalFont, terminalFontSize, swapPanels, theme,
      soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
-     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents],
+     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay],
     () => {
       localStorage.setItem(
         PREFS_KEY,
@@ -168,6 +171,7 @@ export const useUIStore = defineStore("ui", () => {
           soundWaitingCustomPath: soundWaitingCustomPath.value,
           soundVolume: soundVolume.value,
           maxAgents: maxAgents.value,
+          debugOverlay: debugOverlay.value,
         } satisfies Prefs),
       );
       applyTheme();
@@ -238,6 +242,7 @@ export const useUIStore = defineStore("ui", () => {
     soundWaitingCustomPath,
     soundVolume,
     maxAgents,
+    debugOverlay,
     openSettings,
     closeSettings,
     toggleSettings,

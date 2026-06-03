@@ -191,7 +191,7 @@
                   class="kbd-rec"
                   :class="{ recording: recordingId === a.id, set: !!a.shortcut }"
                   :title="recordingId === a.id ? 'Press keys… (Esc to cancel)' : 'Click to set shortcut'"
-                  @click="startRecording(a.id)"
+                  @click="startRecording(a.id, $event)"
                   @keydown="onRecordKey(a.id, $event)"
                   @blur="recordingId === a.id && (recordingId = null)"
                 >
@@ -227,8 +227,9 @@
               Burrow installs its status hooks (<code>settings.json</code> / <code>hooks.json</code>)
               and the <code>burrow</code> agent docs into these dirs. Add the dir an agent uses if
               you point it elsewhere — e.g. a per-project <code>CLAUDE_CONFIG_DIR</code> or
-              <code>CODEX_HOME</code>. Defaults (<code>~/.claude</code>, <code>~/.codex</code>) plus
-              any value set in Burrow's own environment at launch are seeded automatically.
+              <code>CODEX_HOME</code>. Defaults (<code>~/.claude</code>, <code>~/.codex</code>,
+              <code>~/.copilot</code>) plus any value set in Burrow's own environment at launch
+              are seeded automatically.
             </p>
 
             <div class="cfg-col">
@@ -254,6 +255,19 @@
               </div>
               <button class="add-btn cfg-add" @click="codexDirs.push('')">
                 <PhPlus :size="11" /> Add Codex dir
+              </button>
+            </div>
+
+            <div class="cfg-col">
+              <span class="cfg-col-label">Copilot (<code>COPILOT_HOME</code>)</span>
+              <div v-for="(_, i) in copilotDirs" :key="'p' + i" class="cfg-row">
+                <input v-model="copilotDirs[i]" class="select cfg-inp" placeholder="/path/to/.copilot" spellcheck="false" />
+                <button class="row-del" title="Remove" @click="copilotDirs.splice(i, 1)">
+                  <PhTrash :size="13" />
+                </button>
+              </div>
+              <button class="add-btn cfg-add" @click="copilotDirs.push('')">
+                <PhPlus :size="11" /> Add Copilot dir
               </button>
             </div>
 
@@ -408,6 +422,20 @@
               </div>
               <label class="toggle">
                 <input type="checkbox" :checked="ui.swapPanels" @change="ui.swapPanels = ($event.target as HTMLInputElement).checked" />
+                <span class="toggle-track"><span class="toggle-thumb" /></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <span class="group-label">Developer</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Terminal debug overlay</span>
+                <span class="field-desc">Show per-terminal diagnostics (size, bytes, buffer)</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" :checked="ui.debugOverlay" @change="ui.debugOverlay = ($event.target as HTMLInputElement).checked" />
                 <span class="toggle-track"><span class="toggle-thumb" /></span>
               </label>
             </div>
@@ -629,6 +657,79 @@
           </div>
         </section>
 
+        <!-- About / Updates -->
+        <section v-else-if="active === 'about'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">About</h2>
+              <span class="sec-sub">Version &amp; updates</span>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <div class="settings-group">
+            <div class="about-id">
+              <div class="about-logo"><PhTerminalWindow :size="26" weight="duotone" /></div>
+              <div>
+                <div class="about-name">Burrow</div>
+                <div class="about-ver">Version {{ appVersion || "…" }}</div>
+              </div>
+            </div>
+
+            <div class="update-box">
+              <div class="update-box-row">
+                <div class="update-box-text">
+                  <template v-if="update.installed">
+                    <span class="upd-strong">Update installed</span>
+                    <span class="upd-dim">Restart to finish updating to v{{ update.newVersion }}.</span>
+                  </template>
+                  <template v-else-if="update.downloading">
+                    <span class="upd-strong">Downloading v{{ update.newVersion }}…</span>
+                    <span class="upd-dim">{{ update.progress >= 0 ? Math.round(update.progress * 100) + "%" : "…" }}</span>
+                  </template>
+                  <template v-else-if="update.available">
+                    <span class="upd-strong">Update available — v{{ update.newVersion }}</span>
+                    <span class="upd-dim">You have v{{ update.currentVersion }}.</span>
+                  </template>
+                  <template v-else>
+                    <span class="upd-strong">You're up to date</span>
+                    <span class="upd-dim">Last checked {{ lastCheckedLabel }}.</span>
+                  </template>
+                </div>
+
+                <div class="update-box-actions">
+                  <button v-if="update.installed" class="reset-btn primary" @click="update.relaunch()">
+                    <PhArrowClockwise :size="12" /> Restart now
+                  </button>
+                  <button
+                    v-else-if="update.available && !update.downloading"
+                    class="reset-btn primary"
+                    @click="update.downloadAndInstall()"
+                  >
+                    <PhDownloadSimple :size="12" /> Install v{{ update.newVersion }}
+                  </button>
+                  <button
+                    v-else-if="!update.downloading"
+                    class="reset-btn"
+                    :disabled="update.checking"
+                    @click="update.check()"
+                  >
+                    <PhArrowClockwise :size="12" :class="{ spin: update.checking }" />
+                    {{ update.checking ? "Checking…" : "Check for updates" }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="update.notes && update.available && !update.installed" class="update-box-notes">
+                {{ update.notes }}
+              </div>
+              <div v-if="update.error && !update.checking" class="update-box-err">
+                Update check failed: {{ update.error }}
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- Other panels (placeholder) -->
         <section v-else class="section placeholder">
           <component :is="activeIcon" :size="22" />
@@ -646,7 +747,7 @@ import {
   PhSlidersHorizontal, PhFolderOpen, PhRobot, PhPalette, PhKeyboard,
   PhPuzzlePiece, PhInfo, PhSparkle, PhCode, PhGitBranch, PhTerminal,
   PhListBullets, PhCaretDown, PhFolder, PhPencilSimple, PhCheck, PhBell, PhPlay,
-  PhDotsSixVertical,
+  PhDotsSixVertical, PhArrowClockwise, PhDownloadSimple, PhTerminalWindow,
 } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -656,6 +757,7 @@ import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
 import { useAgentsStore, type AgentIcon } from "@/stores/agents";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore, UI_FONTS, TERMINAL_FONTS } from "@/stores/ui";
+import { useUpdateStore } from "@/stores/update";
 import { THEMES } from "@/themes";
 import { soundsForKind, playSound, type SoundKind } from "@/lib/sounds";
 
@@ -664,6 +766,23 @@ defineEmits<{ close: [] }>();
 const store = useAgentsStore();
 const wsStore = useWorkspaceStore();
 const ui = useUIStore();
+const update = useUpdateStore();
+
+// Resolved at mount from the Tauri runtime so the displayed version always
+// matches the actual bundle, not a hard-coded string.
+const appVersion = ref("");
+import("@tauri-apps/api/app")
+  .then((m) => m.getVersion())
+  .then((v) => { appVersion.value = v; })
+  .catch(() => { appVersion.value = "dev"; });
+
+const lastCheckedLabel = computed(() => {
+  if (!update.lastChecked) return "never";
+  const mins = Math.round((Date.now() - update.lastChecked) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  return `${Math.round(mins / 60)} h ago`;
+});
 
 function mimeForPath(path: string): string {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
@@ -710,14 +829,18 @@ const flagEditId = ref<string | null>(null);
 // which seeds defaults (~/.claude, ~/.codex) + any CLAUDE_CONFIG_DIR/CODEX_HOME env.
 const claudeDirs = ref<string[]>([]);
 const codexDirs = ref<string[]>([]);
+const copilotDirs = ref<string[]>([]);
 const cfgSaving = ref(false);
 const cfgStatus = ref("");
 
+type CfgDirs = { claude: string[]; codex: string[]; copilot: string[] };
+
 async function loadConfigDirs() {
   try {
-    const cd = await invoke<{ claude: string[]; codex: string[] }>("get_config_dirs");
+    const cd = await invoke<CfgDirs>("get_config_dirs");
     claudeDirs.value = cd.claude;
     codexDirs.value = cd.codex;
+    copilotDirs.value = cd.copilot ?? [];
   } catch (e) {
     console.error("get_config_dirs failed", e);
   }
@@ -727,13 +850,15 @@ async function saveConfigDirs() {
   cfgSaving.value = true;
   cfgStatus.value = "";
   try {
-    const cd = await invoke<{ claude: string[]; codex: string[] }>("set_config_dirs", {
+    const cd = await invoke<CfgDirs>("set_config_dirs", {
       claude: claudeDirs.value.map((s) => s.trim()).filter(Boolean),
       codex: codexDirs.value.map((s) => s.trim()).filter(Boolean),
+      copilot: copilotDirs.value.map((s) => s.trim()).filter(Boolean),
     });
     claudeDirs.value = cd.claude;
     codexDirs.value = cd.codex;
-    cfgStatus.value = `Installed into ${cd.claude.length + cd.codex.length} dir(s).`;
+    copilotDirs.value = cd.copilot;
+    cfgStatus.value = `Installed into ${cd.claude.length + cd.codex.length + cd.copilot.length} dir(s).`;
   } catch (e) {
     cfgStatus.value = `Failed: ${e}`;
   } finally {
@@ -752,7 +877,11 @@ const dragOverIndex = ref<number | null>(null);
 
 function onDragStart(i: number, e: DragEvent) {
   dragIndex.value = i;
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = "move";
+    // WebKit (Tauri's WKWebView) won't fire drop unless drag data is set.
+    e.dataTransfer.setData("text/plain", String(i));
+  }
 }
 function onDragOver(i: number) {
   if (dragIndex.value !== null) dragOverIndex.value = i;
@@ -770,8 +899,11 @@ function onDragEnd() {
 // --- Shortcut recorder ---
 const recordingId = ref<string | null>(null);
 
-function startRecording(id: string) {
+function startRecording(id: string, e: MouseEvent) {
   recordingId.value = recordingId.value === id ? null : id;
+  // WebKit doesn't focus a <button> on click, so its @keydown never fires.
+  // Focus it explicitly so the recorder can capture the next key combo.
+  if (recordingId.value === id) (e.currentTarget as HTMLElement)?.focus();
 }
 
 // Build a shortcut string ("⌘⇧1") from a keydown event; null if only modifiers held.
@@ -1719,4 +1851,64 @@ const SHORTCUT_GROUPS = [
   cursor: pointer;
 }
 .ws-clear:hover { color: #e2e2e2; background: #252525; }
+
+/* About / Updates */
+.about-id { display: flex; align-items: center; gap: 14px; }
+.about-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--accent);
+}
+.about-name { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.about-ver { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+.update-box {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  padding: 14px 16px;
+}
+.update-box-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.update-box-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.upd-strong { font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
+.upd-dim { font-size: 11.5px; color: var(--text-secondary); }
+.update-box-actions { flex-shrink: 0; }
+.reset-btn.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+}
+.reset-btn.primary:hover { filter: brightness(1.08); color: #fff; border-color: transparent; }
+.reset-btn:disabled { opacity: 0.6; cursor: default; }
+.update-box-notes {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.update-box-err {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--red);
+  word-break: break-word;
+}
+.spin { animation: upd-spin 0.9s linear infinite; }
+@keyframes upd-spin { to { transform: rotate(360deg); } }
 </style>

@@ -1,5 +1,9 @@
 <template>
   <div class="xterm-host" ref="hostEl" />
+  <div
+    v-if="ui.debugOverlay"
+    style="position:absolute;top:2px;left:2px;z-index:9999;background:rgba(0,0,0,.8);color:#0f0;font:10px/1.3 monospace;padding:3px 5px;border:1px solid #0f0;white-space:pre;pointer-events:none"
+  >{{ dbg.text }}</div>
 </template>
 
 <script setup lang="ts">
@@ -13,7 +17,7 @@ import { useUIStore } from "@/stores/ui";
 import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{ ptyId: number; cwd: string; initialCmd?: string; resultToken?: string }>();
-const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string]; agent: [b: boolean] }>();
+const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string]; agent: [b: boolean]; interrupt: [] }>();
 
 const ui = useUIStore();
 
@@ -34,6 +38,41 @@ const ui = useUIStore();
 const scaledFontSize = () => ui.terminalFontSize * ui.effectiveScale;
 
 const hostEl = ref<HTMLElement>();
+
+// ── TEMP debug overlay ────────────────────────────────────────────────────────
+// Visible readout to diagnose the prod-only blank terminal: does data arrive, does
+// the xterm buffer fill, is the alt-screen active, is the host sized? Toggle with
+// localStorage 'burrow-debug' = '1' (on by default here for the debug build).
+let bytesRx = 0;
+let writes = 0;
+let txBack = 0;   // bytes xterm sent BACK to the pty (input + query responses)
+let txBackN = 0;
+// Raw capture of the first N bytes received, dumped to a file when the debug
+// overlay is on — lets us inspect exactly what the agent emitted in a prod build
+// (e.g. whether ?1049h alt-screen-enter arrives and how xterm reacted).
+const dbg = ref({ text: "" });
+function refreshDbg() {
+  if (!ui.debugOverlay || !term) return;
+  const host = hostEl.value;
+  let bufLines = 0;
+  let altType = "?";
+  try {
+    const b = term.buffer.active;
+    altType = b.type;
+    for (let i = 0; i < term.rows; i++) {
+      const line = b.getLine(b.viewportY + i);
+      if (line && line.translateToString(true).trim()) bufLines++;
+    }
+  } catch (e) { altType = "err:" + (e as Error).message; }
+  dbg.value.text = [
+    `pty ${props.ptyId}  ${term.cols}x${term.rows}`,
+    `host ${host?.offsetWidth}x${host?.offsetHeight} scale ${ui.effectiveScale.toFixed(2)}`,
+    `rx ${bytesRx}B writes ${writes}`,
+    `txBack ${txBack}B / ${txBackN}`,
+    `buf ${altType} lines ${bufLines}`,
+    `age ${lastDataAt ? Math.round(performance.now() - lastDataAt) : "-"}ms`,
+  ].join("\n");
+}
 
 function applyCounterZoom() {
   const el = hostEl.value;
@@ -57,6 +96,7 @@ let fitAddon: FitAddon;
 let unlisten: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver;
 let pollTimer: ReturnType<typeof setInterval>;
+let dbgTimer: ReturnType<typeof setInterval>;
 
 const CLAUDE_RE = /^claude$/i;
 const CODEX_RE = /^codex$/i;
@@ -209,6 +249,8 @@ onMounted(async () => {
   unlisten = await listen<number[]>(`pty-data-${props.ptyId}`, (event) => {
     const bytes = new Uint8Array(event.payload);
     term.write(bytes);
+    bytesRx += bytes.length;
+    writes++;
     const text = new TextDecoder().decode(bytes);
 
     // `burrow spawn` requests: decode base64 fields → open a new tab.
@@ -267,7 +309,17 @@ onMounted(async () => {
 
   // Send input from xterm → Rust PTY
   term.onData((data) => {
+    // Interrupt detection: a bare ESC (single 0x1b — NOT an escape sequence like
+    // arrows "\x1b[A") or Ctrl+C (0x03) cancels an agent's running turn. Agents
+    // fire NO Stop hook on interrupt, and the foreground poll never clears an
+    // agent's "running" (claude stays foreground at its prompt) → the dot would
+    // stick orange forever. Forward as a semantic interrupt so Terminal can
+    // settle the leaf back to idle. Generic = works for every agent (claude,
+    // codex, aider…). No-op if nothing was running.
+    if (data === "\x1b" || data === "\x03") emit("interrupt");
     const bytes = Array.from(new TextEncoder().encode(data));
+    txBack += bytes.length;
+    txBackN++;
     invoke("write_pty", { id: props.ptyId, data: bytes });
   });
 
@@ -287,10 +339,21 @@ onMounted(async () => {
   let isAgentSession = false;
   const poll = async () => {
     const proc = await invoke<string>("get_pty_foreground", { id: props.ptyId });
-    // Empty = an unknown/race reading from the daemon, NOT proof the shell is
-    // idle. Treating it as idle reset the tab to "Terminal N" mid-conversation.
-    // Skip it entirely — keep the last known title/state.
-    if (!proc) return;
+    // Empty foreground = no non-shell process in the group: either a daemon
+    // race/mid-conversation read (must NOT reset an agent's title/state) OR a
+    // plain command just exited and only the shell remains. For an agent
+    // session, skip — keep last known title/state (the "Terminal N" reset bug).
+    // For a plain terminal that was busy, empty means the command finished and
+    // we're back at the prompt → clear busy, else the orange dot sticks forever
+    // (foreground_name returns "" for a bare shell, so SHELL_RE never fires).
+    if (!proc) {
+      if (!isAgentSession && lastProcess && !SHELL_RE.test(lastProcess)) {
+        lastProcess = "";
+        emit("busy", false);
+        emit("title", "");
+      }
+      return;
+    }
     foreground = proc;
     if (proc === lastProcess) return;
     lastProcess = proc;
@@ -332,10 +395,12 @@ onMounted(async () => {
   };
   poll();
   pollTimer = setInterval(poll, 2000);
+  dbgTimer = setInterval(refreshDbg, 500);
 });
 
 onBeforeUnmount(async () => {
   clearInterval(pollTimer);
+  clearInterval(dbgTimer);
   resizeObserver?.disconnect();
   unlisten?.();
   unlistenHook?.();

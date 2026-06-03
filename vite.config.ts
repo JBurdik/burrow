@@ -9,6 +9,16 @@ export default defineConfig(async () => ({
       "@": resolve(__dirname, "src"),
     },
   },
+  build: {
+    // Rollup scope-hoisting + esbuild minification produced a broken `i` variable
+    // reference (TDZ/collision) that threw `ReferenceError: Can't find variable: i`
+    // mid-stream while xterm parsed an agent's terminal capability queries. That
+    // aborted parsing, so query-driven TUIs (GitHub Copilot, opencode) never got
+    // their responses and hung on a blank alt-screen — only in the minified prod
+    // bundle; the dev server (unminified) was fine. Disabling minification is the
+    // safe fix for a desktop app where the JS loads from local disk (size is moot).
+    minify: false,
+  },
   clearScreen: false,
   server: {
     port: 1420,
