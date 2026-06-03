@@ -100,6 +100,7 @@ let dbgTimer: ReturnType<typeof setInterval>;
 
 const CLAUDE_RE = /^claude$/i;
 const CODEX_RE = /^codex$/i;
+const COPILOT_RE = /^copilot$/i;
 const SHELL_RE = /^(zsh|bash|sh|fish|csh|tcsh|dash)$/;
 // Legacy pattern-match fallback (used when hooks aren't active)
 const NEEDS_INPUT_RE = /[›❯]|(\(y\/n\)|\[y\/n\]|\(Y\/n\)|\[Y\/n\])/i;
@@ -182,7 +183,7 @@ onMounted(async () => {
     if (!title) return;
     if (!foreground) return;
     if (SHELL_RE.test(foreground)) return;   // shell prompt cwd/cmd junk
-    if (CLAUDE_RE.test(foreground) || CODEX_RE.test(foreground)) agentTitled = true;
+    if (CLAUDE_RE.test(foreground) || CODEX_RE.test(foreground) || COPILOT_RE.test(foreground)) agentTitled = true;
     emit("title", title);
   });
 
@@ -345,7 +346,7 @@ onMounted(async () => {
     lastProcess = proc;
 
     const isClaude = CLAUDE_RE.test(proc);
-    const isAgent = isClaude || CODEX_RE.test(proc);
+    const isAgent = isClaude || CODEX_RE.test(proc) || COPILOT_RE.test(proc);
 
     if (SHELL_RE.test(proc)) {
       // Back at the shell prompt → whatever ran (agent or command) has exited.

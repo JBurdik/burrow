@@ -172,6 +172,54 @@ fn install_agent_docs(app: &AppHandle) {
             let _ = std::fs::write(&agents, merged);
         }
     }
+
+    // Copilot CLI: same SKILL.md spec as Claude (it also reads CLAUDE.md), but
+    // skills are discovered from dirs listed in `skillDirectories` in
+    // <copilot-dir>/settings.json — there's no implicit `skills/` lookup. So we
+    // write <copilot-dir>/skills/burrow/SKILL.md AND register <copilot-dir>/skills
+    // in skillDirectories (non-destructive merge). This is what makes `/burrow`
+    // resolve in a Copilot session.
+    for copilot_dir in &dirs.copilot {
+        let skills_root = Path::new(copilot_dir).join("skills");
+        let skill_dir = skills_root.join("burrow");
+        if std::fs::create_dir_all(&skill_dir).is_ok() {
+            let _ = std::fs::write(skill_dir.join("SKILL.md"), BURROW_SKILL_MD);
+        }
+        register_copilot_skill_dir(
+            &Path::new(copilot_dir).join("settings.json"),
+            &skills_root.to_string_lossy(),
+        );
+    }
+}
+
+// Add `dir` to the `skillDirectories` array in Copilot's settings.json without
+// clobbering the user's other settings. Absent/empty file → create it; unparseable
+// → skip (never destroy a file we can't read).
+fn register_copilot_skill_dir(path: &Path, dir: &str) {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut root: serde_json::Value = if existing.trim().is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_str(&existing) {
+            Ok(v) => v,
+            Err(_) => return,
+        }
+    };
+    let Some(obj) = root.as_object_mut() else { return };
+    let arr = obj
+        .entry("skillDirectories")
+        .or_insert_with(|| json!([]));
+    let Some(arr) = arr.as_array_mut() else { return };
+    if arr.iter().any(|v| v.as_str() == Some(dir)) {
+        return; // already registered
+    }
+    arr.push(json!(dir));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(s) = serde_json::to_string_pretty(&root) {
+        let _ = std::fs::write(path, s);
+    }
 }
 
 // Install a persistent status hook into an agent's global hook config (Claude's
