@@ -13,7 +13,7 @@ import { useUIStore } from "@/stores/ui";
 import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{ ptyId: number; cwd: string; initialCmd?: string; resultToken?: string }>();
-const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string] }>();
+const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string]; agent: [b: boolean] }>();
 
 const ui = useUIStore();
 
@@ -37,6 +37,11 @@ const b64decode = (s: string) =>
 
 // Last known foreground process name (from the poll) — gates OSC titles.
 let foreground = "";
+// True once the foreground agent has set its OWN title via OSC. After that the
+// poll stops seeding "Claude" over it, so Claude Code's descriptive title sticks
+// (and the tab tells you what that session was doing). Reset when the shell
+// returns (agent gone).
+let agentTitled = false;
 
 // Strip control/non-printable chars (mid-OSC replay garbage), trim, cap length.
 function sanitizeTitle(s: string): string {
@@ -66,21 +71,20 @@ onMounted(async () => {
   term.open(hostEl.value!);
   fitAddon.fit();
 
-  // OSC title sequences set by the shell or programs (e.g. vim, tmux).
-  // Gated: the interactive shell (zsh/bash) sets the OSC title to the cwd or
-  // last command as cosmetics — that's junk for a tab name. Worse, on reattach
-  // the daemon ring buffer (evicts front chunks at 512KB) can replay a snapshot
-  // that starts mid-OSC, so xterm parses a TRUNCATED title (the "cafenaite" bug).
-  // So: only accept OSC titles for plain TUI programs (vim/tmux). Ignore them
-  // when the shell is foreground (cwd/cmd junk) AND when an agent is foreground
-  // (Claude Code sets its own OSC title "ClaudeCode", which would override the
-  // poll's "🤖 Claude"). The foreground-process poll is the authoritative source.
+  // OSC title sequences set by the shell or programs (e.g. vim, tmux, Claude).
+  // The interactive shell (zsh/bash) sets the OSC title to the cwd or last
+  // command as cosmetics — junk for a tab name — so those are ignored. But an
+  // AGENT's own title IS wanted: Claude Code sets a descriptive title (the task
+  // it's on), which is exactly what tells you what each tab was doing. We accept
+  // it and flag `agentTitled` so the poll stops re-seeding "Claude" over it.
+  // (Truncation risk: on reattach the daemon ring buffer can replay a snapshot
+  // starting mid-OSC; sanitizeTitle strips the control garbage.)
   term.onTitleChange((raw) => {
     const title = sanitizeTitle(raw);
     if (!title) return;
     if (!foreground) return;
-    if (SHELL_RE.test(foreground)) return;                      // shell prompt junk
-    if (CLAUDE_RE.test(foreground) || CODEX_RE.test(foreground)) return; // agent self-title
+    if (SHELL_RE.test(foreground)) return;   // shell prompt cwd/cmd junk
+    if (CLAUDE_RE.test(foreground) || CODEX_RE.test(foreground)) agentTitled = true;
     emit("title", title);
   });
 
@@ -210,6 +214,8 @@ onMounted(async () => {
       // Clear running state (rescues a stuck dot if an agent was interrupted with
       // no done hook) and reset the tab name.
       isAgentSession = false;
+      agentTitled = false;
+      emit("agent", false);
       emit("busy", false);
       emit("title", "");          // reset → Terminal N
     } else if (isAgent) {
@@ -218,13 +224,17 @@ onMounted(async () => {
       // poll must never fabricate a status here, or the spinner sticks forever.
       // running/waiting/done come ONLY from the agent's hooks (listener above).
       isAgentSession = true;
-      emit("title", isClaude ? "🤖 Claude" : proc);
+      emit("agent", true);        // mark the tab as an agent (robot icon)
+      // Only SEED a name until the agent sets its own OSC title; after that don't
+      // override it (that was the "title keeps reverting to Claude" bug).
+      if (!agentTitled) emit("title", isClaude ? "Claude" : proc);
     } else if (isAgentSession) {
       // A non-shell child process INSIDE a live agent session (the agent opened a
       // pager, ran git, spawned node…). Keep the agent's title and don't flip to
       // a plain-command "busy" — the agent's hooks remain the status source.
     } else {
       // Plain foreground command (npm test, vim, python…): presence == busy.
+      emit("agent", false);
       emit("busy", true);
       const stripped = outputBuffer.replace(ANSI_RE, "");
       emit("needsInput", NEEDS_INPUT_RE.test(stripped.slice(-200)));

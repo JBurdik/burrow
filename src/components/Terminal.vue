@@ -73,6 +73,7 @@
             :ref="(el) => registerLeaf(pane.leaf.id, el)"
             @title="(t) => onLeafTitle(pane.leaf.id, t)"
             @busy="(b) => onLeafBusy(pane.leaf.id, b)"
+            @agent="(b) => onLeafAgent(pane.leaf.id, b)"
             @agent-state="(s) => onAgentState(pane.leaf.id, s)"
             @needs-input="(b) => onLeafNeedsInput(pane.leaf.id, b)"
             @spawn="(req) => addTab(req.cmd, { cwd: req.cwd || undefined, resultToken: req.token || undefined })"
@@ -284,13 +285,22 @@ function onLeafTitle(id: number, title: string) {
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
-    if (!title) {
-      leaf.title = leaf.defaultTitle;
-      leaf.isAgent = false;
-    } else {
-      leaf.title = title.replace(/^🤖\s*/, "Claude");
-      leaf.isAgent = title.includes("Claude") || title.toLowerCase().includes("claude");
-    }
+    // Title is purely the display name now. Empty → back to "Terminal N". A
+    // stray leading robot emoji (older seeds) is stripped. isAgent is NOT derived
+    // from the title — it comes from the foreground poll via onLeafAgent, so the
+    // robot icon survives even when Claude sets a title that doesn't say "Claude".
+    leaf.title = title ? title.replace(/^🤖\s*/, "") : leaf.defaultTitle;
+    break;
+  }
+}
+
+// Whether this leaf is currently running an agent — driven by the foreground
+// poll (authoritative), independent of the title text.
+function onLeafAgent(id: number, isAgent: boolean) {
+  for (const tab of tabs.value) {
+    const leaf = findLeaf(tab.root, id);
+    if (!leaf) continue;
+    leaf.isAgent = isAgent;
     break;
   }
 }
