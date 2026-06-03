@@ -13,6 +13,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useUIStore } from "@/stores/ui";
 import "@xterm/xterm/css/xterm.css";
 
@@ -131,6 +132,45 @@ let outputBuffer = "";
 let lastDataAt = 0;
 let hooksSettingsPath = "";
 let unlistenHook: UnlistenFn | null = null;
+let unlistenDrop: UnlistenFn | null = null;
+
+// Image files an agent can read. Drag-dropped paths and clipboard image mimes are
+// matched against this before we inject anything into the PTY.
+const IMG_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg|heic|heif|tiff?|avif)$/i;
+
+// Type a filesystem path into THIS pty so the foreground agent (Claude Code,
+// Copilot, …) picks it up as an image attachment — same as dragging a file into
+// the agent's own terminal. Space-bearing paths are single-quoted so the shell /
+// agent input parses them as one token; a trailing space ends the token.
+function injectImagePath(path: string) {
+  const quoted = /\s/.test(path) ? `'${path.replace(/'/g, "'\\''")}'` : path;
+  const bytes = Array.from(new TextEncoder().encode(quoted + " "));
+  invoke("write_pty", { id: props.ptyId, data: bytes });
+}
+
+// Cmd+V of an image: the DOM paste event carries the bitmap as a File. Persist it
+// to a temp file via Rust, then inject the path. Text paste falls through to
+// xterm's native handler untouched (no preventDefault on the non-image path).
+async function onPaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const it of items) {
+    if (it.kind !== "file" || !it.type.startsWith("image/")) continue;
+    const file = it.getAsFile();
+    if (!file) continue;
+    e.preventDefault();
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+    const b64 = btoa(bin);
+    const ext = it.type.split("/")[1] || "png";
+    try {
+      const path = await invoke<string>("save_temp_image", { b64, ext });
+      injectImagePath(path);
+    } catch { /* clipboard write failed — leave the prompt alone */ }
+    return;
+  }
+}
 
 // Fit, then re-fit after layout and web-fonts settle. On restart the first fit
 // can run before the surrounding panels are laid out or the mono web-font has
@@ -317,6 +357,27 @@ onMounted(async () => {
   resizeObserver = new ResizeObserver(() => { applyCounterZoom(); safeFit(); });
   resizeObserver.observe(hostEl.value!.parentElement ?? hostEl.value!);
 
+  // Cmd+V image paste → temp file → path into the PTY (text paste untouched).
+  term.textarea?.addEventListener("paste", onPaste);
+
+  // Drag-and-drop image files. Tauri intercepts OS drops (dragDrop default-on), so
+  // the bitmap never reaches the DOM — we listen to the window-level drop event
+  // instead. It fires for ALL panes, so route by hit-testing the drop point
+  // against THIS host's rect: only the pane under the cursor injects the path.
+  // Dropped files already have a real path, so no temp copy is needed.
+  unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
+    if (event.payload.type !== "drop") return;
+    const rect = hostEl.value?.getBoundingClientRect();
+    if (!rect) return;
+    const dpr = window.devicePixelRatio || 1;
+    const cx = event.payload.position.x / dpr;
+    const cy = event.payload.position.y / dpr;
+    if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return;
+    for (const p of event.payload.paths) {
+      if (IMG_EXT_RE.test(p)) injectImagePath(p);
+    }
+  });
+
   // Poll foreground process → auto-title. Runs once immediately (so tabs get a
   // correct name right after reload instead of waiting 2s) then every 2s.
   let lastProcess = "";
@@ -391,6 +452,8 @@ onBeforeUnmount(async () => {
   resizeObserver?.disconnect();
   unlisten?.();
   unlistenHook?.();
+  unlistenDrop?.();
+  term?.textarea?.removeEventListener("paste", onPaste);
   // detach_pty closes the data stream but leaves the PTY alive in the daemon,
   // so it can be reattached after app restart.
   await invoke("detach_pty", { id: props.ptyId });
@@ -420,7 +483,16 @@ watch(
   },
 );
 
-defineExpose({ focus() { term?.focus(); }, refit() { safeFit(); deferredFit(); } });
+defineExpose({
+  focus() { term?.focus(); },
+  refit() { safeFit(); deferredFit(); },
+  // Inject text into the PTY (no trailing newline — user reviews then hits Enter).
+  sendText(text: string) {
+    const bytes = Array.from(new TextEncoder().encode(text));
+    invoke("write_pty", { id: props.ptyId, data: bytes });
+    term?.focus();
+  },
+});
 </script>
 
 <style scoped>

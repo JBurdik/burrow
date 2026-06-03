@@ -1007,6 +1007,30 @@ fn read_file_base64(path: String) -> Result<String, String> {
     Ok(general_purpose::STANDARD.encode(&bytes))
 }
 
+/// Save a base64-encoded image (pasted from the clipboard) to a temp file and
+/// return its path, so the frontend can type that path into a PTY for an agent
+/// (Claude Code et al.) to read. Drag-dropped files already have a real path, so
+/// they skip this — only clipboard bytes need persisting.
+#[tauri::command]
+fn save_temp_image(b64: String, ext: String) -> Result<String, String> {
+    let bytes = general_purpose::STANDARD
+        .decode(b64.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let safe_ext: String = ext
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(5)
+        .collect();
+    let safe_ext = if safe_ext.is_empty() { "png".into() } else { safe_ext };
+    let path = std::env::temp_dir().join(format!("burrow-paste-{nanos}.{safe_ext}"));
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 fn init_db(app: &AppHandle) -> Result<Connection, rusqlite::Error> {
     let data_dir = app.path().app_data_dir().expect("no app data dir");
     std::fs::create_dir_all(&data_dir).ok();
@@ -1107,6 +1131,7 @@ pub fn run() {
             write_text_file,
             read_text_file,
             read_file_base64,
+            save_temp_image,
             get_hook_server_port,
             set_max_agents,
         ])

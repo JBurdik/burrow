@@ -75,6 +75,7 @@
               :key="a.id"
               class="row"
               :class="{ dragging: dragIndex === i, 'drag-over': dragOverIndex === i }"
+              @dragenter.prevent="onDragOver(i)"
               @dragover.prevent="onDragOver(i)"
               @drop.prevent="onDrop(i)"
             >

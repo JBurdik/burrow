@@ -16,6 +16,14 @@
       <component    v-else :is="fileIconComponent(node.name)"      class="row-icon file"   :size="14" weight="regular" />
 
       <span class="row-name">{{ node.name }}</span>
+
+      <button
+        class="ctx-btn"
+        title="Add to agent context (@path)"
+        @click.stop="addToContext"
+      >
+        <PhAt :size="12" weight="bold" />
+      </button>
     </div>
 
     <template v-if="node.type === 'folder' && node.expanded && node.children">
@@ -25,20 +33,26 @@
 </template>
 
 <script setup lang="ts">
+import { inject } from "vue";
 import {
   PhCaretRight, PhCaretDown,
   PhFolder, PhFolderOpen,
   PhFileVue, PhFileTs, PhFileJs, PhFileCode,
-  PhGear, PhFile, PhSpinner,
+  PhGear, PhFile, PhSpinner, PhAt,
 } from "@phosphor-icons/vue";
 import { useFileTreeStore, type FileNode } from "@/stores/fileTree";
 
 const props = defineProps<{ node: FileNode; depth: number }>();
 const store = useFileTreeStore();
+const activeTerm = inject<() => any>("activeTerm", () => undefined);
 
 function handleClick() {
   if (props.node.type === "folder") store.toggle(props.node.id);
   else store.select(props.node.id);
+}
+
+function addToContext() {
+  activeTerm()?.insertContext(props.node.id);
 }
 
 function fileIconComponent(name: string) {
@@ -88,4 +102,20 @@ function fileIconComponent(name: string) {
   flex: 1;
   font-size: 12px;
 }
+
+.ctx-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  margin-right: 4px;
+  border-radius: 3px;
+}
+.tree-row:hover .ctx-btn { display: flex; }
+.ctx-btn:hover { color: var(--accent); background: var(--bg-hover); }
 </style>

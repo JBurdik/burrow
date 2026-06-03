@@ -511,6 +511,20 @@ function spawnAgent(cmd: string) {
   addTab(cmd);
 }
 
+// Inject a file/folder path from the explorer into the focused leaf's PTY as an
+// "@path " context reference (relative to the workspace cwd when possible) so the
+// active agent picks it up. User reviews + hits Enter.
+function insertContext(absPath: string) {
+  const tab = tabs.value.find((t) => t.id === activeTabId.value);
+  if (!tab) return;
+  let rel = absPath;
+  const base = props.cwd.replace(/\/+$/, "");
+  if (base && absPath.startsWith(base + "/")) rel = absPath.slice(base.length + 1);
+  const ref = `@${rel} `;
+  const xterm = xtermRefs.get(focusedLeafId.value);
+  xterm?.sendText(ref);
+}
+
 function openDiffInTab(file: string, staged: boolean, diff: string) {
   terminalCounter++;
   const leaf: Leaf = {
@@ -741,7 +755,7 @@ onBeforeUnmount(() => {
   tabsStore.clear(props.workspaceId);
 });
 
-defineExpose({ addTab, spawnAgent, openDiffInTab });
+defineExpose({ addTab, spawnAgent, openDiffInTab, insertContext });
 </script>
 
 <style scoped>

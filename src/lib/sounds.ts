@@ -42,6 +42,27 @@ export function soundsForKind(kind: SoundKind): BuiltinSound[] {
 // bytes off disk once per path instead of on every play.
 const customUrlCache = new Map<string, string>();
 
+// WKWebView serves a blob: URL with the blob's own MIME as Content-Type. A
+// typeless Blob → empty Content-Type → <audio> rejects it (MEDIA_ERR_SRC_NOT_
+// SUPPORTED) and play() throws. So tag the Blob by file extension.
+function audioMime(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "mp3":
+      return "audio/mpeg";
+    case "ogg":
+      return "audio/ogg";
+    case "m4a":
+    case "aac":
+      return "audio/mp4";
+    case "flac":
+      return "audio/flac";
+    case "wav":
+    default:
+      return "audio/wav";
+  }
+}
+
 async function customUrl(path: string): Promise<string | null> {
   if (!path) return null;
   const cached = customUrlCache.get(path);
@@ -53,7 +74,7 @@ async function customUrl(path: string): Promise<string | null> {
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const url = URL.createObjectURL(new Blob([bytes]));
+    const url = URL.createObjectURL(new Blob([bytes], { type: audioMime(path) }));
     customUrlCache.set(path, url);
     return url;
   } catch {
