@@ -12,6 +12,7 @@
       >
         <component :is="iconFor(a.icon)" :size="12" :style="{ color: a.color }" />
         {{ a.name }}
+        <span v-if="a.shortcut" class="agent-kbd">{{ a.shortcut }}</span>
       </button>
       <span v-if="store.agents.length === 0" class="no-agents">No agents configured</span>
     </div>
@@ -27,12 +28,19 @@
 
     <div class="at-gap" />
     <PhActivity :size="14" class="toolbar-icon" />
+    <PhSidebar
+      :size="14"
+      class="toolbar-icon"
+      :class="{ on: ui.rightPanelVisible }"
+      :title="ui.rightPanelVisible ? 'Hide side panel' : 'Show side panel'"
+      @click="ui.toggleRightPanel()"
+    />
     <PhGear :size="14" class="toolbar-icon" title="Settings (⌘,)" @click="ui.openSettings()" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { PhCaretRight, PhActivity, PhGear, PhRobot, PhSparkle, PhCode, PhGitBranch, PhTerminal } from "@phosphor-icons/vue";
+import { PhCaretRight, PhActivity, PhGear, PhSidebar, PhRobot, PhSparkle, PhCode, PhGitBranch, PhTerminal } from "@phosphor-icons/vue";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import OpenAIIcon from "@/components/icons/OpenAIIcon.vue";
 import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
@@ -65,8 +73,8 @@ const ui = useUIStore();
   align-items: center;
   height: 40px;
   padding: 0 12px;
-  background: #0d0d0d;
-  border-bottom: 1px solid #1e1e1e;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   gap: 8px;
 }
@@ -116,34 +124,45 @@ const ui = useUIStore();
   gap: 8px;
   height: 26px;
   padding: 0 12px;
-  background: #111111;
-  border: 1px solid #252525;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
   border-radius: 5px;
   cursor: text;
 }
 
-.cmd-icon { color: #444; flex-shrink: 0; }
+.cmd-icon { color: var(--text-muted); flex-shrink: 0; }
 
 .cmd-placeholder {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: #3a3a3a;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
 .cmd-kbd {
   font-family: var(--font-ui);
   font-size: 10px;
-  color: #2c2c2c;
+  color: var(--text-secondary);
   white-space: nowrap;
+}
+
+.agent-kbd {
+  font-family: var(--font-ui);
+  font-size: 9px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin-left: 2px;
 }
 
 .at-gap { width: 8px; }
 
 .toolbar-icon {
-  color: #333;
+  color: var(--text-secondary);
   flex-shrink: 0;
   cursor: pointer;
 }
-.toolbar-icon:hover { color: #666; }
+.toolbar-icon:hover { color: var(--text-primary); }
+.toolbar-icon.on { color: var(--accent); }
 </style>

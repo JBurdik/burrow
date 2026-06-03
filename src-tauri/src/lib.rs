@@ -211,8 +211,8 @@ fn install_status_hooks(app: &AppHandle) {
 
     let dirs = load_config_dirs(app);
 
-    // Claude: status events. (Notification ≈ waiting for the user.)
-    let claude_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "Notification"];
+    // Claude: status events. (Notification + PermissionRequest ≈ waiting for the user.)
+    let claude_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "Notification", "PermissionRequest"];
     for d in &dirs.claude {
         merge_status_hooks(&Path::new(d).join("settings.json"), &claude_events, &cmd);
     }
@@ -303,38 +303,45 @@ fn set_config_dirs(app: AppHandle, claude: Vec<String>, codex: Vec<String>) -> C
 
 const BURROW_AGENT_DOC: &str = "## Delegating to sub-agents (`burrow`)\n\
 You are running inside Burrow, which gives you a `burrow` CLI to delegate work to sub-agents in new terminal tabs. Reach for it whenever the user wants to **delegate to agents**, **spawn an agent to** do something, run work **in parallel**, **fan out** subtasks, or **hand off** a task.\n\n\
-- `burrow spawn <command...>` — open a new tab in this project running <command>. Example: `burrow spawn claude \"write tests for src/foo\"`.\n\
-- `burrow spawn --token t1 claude \"...\"` then `burrow wait t1` — delegate and block until the sub-agent finishes, then receive its final message on stdout. Add `--timeout 600` to cap the wait.\n\
+- `burrow spawn <command...>` — open a new tab in this project running <command> (fire-and-forget, returns immediately). Example: `burrow spawn claude \"write tests for src/foo\"`.\n\
+- `burrow spawn --token t1 claude \"...\"` then later `burrow collect t1` — delegate with a tracking token, keep working, and pull the sub-agent's final message whenever you want (non-blocking). `burrow collect` with no token returns every finished sub-agent.\n\
+- `burrow sessions` — list the live sub-agent tabs (or `--count`).\n\
 - `burrow spawn --cwd /path claude \"...\"` — run the new tab in a different directory.\n\n\
-Use it to fan out independent work. Sub-agents run interactively on the subscription (never use `claude -p`).";
+Do NOT block waiting on sub-agents. Fan out the work, continue your own, then `burrow collect` for a recap. Respect the soft per-workspace concurrency limit `burrow spawn` reports. Sub-agents run interactively on the subscription (never use `claude -p`).";
 
 const BURROW_SKILL_MD: &str = "---\n\
 name: burrow\n\
-description: Delegate work to sub-agents by spawning new terminal tabs from inside the Burrow IDE. Use when the user asks to run work in parallel, hand a task to another agent, or when you want to fan out independent subtasks and optionally wait for their results.\n\
+description: Delegate work to sub-agents by spawning new terminal tabs from inside the Burrow IDE. Use when the user asks to run work in parallel, hand a task to another agent, or when you want to fan out independent subtasks and collect their results without blocking.\n\
 ---\n\n\
 # Delegating with `burrow`\n\n\
-You are running inside **Burrow**. The `burrow` CLI opens new terminal tabs running sub-agents, so you can delegate work.\n\n\
-## Spawn a sub-agent (fire-and-forget)\n\
+You are running inside **Burrow**. The `burrow` CLI opens new terminal tabs running sub-agents, so you can delegate work. The model is **fire-and-forget + collect**: spawn agents, keep doing your own work, then pull their results when you want — never sit blocked waiting on them.\n\n\
+## Spawn sub-agents (fire-and-forget)\n\
 ```\n\
 burrow spawn claude \"write unit tests for src/foo\"\n\
 burrow spawn codex \"refactor the auth module\"\n\
 ```\n\
-Opens a new tab in the **current project** and runs the command interactively.\n\n\
-## Spawn and wait for the result\n\
+Opens a new tab in the **current project** and runs the command interactively. Returns immediately.\n\n\
+## Fan out with tokens, then collect (non-blocking)\n\
 ```\n\
-burrow spawn --token t1 claude \"summarize what changed in this PR\"\n\
-burrow wait t1            # blocks, then prints the sub-agent's final message\n\
-burrow wait t1 --timeout 600   # give up after 10 minutes\n\
+burrow spawn --token a claude \"audit src/auth for bugs\"\n\
+burrow spawn --token b claude \"audit src/api for bugs\"\n\
+# ...go do your own work in the meantime...\n\
+burrow collect a b      # prints results of whichever have FINISHED, and only those\n\
+burrow collect          # or: collect every finished sub-agent, no token list\n\
 ```\n\
-Pick any unique token. `burrow wait` blocks until that sub-agent finishes a turn, then prints its last message to stdout — so you can capture and act on it.\n\n\
-## Run in another directory\n\
+`burrow collect` never blocks: it prints the final message of each finished token and **consumes** it, so a later `collect` returns only newly-finished ones. Tokens still running are reported as pending. Loop back and `collect` again later to pick them up — do useful work between calls, don't poll in a tight loop.\n\n\
+## Recap pattern\n\
+Spawn N agents up front → continue your task → near the end, `burrow collect` (optionally a few times as stragglers finish) → summarize what each returned for the user. You drive the recap; the sub-agents just drop their results for you.\n\n\
+## Inspect / other dir\n\
 ```\n\
+burrow sessions            # list live sub-agent tabs (--count for just the number)\n\
 burrow spawn --cwd /path/to/other/project claude \"...\"\n\
 ```\n\n\
-## Notes\n\
+## Limits & notes\n\
+- **Soft concurrency limit** (per workspace, default 3, set in Burrow Settings): `burrow spawn` prints the current cap. Respect it — don't exceed it. It is advisory, not enforced, so it's on you.\n\
 - Sub-agents run **interactively on the subscription**. Never pass `-p`/`--print`; never use the Agent SDK.\n\
-- For parallel work: spawn several with different tokens, then `burrow wait` each.\n\
-- Result capture works for `claude` sub-agents (via its Stop hook). Other agents spawn fine but `wait` only returns once they emit a done signal.";
+- Result capture works for `claude` sub-agents (via its Stop hook). Other agents spawn fine but only return a collectable result once they emit a done signal.\n\
+- `burrow wait <token>` still exists (blocks until one finishes) but prefer `collect` so you stay productive instead of blocked.";
 
 // ── Hook HTTP server ──────────────────────────────────────────────────────────
 
@@ -370,6 +377,17 @@ fn start_hook_server(app: AppHandle) {
 #[tauri::command]
 fn get_hook_server_port() -> u16 {
     *HOOK_SERVER_PORT.get().unwrap_or(&0)
+}
+
+// Publish the user's configured max-concurrent-sub-agents to a file the `burrow`
+// CLI can read (localStorage lives in the frontend; the CLI can't see it). Same
+// file-bridge pattern as hook.port. The limit is a SOFT cap surfaced to agents.
+#[tauri::command]
+fn set_max_agents(n: u32, app: AppHandle) {
+    if let Ok(data) = app.path().app_data_dir() {
+        let _ = std::fs::create_dir_all(&data);
+        let _ = std::fs::write(data.join("max_agents"), n.max(1).to_string());
+    }
 }
 
 // ── Daemon management ─────────────────────────────────────────────────────────
@@ -691,6 +709,14 @@ fn delete_workspace(id: i64, db: State<DbState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn rename_workspace(id: i64, name: String, db: State<DbState>) -> Result<(), String> {
+    db.conn.lock().unwrap()
+        .execute("UPDATE workspaces SET name = ?1 WHERE id = ?2", rusqlite::params![name, id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn touch_workspace(id: i64, db: State<DbState>) -> Result<(), String> {
     db.conn.lock().unwrap()
         .execute("UPDATE workspaces SET last_opened = ?1 WHERE id = ?2", rusqlite::params![unix_now(), id])
@@ -855,6 +881,7 @@ pub fn run() {
             list_workspaces,
             create_workspace,
             delete_workspace,
+            rename_workspace,
             touch_workspace,
             list_terminal_tabs,
             save_terminal_tabs,
@@ -863,6 +890,7 @@ pub fn run() {
             read_text_file,
             read_file_base64,
             get_hook_server_port,
+            set_max_agents,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

@@ -162,8 +162,9 @@
     <div class="card">
       <h3>Sub-agent delegation — <code>burrow</code> CLI</h3>
       <ul>
-        <li>Agents run <code>burrow spawn claude "…"</code> to open a new tab and delegate work</li>
-        <li><code>burrow wait &lt;token&gt;</code> blocks and returns the sub-agent's final message</li>
+        <li>Agents run <code>burrow spawn claude "…"</code> to open a new tab and delegate work (fire-and-forget)</li>
+        <li><code>burrow collect [token…]</code> pulls finished sub-agents' results <strong>without blocking</strong> (consumes each once); <code>burrow sessions</code> lists live tabs; <code>burrow wait</code> is the legacy blocking variant</li>
+        <li>Soft per-workspace cap (Settings → Agents → Max concurrent sub-agents, default 3) the <code>/burrow</code> skill respects</li>
         <li>Transport = files in <code>$BURROW_SESSION_DIR</code> (no tty/socket); the app polls for requests</li>
         <li>Subscription-safe: interactive only, never <code>claude -p</code></li>
         <li><a href="burrow.html" style="color:var(--accent)">Full reference →</a></li>
@@ -214,9 +215,12 @@
       <tr><td>src/components/Spotlight.vue</td><td>⌘P command palette overlay</td></tr>
       <tr><td>src/components/Sidebar.vue</td><td>Workspace list; folder picker dialog; create/remove workspaces</td></tr>
       <tr><td>src/components/RightPanel.vue</td><td>Tab panel: file explorer + git status/diff/stage</td></tr>
-      <tr><td>src/components/Settings.vue</td><td>Agent config editor (add/edit/remove/reset agents)</td></tr>
+      <tr><td>src/components/Settings.vue</td><td>Agent config editor (add/edit/remove/reset agents) + Notifications panel (sound prefs, custom-file picker)</td></tr>
       <tr><td>src/stores/workspace.ts</td><td>Pinia: workspaces list, active, opened — invoke list/create/remove/touch</td></tr>
       <tr><td>src/stores/agents.ts</td><td>Pinia: agent configs — localStorage persistence, CRUD, commandLine()</td></tr>
+      <tr><td>src/stores/ui.ts</td><td>Pinia: settings open, font/scale prefs, <strong>color theme</strong>, <strong>notification-sound prefs</strong> — localStorage, applies theme CSS vars to <code>:root</code>, exposes <code>activeTheme</code></td></tr>
+      <tr><td>src/lib/sounds.ts</td><td>Notification-sound registry + <code>playSound(kind)</code>: bundled clips in <code>src/assets/sounds/</code>, custom file read via <code>read_file_base64</code> → Blob URL. Fired from <code>Terminal.vue</code> on review (done-while-away) + waiting states</td></tr>
+      <tr><td>src/themes.ts</td><td>Theme registry: Dark (default), Light, Monokai, Cobalt2 — each has chrome CSS vars + xterm palette + shiki name. Picked in Settings → Appearance</td></tr>
       <tr><td>src/stores/terminal.ts</td><td>Pinia: terminal tab state</td></tr>
       <tr><td>src/stores/fileTree.ts</td><td>Pinia: file tree for explorer panel</td></tr>
       <tr><td>src/stores/git.ts</td><td>Pinia: git status, branch, stage/unstage, diff, git init</td></tr>
@@ -240,12 +244,14 @@
       <tr><td>list_workspaces()</td><td>Return all workspaces from SQLite</td></tr>
       <tr><td>create_workspace(name, path)</td><td>Insert workspace row</td></tr>
       <tr><td>delete_workspace(id)</td><td>Delete workspace row</td></tr>
+      <tr><td>rename_workspace(id, name)</td><td>Rename workspace row (sidebar context menu)</td></tr>
       <tr><td>touch_workspace(id)</td><td>Update last_opened timestamp</td></tr>
       <tr><td>list_terminal_tabs(workspaceId)</td><td>Load persisted tab list for workspace</td></tr>
       <tr><td>save_terminal_tabs(workspaceId, tabs)</td><td>Persist tab list</td></tr>
       <tr><td>get_pty_foreground(id)</td><td>Foreground process name (poll → tab title; never fabricates agent busy)</td></tr>
       <tr><td>take_spawn_requests(cwd)</td><td>Claim <code>burrow spawn</code> request dirs routed to this workspace</td></tr>
       <tr><td>get_hook_server_port()</td><td>Port of the local status-hook HTTP server</td></tr>
+      <tr><td>set_max_agents(n)</td><td>Publish the soft sub-agent cap (Settings → Agents) to <code>&lt;app-data&gt;/max_agents</code> for the <code>burrow</code> CLI / <code>/burrow</code> skill</td></tr>
       <tr><td>reinstall_status_hooks()</td><td>Re-merge the <code>burrow hook</code> status hook into Claude/Codex global config (idempotent)</td></tr>
       <tr><td>remove_status_hooks()</td><td>Strip burrow's status hooks back out (leaves other hooks intact)</td></tr>
       <tr><td>get_config_dirs()</td><td>List the agent config dirs hooks+docs install into (seeded with <code>~/.claude</code>, <code>~/.codex</code> + any <code>CLAUDE_CONFIG_DIR</code>/<code>CODEX_HOME</code> env)</td></tr>
@@ -291,7 +297,8 @@
       <tr><td><span class="kbd">⌘W</span></td><td>Close focused pane/tab</td></tr>
       <tr><td><span class="kbd">⌘D</span></td><td>Split pane horizontally</td></tr>
       <tr><td><span class="kbd">⌘⇧D</span></td><td>Split pane vertically</td></tr>
-      <tr><td><span class="kbd">⌘1–5</span></td><td>Launch agents (default config)</td></tr>
+      <tr><td><span class="kbd">⌘1–9</span></td><td>Switch project/workspace</td></tr>
+      <tr><td><span class="kbd">⌘⇧1–5</span></td><td>Launch agents (default config; per-agent configurable)</td></tr>
     </tbody>
   </table>
 

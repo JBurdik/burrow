@@ -13,6 +13,7 @@
           class="ws-item"
           :class="{ active: store.active?.id === item.id }"
           @click="store.open(item)"
+          @contextmenu.prevent.stop="openCtxMenu(item, $event)"
         >
           <div class="ws-icon-wrap" @click.stop="pickIcon(item.id)" title="Change icon">
             <img v-if="store.icons[item.id]" :src="store.icons[item.id]" class="ws-custom-icon" />
@@ -139,6 +140,43 @@
       </button>
     </div>
 
+    <!-- Workspace context menu -->
+    <Teleport to="body">
+      <div
+        v-if="ctxMenu"
+        class="ctx-menu"
+        :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+        @click.stop
+        @contextmenu.prevent.stop
+      >
+        <button class="ctx-item" @click="ctxOpen()"><PhFolderOpen :size="13" />Open</button>
+        <button class="ctx-item" @click="ctxRename()"><PhPencilSimple :size="13" />Rename…</button>
+        <button class="ctx-item" @click="ctxIcon()"><PhImage :size="13" />Change icon…</button>
+        <button v-if="store.icons[ctxMenu.wsId]" class="ctx-item" @click="ctxClearIcon()"><PhImage :size="13" />Reset icon</button>
+        <div class="ctx-sep" />
+        <button class="ctx-item ctx-danger" @click="ctxRemove()"><PhTrash :size="13" />Remove</button>
+      </div>
+    </Teleport>
+
+    <!-- Rename dialog -->
+    <div class="dialog-overlay" v-if="renameId !== null" @click.self="renameId = null">
+      <div class="dialog">
+        <h3>Rename workspace</h3>
+        <input
+          v-model="renameName"
+          class="dialog-input"
+          placeholder="Workspace name"
+          @keydown.enter="confirmRename"
+          @keydown.esc="renameId = null"
+          ref="renameInputEl"
+        />
+        <div class="dialog-actions">
+          <button class="btn-secondary" @click="renameId = null">Cancel</button>
+          <button class="btn-primary" @click="confirmRename" :disabled="!renameName.trim()">Rename</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Name dialog -->
     <div class="dialog-overlay" v-if="pendingPath" @click.self="pendingPath = ''">
       <div class="dialog">
@@ -172,6 +210,9 @@ import {
   PhRobot,
   PhPlus,
   PhGitBranch,
+  PhPencilSimple,
+  PhImage,
+  PhTrash,
 } from "@phosphor-icons/vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -259,7 +300,7 @@ function showCreateOption() {
 
 onMounted(() => {
   store.workspaces.forEach(ws => fetchBranch(ws));
-  document.addEventListener("click", () => { showBranchPicker.value = null; });
+  document.addEventListener("click", () => { showBranchPicker.value = null; ctxMenu.value = null; });
 });
 watch(() => store.workspaces, (wss) => wss.forEach(ws => {
   if (!(ws.id in wsBranch.value)) fetchBranch(ws);
@@ -329,6 +370,62 @@ function selectTab(ws: Workspace, tabId: number) {
 function addTab(ws: Workspace) {
   if (store.active?.id !== ws.id) store.open(ws);
   nextTick(() => termTabs.add(ws.id));
+}
+
+// ── context menu ───────────────────────────────────────────────────────────
+const ctxMenu = ref<{ wsId: number; x: number; y: number } | null>(null);
+
+function openCtxMenu(item: Workspace, e: MouseEvent) {
+  // Clamp x so the menu (≈180px) never spills past the right edge.
+  const x = Math.min(e.clientX, window.innerWidth - 190);
+  ctxMenu.value = { wsId: item.id, x, y: e.clientY };
+}
+function ctxItem(): Workspace | undefined {
+  return store.workspaces.find((w) => w.id === ctxMenu.value?.wsId);
+}
+function ctxOpen() {
+  const w = ctxItem();
+  ctxMenu.value = null;
+  if (w) store.open(w);
+}
+function ctxRename() {
+  const w = ctxItem();
+  ctxMenu.value = null;
+  if (w) startRename(w);
+}
+async function ctxIcon() {
+  const id = ctxMenu.value?.wsId;
+  ctxMenu.value = null;
+  if (id != null) await pickIcon(id);
+}
+function ctxClearIcon() {
+  const id = ctxMenu.value?.wsId;
+  ctxMenu.value = null;
+  if (id != null) store.clearIcon(id);
+}
+function ctxRemove() {
+  const id = ctxMenu.value?.wsId;
+  ctxMenu.value = null;
+  if (id != null) store.remove(id);
+}
+
+// ── rename dialog ──────────────────────────────────────────────────────────
+const renameId = ref<number | null>(null);
+const renameName = ref("");
+const renameInputEl = ref<HTMLInputElement>();
+
+async function startRename(w: Workspace) {
+  renameId.value = w.id;
+  renameName.value = w.name;
+  await nextTick();
+  renameInputEl.value?.focus();
+  renameInputEl.value?.select();
+}
+async function confirmRename() {
+  const name = renameName.value.trim();
+  if (renameId.value === null || !name) return;
+  await store.rename(renameId.value, name);
+  renameId.value = null;
 }
 
 const pendingPath = ref("");
@@ -720,6 +817,39 @@ async function confirmCreate() {
 .branch-check { margin-left: auto; color: var(--accent); }
 .branch-loading { color: var(--text-muted); font-style: italic; }
 .branch-empty { color: var(--text-muted); font-size: 10px; padding: 8px; text-align: center; }
+
+/* context menu */
+.ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 170px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  text-align: left;
+  padding: 6px 10px;
+}
+.ctx-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.ctx-item.ctx-danger:hover { color: var(--red); }
+.ctx-sep { height: 1px; background: var(--border); margin: 3px 0; }
 
 .ws-icon-wrap {
   position: relative;

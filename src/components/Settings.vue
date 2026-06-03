@@ -238,6 +238,27 @@
             </div>
           </div>
 
+          <div class="settings-group">
+            <span class="group-label">Sub-agent delegation</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Max concurrent sub-agents</span>
+                <span class="field-desc">Soft per-workspace cap the <code>/burrow</code> skill respects when it spawns agents (1–20)</span>
+              </div>
+              <div class="size-ctl">
+                <input
+                  class="select size-inp"
+                  type="number"
+                  min="1"
+                  max="20"
+                  :value="ui.maxAgents"
+                  @input="ui.maxAgents = clampRange(val($event), 1, 20, 3)"
+                />
+                <span class="size-unit">agents</span>
+              </div>
+            </div>
+          </div>
+
           <div class="sec-foot">
             <button class="reset-btn" @click="store.reset()">
               <PhArrowCounterClockwise :size="12" /> Reset to defaults
@@ -371,6 +392,113 @@
           </div>
         </section>
 
+        <!-- Notifications -->
+        <section v-else-if="active === 'notifications'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Notifications</h2>
+              <span class="sec-sub">Sounds for agent activity</span>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <div class="settings-group">
+            <span class="group-label">General</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Enable sounds</span>
+                <span class="field-desc">Master switch for all notification sounds</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" :checked="ui.soundEnabled" @change="ui.soundEnabled = ($event.target as HTMLInputElement).checked" />
+                <span class="toggle-track"><span class="toggle-thumb" /></span>
+              </label>
+            </div>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Volume</span>
+                <span class="field-desc">Playback volume ({{ ui.soundVolume }}%)</span>
+              </div>
+              <input
+                class="vol-range"
+                type="range"
+                min="0"
+                max="100"
+                :value="ui.soundVolume"
+                @input="ui.soundVolume = clampRange(val($event), 0, 100, 70)"
+              />
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <span class="group-label">Agent finished</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Play when an agent finishes while you're away</span>
+                <span class="field-desc">Fires on the "review" state (another tab/window)</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" :checked="ui.soundDoneEnabled" @change="ui.soundDoneEnabled = ($event.target as HTMLInputElement).checked" />
+                <span class="toggle-track"><span class="toggle-thumb" /></span>
+              </label>
+            </div>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Sound</span>
+                <span class="field-desc">Choose a built-in sound or a custom file</span>
+              </div>
+              <div class="sound-ctl">
+                <select class="select" :value="ui.soundDoneId" @change="ui.soundDoneId = val($event)">
+                  <option v-for="s in BUILTIN_SOUNDS" :key="s.id" :value="s.id">{{ s.label }}</option>
+                  <option value="custom">Custom file…</option>
+                </select>
+                <button class="icon-btn" title="Test" @click="playSound('done', true)"><PhPlay :size="13" /></button>
+              </div>
+            </div>
+            <div v-if="ui.soundDoneId === 'custom'" class="field">
+              <div class="field-info">
+                <span class="field-name">Custom file</span>
+                <span class="field-desc">{{ ui.soundDoneCustomPath ? soundFileName(ui.soundDoneCustomPath) : "No file selected" }}</span>
+              </div>
+              <button class="reset-btn" @click="pickSound('done')"><PhFolderOpen :size="12" /> Choose…</button>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <span class="group-label">Needs input</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Play when an agent is waiting for your input</span>
+                <span class="field-desc">Fires on the "waiting" state</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" :checked="ui.soundWaitingEnabled" @change="ui.soundWaitingEnabled = ($event.target as HTMLInputElement).checked" />
+                <span class="toggle-track"><span class="toggle-thumb" /></span>
+              </label>
+            </div>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Sound</span>
+                <span class="field-desc">Choose a built-in sound or a custom file</span>
+              </div>
+              <div class="sound-ctl">
+                <select class="select" :value="ui.soundWaitingId" @change="ui.soundWaitingId = val($event)">
+                  <option v-for="s in BUILTIN_SOUNDS" :key="s.id" :value="s.id">{{ s.label }}</option>
+                  <option value="custom">Custom file…</option>
+                </select>
+                <button class="icon-btn" title="Test" @click="playSound('waiting', true)"><PhPlay :size="13" /></button>
+              </div>
+            </div>
+            <div v-if="ui.soundWaitingId === 'custom'" class="field">
+              <div class="field-info">
+                <span class="field-name">Custom file</span>
+                <span class="field-desc">{{ ui.soundWaitingCustomPath ? soundFileName(ui.soundWaitingCustomPath) : "No file selected" }}</span>
+              </div>
+              <button class="reset-btn" @click="pickSound('waiting')"><PhFolderOpen :size="12" /> Choose…</button>
+            </div>
+          </div>
+        </section>
+
         <!-- Keybindings -->
         <section v-else-if="active === 'keybindings'" class="section">
           <div class="sec-head">
@@ -429,6 +557,50 @@
           </div>
         </section>
 
+        <!-- Appearance -->
+        <section v-else-if="active === 'appearance'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Appearance</h2>
+              <span class="sec-sub">Color theme</span>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <div class="settings-group">
+            <span class="group-label">Theme</span>
+            <div class="theme-grid">
+              <button
+                v-for="t in THEMES"
+                :key="t.key"
+                class="theme-card"
+                :class="{ selected: ui.theme === t.key }"
+                @click="ui.setTheme(t.key)"
+              >
+                <div
+                  class="theme-swatch"
+                  :style="{ background: t.vars['bg-base'], borderColor: t.vars.border }"
+                >
+                  <div class="sw-panel" :style="{ background: t.vars['bg-panel'] }">
+                    <span class="sw-line" :style="{ background: t.vars['text-primary'] }" />
+                    <span class="sw-line short" :style="{ background: t.vars['text-secondary'] }" />
+                  </div>
+                  <div class="sw-dots">
+                    <span :style="{ background: t.vars.accent }" />
+                    <span :style="{ background: t.vars.green }" />
+                    <span :style="{ background: t.vars.yellow }" />
+                    <span :style="{ background: t.vars.red }" />
+                  </div>
+                </div>
+                <div class="theme-card-foot">
+                  <span class="theme-name">{{ t.label }}</span>
+                  <PhCheck v-if="ui.theme === t.key" :size="13" class="theme-check" />
+                </div>
+              </button>
+            </div>
+          </div>
+        </section>
+
         <!-- Other panels (placeholder) -->
         <section v-else class="section placeholder">
           <component :is="activeIcon" :size="22" />
@@ -445,7 +617,7 @@ import {
   PhGearSix, PhX, PhPlus, PhTrash, PhArrowCounterClockwise,
   PhSlidersHorizontal, PhFolderOpen, PhRobot, PhPalette, PhKeyboard,
   PhPuzzlePiece, PhInfo, PhSparkle, PhCode, PhGitBranch, PhTerminal,
-  PhListBullets, PhCaretDown, PhFolder, PhPencilSimple,
+  PhListBullets, PhCaretDown, PhFolder, PhPencilSimple, PhCheck, PhBell, PhPlay,
 } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -455,6 +627,8 @@ import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
 import { useAgentsStore, type AgentIcon } from "@/stores/agents";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore, UI_FONTS, TERMINAL_FONTS } from "@/stores/ui";
+import { THEMES } from "@/themes";
+import { BUILTIN_SOUNDS, playSound, type SoundKind } from "@/lib/sounds";
 
 defineEmits<{ close: [] }>();
 
@@ -479,6 +653,27 @@ async function pickWsIcon(id: number) {
   const b64 = await invoke<string>("read_file_base64", { path: selected });
   wsStore.setIcon(id, `data:${mimeForPath(selected)};base64,${b64}`);
 }
+// Notification sounds: choose a custom audio file for done/waiting and store its
+// path; sounds.ts reads it lazily via read_file_base64.
+async function pickSound(kind: SoundKind) {
+  const selected = await openDialog({
+    multiple: false,
+    filters: [{ name: "Audio", extensions: ["wav", "mp3", "ogg", "m4a", "aac", "flac"] }],
+  });
+  if (!selected || typeof selected !== "string") return;
+  if (kind === "done") {
+    ui.soundDoneCustomPath = selected;
+    ui.soundDoneId = "custom";
+  } else {
+    ui.soundWaitingCustomPath = selected;
+    ui.soundWaitingId = "custom";
+  }
+}
+
+function soundFileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 const active = ref("general");
 const flagEditId = ref<string | null>(null);
 
@@ -597,6 +792,7 @@ const navItems: NavItem[] = [
   { id: "agents", label: "Agents", icon: PhRobot },
   { divider: true },
   { id: "appearance", label: "Appearance", icon: PhPalette },
+  { id: "notifications", label: "Notifications", icon: PhBell },
   { id: "keybindings", label: "Keybindings", icon: PhKeyboard },
   { id: "extensions", label: "Extensions", icon: PhPuzzlePiece },
   { id: "about", label: "About", icon: PhInfo },
@@ -661,11 +857,11 @@ const SHORTCUT_GROUPS = [
   {
     label: "Agents",
     shortcuts: [
-      { keys: "⌘ 1",  desc: "Launch Claude Code" },
-      { keys: "⌘ 2",  desc: "Launch Codex" },
-      { keys: "⌘ 3",  desc: "Launch GitHub Copilot" },
-      { keys: "⌘ 4",  desc: "Launch Aider" },
-      { keys: "⌘ 5",  desc: "Launch Cursor AI" },
+      { keys: "⌘ ⇧ 1",  desc: "Launch Claude Code" },
+      { keys: "⌘ ⇧ 2",  desc: "Launch Codex" },
+      { keys: "⌘ ⇧ 3",  desc: "Launch GitHub Copilot" },
+      { keys: "⌘ ⇧ 4",  desc: "Launch Aider" },
+      { keys: "⌘ ⇧ 5",  desc: "Launch Cursor AI" },
     ],
   },
   {
@@ -687,7 +883,7 @@ const SHORTCUT_GROUPS = [
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #0a0a0a;
+  background: var(--bg-base);
   z-index: 1000;
 }
 
@@ -698,31 +894,31 @@ const SHORTCUT_GROUPS = [
   gap: 10px;
   height: 52px;
   padding: 0 24px;
-  background: #0d0d0d;
-  border-bottom: 1px solid #1e1e1e;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.s-head-icon { color: #555; }
-.s-title { font-size: 14px; font-weight: 600; color: #e2e2e2; }
+.s-head-icon { color: var(--text-muted); }
+.s-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .s-spacer { flex: 1; }
 .s-close {
   background: none;
   border: none;
-  color: #444;
+  color: var(--text-muted);
   cursor: pointer;
   display: flex;
   padding: 4px;
   border-radius: 4px;
 }
-.s-close:hover { color: #e2e2e2; background: var(--bg-hover); }
+.s-close:hover { color: var(--text-primary); background: var(--bg-hover); }
 
 .s-body { display: flex; flex: 1; overflow: hidden; }
 
 /* Nav */
 .s-nav {
   width: 220px;
-  background: #0d0d0d;
-  border-right: 1px solid #1e1e1e;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
   padding: 10px 0;
   display: flex;
   flex-direction: column;
@@ -738,30 +934,30 @@ const SHORTCUT_GROUPS = [
   background: none;
   border: none;
   border-left: 2px solid transparent;
-  color: #666;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 13px;
   text-align: left;
 }
-.nav-icon { color: #555; flex-shrink: 0; }
-.nav-item:hover { background: #121212; }
+.nav-icon { color: var(--text-muted); flex-shrink: 0; }
+.nav-item:hover { background: var(--bg-hover); }
 .nav-item.active {
-  background: #161616;
-  border-left-color: #7c3aed;
-  color: #e2e2e2;
+  background: var(--bg-hover);
+  border-left-color: var(--accent);
+  color: var(--text-primary);
 }
-.nav-item.active .nav-icon { color: #a78bfa; }
-.nav-divider { height: 1px; background: #1a1a1a; margin: 8px 0; }
+.nav-item.active .nav-icon { color: var(--accent); }
+.nav-divider { height: 1px; background: var(--border); margin: 8px 0; }
 
 /* Content */
-.s-content { flex: 1; overflow-y: auto; padding: 32px 40px; background: #0a0a0a; }
+.s-content { flex: 1; overflow-y: auto; padding: 32px 40px; background: var(--bg-base); }
 
 .section { display: flex; flex-direction: column; gap: 14px; }
 
 .sec-head { display: flex; align-items: center; gap: 10px; }
 .sec-titles { display: flex; align-items: baseline; gap: 10px; }
-.sec-title { font-size: 15px; font-weight: 600; color: #e8e8e8; }
-.sec-sub { font-size: 12px; color: #3a3a3a; }
+.sec-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.sec-sub { font-size: 12px; color: var(--text-muted); }
 .sec-head .add-btn { margin-left: auto; }
 
 .add-btn {
@@ -778,7 +974,7 @@ const SHORTCUT_GROUPS = [
 }
 .add-btn:hover { color: #e2e2e2; border-color: #444; }
 
-.sec-divider { height: 1px; background: #1a1a1a; }
+.sec-divider { height: 1px; background: var(--border); }
 
 /* Table */
 .tbl { display: flex; flex-direction: column; gap: 8px; }
@@ -1009,36 +1205,50 @@ const SHORTCUT_GROUPS = [
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #555;
+  color: var(--text-muted);
 }
 .field {
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 12px 16px;
-  background: #0f0f0f;
-  border: 1px solid #1e1e1e;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 .field-info { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
-.field-name { font-size: 13px; font-weight: 500; color: #e2e2e2; }
-.field-desc { font-size: 11px; color: #555; }
+.field-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.field-desc { font-size: 11px; color: var(--text-muted); }
 
 .select {
-  background: #161616;
-  border: 1px solid #252525;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
   border-radius: 5px;
-  color: #e2e2e2;
+  color: var(--text-primary);
   font-size: 12px;
   padding: 6px 10px;
   outline: none;
   cursor: pointer;
   min-width: 200px;
 }
-.select:hover { border-color: #333; }
+.select:hover { border-color: var(--text-muted); }
 .select:focus { border-color: var(--accent); }
 
 .size-ctl { display: flex; align-items: center; gap: 6px; }
+.sound-ctl { display: flex; align-items: center; gap: 6px; }
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid #1e1e1e;
+  border-radius: 5px;
+  color: #777;
+  cursor: pointer;
+  padding: 5px 7px;
+}
+.icon-btn:hover { color: #aaa; border-color: #333; }
+.vol-range { width: 160px; accent-color: var(--accent, #d97757); cursor: pointer; }
 .size-inp { min-width: 0; width: 64px; cursor: text; text-align: center; }
 .size-unit { font-size: 12px; color: #555; }
 
@@ -1051,6 +1261,79 @@ const SHORTCUT_GROUPS = [
   line-height: 1.4;
 }
 .tp-prompt { color: #22c55e; }
+
+/* Appearance — theme picker */
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.theme-card:hover { border-color: var(--text-muted); }
+.theme-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.theme-swatch {
+  position: relative;
+  height: 64px;
+  border: 1px solid;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.sw-panel {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 46%;
+  height: calc(100% - 16px);
+  border-radius: 4px;
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sw-line {
+  height: 4px;
+  width: 80%;
+  border-radius: 2px;
+  opacity: 0.9;
+}
+.sw-line.short { width: 50%; opacity: 0.6; }
+.sw-dots {
+  position: absolute;
+  bottom: 9px;
+  right: 9px;
+  display: flex;
+  gap: 5px;
+}
+.sw-dots span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.theme-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+.theme-name {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.theme-check { color: var(--accent); }
 
 .placeholder {
   align-items: center;

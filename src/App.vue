@@ -19,8 +19,8 @@
           :ref="(el) => setTermRef(w.id, el)"
         />
       </div>
-      <div class="resize-handle panel-resize-right" @mousedown="startResize('right', $event)" />
-      <RightPanel class="panel-right" :cwd="ws.active?.path ?? ''" />
+      <div v-show="ui.rightPanelVisible" class="resize-handle panel-resize-right" @mousedown="startResize('right', $event)" />
+      <RightPanel v-show="ui.rightPanelVisible" class="panel-right" :cwd="ws.active?.path ?? ''" />
     </div>
     <Spotlight
       ref="spotlightRef"
@@ -70,6 +70,8 @@ import ToastStack from "@/components/ToastStack.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
 import { useGitStore } from "@/stores/git";
+import { useAgentsStore } from "@/stores/agents";
+import { matchesShortcut } from "@/lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 const sidebarWidth = ref(220);
@@ -120,6 +122,7 @@ function onResizeUp() {
 const ws = useWorkspaceStore();
 const ui = useUIStore();
 const git = useGitStore();
+const agents = useAgentsStore();
 const spotlightRef = ref<InstanceType<typeof Spotlight> | null>(null);
 const cheatsheetOpen = ref(false);
 
@@ -152,6 +155,12 @@ const CHEATSHEET_GROUPS = [
     label: "Projects",
     shortcuts: [
       { keys: "⌘ 1-9", desc: "Switch project" },
+    ],
+  },
+  {
+    label: "Agents",
+    shortcuts: [
+      { keys: "⌘ ⇧ 1-5", desc: "Launch agent (configurable)" },
     ],
   },
 ];
@@ -189,6 +198,15 @@ onBeforeUnmount(() => {
 });
 
 function onKeydown(e: KeyboardEvent) {
+  // Agent launch shortcuts (user-configured per agent). Checked first so a
+  // bound combo wins; defaults use ⌘⇧1-5 to avoid the plain ⌘1-9 ws switch.
+  for (const a of agents.agents) {
+    if (a.command.trim() && matchesShortcut(e, a.shortcut)) {
+      e.preventDefault();
+      activeTerm()?.spawnAgent(agents.commandLine(a));
+      return;
+    }
+  }
   if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
     if (e.key === ",") {
       e.preventDefault();
@@ -226,6 +244,7 @@ function onKeydown(e: KeyboardEvent) {
 
 :root {
   --bg-base: #0d0d0d;
+  --terminal-bg: #0a0a0a;
   --bg-panel: #111111;
   --bg-hover: #1a1a1a;
   --bg-selected: #1e3a5f;

@@ -60,6 +60,15 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     clearIcon(id);
   }
 
+  async function rename(id: number, name: string) {
+    await invoke("rename_workspace", { id, name });
+    const w = workspaces.value.find((x) => x.id === id);
+    if (w) w.name = name;
+    if (active.value?.id === id) active.value.name = name;
+    const o = opened.value.find((x) => x.id === id);
+    if (o) o.name = name;
+  }
+
   async function open(ws: Workspace) {
     await invoke("touch_workspace", { id: ws.id });
     if (!opened.value.some((w) => w.id === ws.id)) opened.value.push(ws);
@@ -69,5 +78,5 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   // Back to the picker: keep `opened` (and its live terminals) intact.
   function close() { active.value = null; }
 
-  return { workspaces, active, opened, icons, load, create, remove, open, close, setIcon, clearIcon };
+  return { workspaces, active, opened, icons, load, create, remove, rename, open, close, setIcon, clearIcon };
 });

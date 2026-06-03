@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Recap — status indicators + sub-agent delegation rework (2026-06-03)</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --bg-panel: #111;
+    --border: #222;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #f87171;
+    --purple: #a78bfa;
+    --mono: "JetBrains Mono", "Fira Code", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.6; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 48px 24px 80px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .back { font-size: 12px; color: var(--muted); margin-bottom: 18px; display: inline-block; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+  .tagline { color: var(--muted); font-size: 15px; margin-bottom: 28px; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 36px 0 14px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 15px; font-weight: 600; margin: 22px 0 8px; color: var(--text); }
+  p { color: #cbd5e1; margin-bottom: 12px; }
+  ul { padding-left: 20px; color: #cbd5e1; }
+  li { margin-bottom: 6px; }
+  code { font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px; color: #93c5fd; }
+  pre { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; overflow-x: auto; margin-bottom: 14px; }
+  pre code { background: none; padding: 0; color: #cbd5e1; font-size: 12.5px; line-height: 1.5; }
+  .note { background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #bfdbfe; }
+  .warn { background: rgba(234,179,8,0.08); border: 1px solid rgba(234,179,8,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #fde68a; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 14px; }
+  th { text-align: left; padding: 6px 10px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td { padding: 7px 10px; border-bottom: 1px solid #1a1a1a; vertical-align: top; }
+  td:first-child { font-family: var(--mono); color: #93c5fd; white-space: nowrap; }
+  .bug { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .b-orange { background:#f97316; } .b-blue { background:#3b82f6; } .b-green { background:#22c55e; } .b-rename { background:#a78bfa; }
+  .card { background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; padding:16px 18px; margin-bottom:14px; }
+  .card h3 { margin-top:0; }
+  .lbl { font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); }
+  .files code { color:#fcd34d; }
+  hr { border:none; border-top:1px solid var(--border); margin:28px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <a class="back" href="context.html">← Project context</a>
+  <h1>Recap — status dots &amp; sub-agent delegation</h1>
+  <div class="tagline">What changed on 2026-06-03: status-indicator bug fixes + a reworked fire-and-forget delegation model. See also <a href="burrow.html">burrow.html</a> and <a href="context.html">context.html</a>.</div>
+
+  <div class="note">
+    <strong>TL;DR.</strong> Fixed the agent status dots (stuck-orange, false-blue, mid-conversation renames, and the
+    <em>real</em> showstopper: a stale hook-server port after an app restart). Reworked sub-agent delegation from
+    <em>block-and-wait</em> to <em>fire-and-forget + <code>burrow collect</code></em>, added <code>burrow sessions</code>, and a
+    soft per-workspace agent cap configurable in Settings.
+  </div>
+
+  <h2>Part 1 — Status indicator fixes</h2>
+
+  <div class="card">
+    <h3><span class="bug b-orange"></span>Bug A — stuck orange (running) after the agent finished</h3>
+    <p class="lbl">Cause</p>
+    <p><code>running</code> was only cleared by a <code>Stop</code> hook or the shell returning to foreground. A lost best-effort
+      POST or an interrupted turn left the spinner on forever.</p>
+    <p class="lbl">Fix</p>
+    <p>Idle <code>Notification</code> now maps to <code>done</code> (clears it); the poll emits <code>busy=false</code> when the
+      shell returns. (See also the port fix below — the dominant real cause.)</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="bug b-blue"></span>Bug B — done shows blue (waiting for user)</h3>
+    <p class="lbl">Cause</p>
+    <p>Claude Code fires <code>Notification</code> for <em>two</em> things: a permission prompt <strong>and</strong> ~60&nbsp;s
+      after a turn ends, idle at the prompt (<em>"…waiting for your input"</em>). The CLI mapped <em>every</em>
+      <code>Notification</code> → <code>waiting</code> (blue), so a finished agent flipped blue. Worse, that trailing
+      <code>waiting</code> clobbered the fresh <code>done</code> because the listener emitted <code>busy</code>+<code>needsInput</code>
+      as two order-dependent signals.</p>
+    <p class="lbl">Fix</p>
+    <p><code>burrow hook</code> now disambiguates <code>Notification</code> by its <code>message</code> (idle ping → <code>done</code>,
+      else → <code>waiting</code>). <code>XTerm.vue</code> forwards a single semantic <code>agentState</code> event, so ordering
+      can't corrupt the state.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="bug b-rename"></span>Bug C — terminal renamed mid-conversation</h3>
+    <p class="lbl">Cause</p>
+    <p>The 2&nbsp;s poll treated an <strong>empty</strong> <code>get_pty_foreground</code> reading (a daemon race) as "idle" and
+      reset the tab to "Terminal N"; child processes the agent spawned also stole the title.</p>
+    <p class="lbl">Fix</p>
+    <p>Empty readings are ignored; the poll is now <strong>sticky per agent session</strong> (stays "Claude" across child
+      processes until the shell genuinely returns).</p>
+  </div>
+
+  <div class="card" style="border-color:rgba(34,197,94,0.4)">
+    <h3><span class="bug b-green"></span>Root cause #0 — stale hook-server port (the real showstopper)</h3>
+    <p class="lbl">Cause</p>
+    <p>The hook server binds a <strong>random port each launch</strong> (<code>127.0.0.1:0</code>). <code>create_pty</code> bakes
+      that port into the PTY env (<code>BURROW_HOOK_PORT</code>). After an app restart, daemon-reattached PTYs keep the
+      <em>old</em> port while the server moved to a new one — and <code>burrow status</code> trusted the env port first. Result:
+      every reattached session POSTed to a dead port → <strong>the dot never updated at all</strong>, and any <code>done</code>
+      sent after a restart was lost (→ permanent orange).</p>
+    <p class="lbl">Fix</p>
+    <p>The live <code>&lt;app-data&gt;/hook.port</code> file is now <strong>authoritative</strong> (rewritten every launch); the
+      env port is only a fallback. Diagnosed against the live app: server returned HTTP&nbsp;200 but the installed CLI was POSTing
+      to the stale port.</p>
+  </div>
+
+  <h3>Status flow (after fixes)</h3>
+  <pre><code>agent hook fires
+  └─ burrow hook  (maps hook_event_name → running|waiting|done; Notification by message)
+       └─ burrow status &lt;state&gt;   (POST to hook.port — FILE first, env fallback)
+            └─ hook HTTP server emits  pty-hook-{id}
+                 └─ XTerm.vue → ONE agentState event
+                      └─ Terminal.vue onAgentState → status dot
+                         (running=orange spinner · waiting=blue · done=lime · review=green pulse)</code></pre>
+
+  <hr />
+
+  <h2>Part 2 — Sub-agent delegation rework</h2>
+
+  <p>Old model: <code>burrow spawn --token t</code> then <code>burrow wait t</code> — which <strong>blocked</strong> the spawning
+    agent. New model: <strong>fire-and-forget + collect</strong>. Spawn agents, keep working, pull results when you want.</p>
+
+  <h3>New / changed commands</h3>
+  <table>
+    <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>burrow spawn</td><td>Fire-and-forget (unchanged), now prints the soft per-workspace limit on success</td></tr>
+      <tr><td>burrow collect [tok…]</td><td><strong>New.</strong> Non-blocking: print + <em>consume</em> the results of finished tokens; report the rest as pending. No tokens = every finished sub-agent</td></tr>
+      <tr><td>burrow sessions [--count]</td><td><strong>New.</strong> List live daemon PTY sessions (pty id + cwd) via the daemon socket protocol</td></tr>
+      <tr><td>burrow wait</td><td>Kept as <em>legacy</em> blocking variant — prefer <code>collect</code></td></tr>
+      <tr><td>burrow capture</td><td>Now also calls <code>burrow status done</code> (per-launch <code>--settings</code> Stop hook overrode the global one → fixed stuck-orange sub-agents)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>The recap pattern</h3>
+  <pre><code>burrow spawn --token a claude "audit src/auth for bugs"
+burrow spawn --token b claude "audit src/api for bugs"
+# …keep doing your own work — never block…
+burrow collect a b      # prints whichever FINISHED, consumes them
+burrow collect a b      # later: picks up the stragglers</code></pre>
+
+  <h3>Soft concurrency limit</h3>
+  <p>Configurable in <strong>Settings → Agents → Max concurrent sub-agents</strong> (default 3, per workspace). The frontend
+    publishes it via the new <code>set_max_agents</code> Tauri command to <code>&lt;app-data&gt;/max_agents</code>, which
+    <code>burrow spawn</code> reads and surfaces. It is <strong>advisory</strong> — the <code>/burrow</code> skill is instructed
+    to respect it; nothing hard-blocks a spawn.</p>
+
+  <hr />
+
+  <h2>Files touched</h2>
+  <table class="files">
+    <thead><tr><th>File</th><th>Change</th></tr></thead>
+    <tbody>
+      <tr><td>src-tauri/bin/burrow</td><td>Notification-by-message; port file-first; <code>capture</code>→<code>status done</code>; new <code>collect</code> + <code>sessions</code>; spawn limit note</td></tr>
+      <tr><td>src-tauri/src/lib.rs</td><td>New <code>set_max_agents</code> command; rewrote <code>BURROW_SKILL_MD</code> / <code>BURROW_AGENT_DOC</code> for the collect model</td></tr>
+      <tr><td>src/components/XTerm.vue</td><td>Single <code>agentState</code> emit; sticky-agent poll; ignore empty foreground readings</td></tr>
+      <tr><td>src/components/Terminal.vue</td><td><code>onAgentState()</code> clean state machine (replaced <code>onLeafDone</code>)</td></tr>
+      <tr><td>src/stores/ui.ts</td><td><code>maxAgents</code> pref (default 3), persisted + published to CLI</td></tr>
+      <tr><td>src/components/Settings.vue</td><td>"Max concurrent sub-agents" number input under Agents</td></tr>
+      <tr><td>docs/*</td><td>burrow.html + context.html updated; this recap added</td></tr>
+      <tr><td>CLAUDE.md</td><td>Hook-mapping, port, capture, and command docs synced</td></tr>
+    </tbody>
+  </table>
+
+  <div class="warn">
+    <strong>Activation:</strong> the <code>burrow</code> script ships embedded via <code>include_str!</code> and is written to
+    <code>&lt;app-data&gt;/bin/burrow</code> on PTY spawn, so the rebuilt <code>Burrow.app</code> must be reinstalled and the app
+    fully restarted for everything to take effect permanently (daemon-reattached PTYs need the new backend). Built artifacts:
+    <code>src-tauri/target/release/bundle/macos/Burrow.app</code> + the <code>.dmg</code>.
+  </div>
+
+</div>
+</body>
+</html>

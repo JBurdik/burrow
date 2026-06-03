@@ -72,16 +72,42 @@
   <h2>Commands</h2>
 
   <h3><code>burrow spawn [--token T] [--cwd DIR] &lt;command...&gt;</code></h3>
-  <p>Open a new terminal tab in the <strong>current project</strong> and run <code>command</code> in it.</p>
+  <p>Open a new terminal tab in the <strong>current project</strong> and run <code>command</code> in it. <strong>Fire-and-forget</strong> — returns immediately.</p>
   <ul>
-    <li><code>--token T</code> — attach an id so you can <code>burrow wait T</code> for the result.</li>
+    <li><code>--token T</code> — attach an id so you can <code>burrow collect T</code> for the result later.</li>
     <li><code>--cwd DIR</code> — run the new tab in <code>DIR</code> instead of the current project dir.</li>
   </ul>
   <pre><code>burrow spawn claude "write unit tests for src/foo"
 burrow spawn codex  "refactor the auth module"</code></pre>
+  <p>
+    On success it prints the <strong>soft per-workspace concurrency limit</strong> (default 3, configurable in Settings →
+    Agents, published to <code>&lt;app-data&gt;/max_agents</code>). The limit is advisory — the <code>/burrow</code> skill is
+    told to respect it; <code>spawn</code> does not enforce it.
+  </p>
 
-  <h3><code>burrow wait &lt;token&gt; [--timeout SECONDS]</code></h3>
-  <p>Block until the sub-agent launched with that token finishes its turn, then print its final message to stdout. Exits 1 on timeout.</p>
+  <h3><code>burrow collect [token...]</code></h3>
+  <p>
+    <strong>Non-blocking recap.</strong> For each given token that has <em>finished</em> (its <code>&lt;token&gt;.done</code>
+    exists), print its final message and <strong>consume</strong> it (delete <code>.done</code> + <code>.result</code>), so a
+    later <code>collect</code> only returns newly-finished ones. Tokens still running are reported as pending. With no tokens,
+    collects every finished sub-agent in the session. This is the preferred pattern: fan out, keep working, then
+    <code>collect</code> — never sit blocked.
+  </p>
+  <pre><code>burrow spawn --token a claude "audit src/auth for bugs"
+burrow spawn --token b claude "audit src/api for bugs"
+# …do your own work…
+burrow collect a b   # prints whichever FINISHED, consumes them; reports the rest as pending
+burrow collect       # or: every finished sub-agent, no token list</code></pre>
+
+  <h3><code>burrow sessions [--count]</code></h3>
+  <p>
+    List the live PTY sessions the daemon is holding (pty id + cwd), or just their count with <code>--count</code>. Speaks the
+    daemon's newline-JSON socket protocol (<code>Auth</code> then <code>ListSessions</code>) via <code>python3</code>, reading
+    <code>daemon.sock</code> + <code>daemon.token</code> from <code>BURROW_HOME_DIR</code>.
+  </p>
+
+  <h3><code>burrow wait &lt;token&gt; [--timeout SECONDS]</code> <span style="color:var(--muted);font-weight:400;font-size:12px">(legacy)</span></h3>
+  <p>Block until the sub-agent launched with that token finishes its turn, then print its final message to stdout. Exits 1 on timeout. Still available, but prefer <code>collect</code> so you stay productive instead of blocked.</p>
   <pre><code>burrow spawn --token t1 claude "summarize what changed in this PR"
 burrow wait  t1                 # blocks, then prints the sub-agent's final message
 burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
@@ -91,14 +117,22 @@ burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
     Not called by hand — it is wired as the spawned Claude's <strong>Stop hook</strong> (only on tabs that carry a
     <code>resultToken</code>). It reads the Stop-hook JSON on stdin, pulls <code>transcript_path</code>, extracts the last
     assistant message (parsed with <code>node</code>, which Claude Code guarantees), then writes <code>&lt;token&gt;.result</code>
-    and <code>&lt;token&gt;.done</code> into <code>$BURROW_SESSION_DIR</code>.
+    and <code>&lt;token&gt;.done</code> into <code>$BURROW_SESSION_DIR</code>, and finally calls <code>burrow status done</code>.
   </p>
+  <div class="callout" style="border-left:3px solid var(--green);padding-left:12px">
+    <strong>Why capture also sends <code>status done</code>:</strong> a spawned sub-agent runs with a per-launch
+    <code>--settings</code> whose <code>Stop</code> hook is this <code>capture</code>. Claude Code gives that file precedence and
+    does <em>not</em> also run the globally-installed <code>burrow hook</code> <code>Stop</code> (same event) — so without this
+    the sub-agent's status dot would stick orange after it finished.
+  </div>
 
   <h3><code>burrow status &lt;running|waiting|done&gt;</code></h3>
   <p>
     Reports the current tab's agent state to Burrow's <strong>hook HTTP server</strong> (a <code>POST /hook</code> with
-    <code>{ptyId,state}</code>). Reads <code>BURROW_PTY_ID</code> + the port (<code>BURROW_HOOK_PORT</code>, else the live
-    <code>&lt;BURROW_HOME_DIR&gt;/hook.port</code> file — which survives an app restart); a no-op outside Burrow. The frontend
+    <code>{ptyId,state}</code>). Reads <code>BURROW_PTY_ID</code> + the port. <strong>The live
+    <code>&lt;BURROW_HOME_DIR&gt;/hook.port</code> file is authoritative</strong> (the app rewrites it every launch with the
+    current random server port); <code>BURROW_HOOK_PORT</code> is only a fallback. (Env-first was a bug: a daemon-reattached PTY
+    carries a stale baked-in port and POSTed to a dead server, so the dot never updated.) A no-op outside Burrow. The frontend
     turns <code>running</code>/<code>waiting</code>/<code>done</code> into the tab's status dot (orange spinner / blue /
     green-<em>review</em>).
   </p>
@@ -109,9 +143,11 @@ burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
     <code>install_status_hooks</code> merges <strong>one persistent hook into each agent's own global config</strong>
     (<code>~/.claude/settings.json</code>, <code>~/.codex/hooks.json</code> — identical schema), running
     <code>[ -n "$BURROW_PTY_ID" ] &amp;&amp; '…/bin/burrow' hook || true</code>. <code>burrow hook</code> reads the hook JSON on
-    stdin, maps <code>hook_event_name</code> → state (<code>UserPromptSubmit</code>/<code>PostToolUse</code>→running,
-    <code>PreToolUse</code>/<code>Notification</code>→waiting, <code>Stop</code>→done) and forwards via
-    <code>burrow status</code>. Because it's <strong>global + env-driven</strong>, status works for <em>every</em> agent
+    stdin, maps <code>hook_event_name</code> → state (<code>UserPromptSubmit</code>/<code>PreToolUse</code>/<code>PostToolUse</code>→running,
+    <code>Stop</code>/<code>SessionEnd</code>→done) and forwards via <code>burrow status</code>. <code>Notification</code> is
+    <strong>disambiguated by its <code>message</code></strong>: Claude fires it both for a permission prompt (→ waiting) and ~60s
+    after a turn ends, idle at the prompt — <em>"…waiting for your input"</em> (→ done, since the turn is already over). Mapping
+    every <code>Notification</code> to waiting was the "done shows blue" bug. Because it's <strong>global + env-driven</strong>, status works for <em>every</em> agent
     session — launched-by-button, typed by hand, or reattached after restart — not just per-launch ones. The merge is
     non-destructive (append + dedupe + <code>.burrow-bak</code>) and a no-op outside Burrow.
   </p>
@@ -119,7 +155,11 @@ burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
     <strong>The poll never fabricates "busy" for an agent.</strong> An agent stays the foreground process whether it's
     thinking or idle at its own prompt — so equating presence with busy left a permanent orange spinner. Status now comes
     only from hooks; the 2 s poll only titles agent tabs and clears state when the shell returns (rescuing a Ctrl+C'd agent
-    that never fired <code>done</code>).
+    that never fired <code>done</code>). The poll is <strong>sticky per agent session</strong> and <strong>ignores an empty
+    foreground reading</strong> (a daemon race), so child processes the agent spawns and momentary blanks no longer rename the
+    tab to "Terminal N" mid-conversation. <code>XTerm.vue</code> forwards the hook state as one semantic <code>agentState</code>
+    event (running/waiting/done) — a single event has no ordering hazard, so a trailing <code>waiting</code> can't clobber a
+    fresh <code>done</code>.
   </div>
 
   <h2>How a spawn flows</h2>
@@ -137,7 +177,9 @@ new tab runs cmd; status comes from the GLOBAL burrow hook; for a token,
    ▼
 new tab running the sub-agent  ──(on turn end)──►  &lt;token&gt;.result / &lt;token&gt;.done written
    ▲
-   └── meanwhile `burrow wait t1` polls those files, then prints the result</code></pre>
+   └── the spawner keeps working; later `burrow collect t1` reads + consumes the result
+       (non-blocking — returns only what has finished). `burrow wait t1` is the legacy
+       blocking variant.</code></pre>
   <p>
     <strong>Routing to the correct workspace:</strong> the request records its workspace dir as <code>ws</code> (from the
     <code>BURROW_CWD</code> env Burrow sets per PTY). Each <code>Terminal.vue</code> polls with its own <code>cwd</code>, and
@@ -150,7 +192,7 @@ new tab running the sub-agent  ──(on turn end)──►  &lt;token&gt;.resul
     <thead><tr><th>Direction</th><th>Mechanism</th><th>Used for</th></tr></thead>
     <tbody>
       <tr><td>CLI → app</td><td><code>requests/req.XXXXXX/</code> dirs in <code>$BURROW_SESSION_DIR</code></td><td><code>spawn</code> requests (polled by the frontend)</td></tr>
-      <tr><td>app → CLI</td><td><code>&lt;token&gt;.result</code> / <code>&lt;token&gt;.done</code> in <code>$BURROW_SESSION_DIR</code></td><td><code>wait</code> reading <code>capture</code>'s output</td></tr>
+      <tr><td>app → CLI</td><td><code>&lt;token&gt;.result</code> / <code>&lt;token&gt;.done</code> in <code>$BURROW_SESSION_DIR</code></td><td><code>collect</code> (or legacy <code>wait</code>) reading <code>capture</code>'s output</td></tr>
     </tbody>
   </table>
 
@@ -189,7 +231,8 @@ new tab running the sub-agent  ──(on turn end)──►  &lt;token&gt;.resul
       <tr><td>src-tauri/bin/burrow</td><td>The POSIX sh CLI, embedded via <code>include_str!</code></td></tr>
       <tr><td>&lt;app-data&gt;/bin/burrow</td><td>Written on each PTY spawn (<code>ensure_burrow_bin</code>); this dir is prepended to PATH</td></tr>
       <tr><td>&lt;app-data&gt;/sessions/</td><td><code>BURROW_SESSION_DIR</code>; holds <code>requests/</code> dirs + <code>&lt;token&gt;.result</code> / <code>&lt;token&gt;.done</code></td></tr>
-      <tr><td>&lt;app-data&gt;/hook.port</td><td>Current hook-server port (<code>BURROW_HOME_DIR</code>); read by <code>burrow status</code> when the env port is stale</td></tr>
+      <tr><td>&lt;app-data&gt;/hook.port</td><td>Current hook-server port (<code>BURROW_HOME_DIR</code>); <strong>authoritative</strong> source for <code>burrow status</code> (env port is only a fallback)</td></tr>
+      <tr><td>&lt;app-data&gt;/max_agents</td><td>Soft per-workspace sub-agent cap, written by <code>set_max_agents</code> from Settings; read by <code>burrow spawn</code></td></tr>
       <tr><td>~/.claude/settings.json, ~/.codex/hooks.json</td><td>Global status hook merged in by <code>install_status_hooks</code> (<code>.burrow-bak</code> backup); removed by <code>remove_status_hooks</code></td></tr>
       <tr><td>PTY env</td><td><code>BURROW_SESSION_DIR</code>, <code>BURROW_CWD</code>, <code>BURROW_PTY_ID</code>, <code>BURROW_HOOK_PORT</code>, <code>BURROW_HOME_DIR</code></td></tr>
       <tr><td>lib.rs</td><td><code>take_spawn_requests(cwd)</code> claims matching request dirs; sets the <code>BURROW_*</code> env per PTY</td></tr>
@@ -200,10 +243,12 @@ new tab running the sub-agent  ──(on turn end)──►  &lt;token&gt;.resul
   </table>
 
   <h2>Examples</h2>
-  <h3>Fan out, then collect</h3>
+  <h3>Fan out, then collect (non-blocking)</h3>
   <pre><code>burrow spawn --token a claude "audit src/auth for bugs"
 burrow spawn --token b claude "audit src/api for bugs"
-burrow wait a; echo "---"; burrow wait b</code></pre>
+# …keep doing your own work…
+burrow collect a b      # prints whichever finished, consumes them
+burrow collect a b      # later: picks up the stragglers</code></pre>
   <h3>Delegate in another project</h3>
   <pre><code>burrow spawn --cwd ~/code/other-app claude "bump deps and run the build"</code></pre>
 

@@ -1,5 +1,7 @@
-import { ref, watch } from "vue";
+import { ref, computed, watch } from "vue";
 import { defineStore } from "pinia";
+import { invoke } from "@tauri-apps/api/core";
+import { THEMES, DEFAULT_THEME_KEY, findTheme } from "@/themes";
 
 const PREFS_KEY = "agentic-ide.prefs";
 
@@ -33,6 +35,17 @@ interface Prefs {
   terminalFont: string;
   terminalFontSize: number;
   swapPanels: boolean;
+  rightPanelVisible: boolean;
+  theme: string;
+  soundEnabled: boolean;
+  soundDoneEnabled: boolean;
+  soundWaitingEnabled: boolean;
+  soundDoneId: string; // builtin id or "custom"
+  soundDoneCustomPath: string;
+  soundWaitingId: string;
+  soundWaitingCustomPath: string;
+  soundVolume: number; // 0-100
+  maxAgents: number; // soft per-workspace sub-agent cap for the /burrow skill
 }
 
 // The px sizes in the stylesheets are authored at this baseline. `zoom` scales
@@ -47,6 +60,17 @@ const DEFAULT_PREFS: Prefs = {
   terminalFont: TERMINAL_FONTS[0].value,
   terminalFontSize: 13,
   swapPanels: false,
+  rightPanelVisible: true,
+  theme: DEFAULT_THEME_KEY,
+  soundEnabled: true,
+  soundDoneEnabled: true,
+  soundWaitingEnabled: true,
+  soundDoneId: "soft-1",
+  soundDoneCustomPath: "",
+  soundWaitingId: "whisper-1",
+  soundWaitingCustomPath: "",
+  soundVolume: 70,
+  maxAgents: 3,
 };
 
 function loadPrefs(): Prefs {
@@ -74,10 +98,50 @@ export const useUIStore = defineStore("ui", () => {
   const terminalFont = ref(loaded.terminalFont);
   const terminalFontSize = ref(loaded.terminalFontSize);
   const swapPanels = ref(loaded.swapPanels);
+  const rightPanelVisible = ref(loaded.rightPanelVisible);
+  const theme = ref(loaded.theme);
+  const soundEnabled = ref(loaded.soundEnabled);
+  const soundDoneEnabled = ref(loaded.soundDoneEnabled);
+  const soundWaitingEnabled = ref(loaded.soundWaitingEnabled);
+  const soundDoneId = ref(loaded.soundDoneId);
+  const soundDoneCustomPath = ref(loaded.soundDoneCustomPath);
+  const soundWaitingId = ref(loaded.soundWaitingId);
+  const soundWaitingCustomPath = ref(loaded.soundWaitingCustomPath);
+  const soundVolume = ref(loaded.soundVolume);
+  const maxAgents = ref(loaded.maxAgents);
+
+  // Publish the soft sub-agent cap to a file the `burrow` CLI can read (it can't
+  // see localStorage). No-op in browser-only dev where Tauri invoke is absent.
+  watch(
+    maxAgents,
+    (n) => { invoke("set_max_agents", { n }).catch(() => {}); },
+    { immediate: true },
+  );
+
+  // The full Theme object for the active key — consumed by xterm (XTerm.vue)
+  // and the diff viewer (DiffTab.vue), which can't read CSS vars.
+  const activeTheme = computed(() => findTheme(theme.value));
+
+  // Apply the active theme's colors as CSS custom properties on :root, so all
+  // chrome styled via var(--bg-base) etc. repaints. Font + layout vars are left
+  // alone (they're not part of a theme).
+  function applyTheme() {
+    const t = findTheme(theme.value);
+    const root = document.documentElement;
+    for (const [k, v] of Object.entries(t.vars)) {
+      root.style.setProperty(`--${k}`, v);
+    }
+    // Match the terminal frame/pane exactly to the xterm canvas background, so
+    // there's no tonal "border" around the terminal content.
+    if (t.xterm.background) root.style.setProperty("--terminal-bg", t.xterm.background);
+    root.style.colorScheme = t.isDark ? "dark" : "light";
+  }
 
   // Persist + apply UI font, base font size and overall scale (zoom).
   watch(
-    [uiFont, uiFontSize, uiScale, terminalFont, terminalFontSize, swapPanels],
+    [uiFont, uiFontSize, uiScale, terminalFont, terminalFontSize, swapPanels, theme,
+     soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
+     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents],
     () => {
       localStorage.setItem(
         PREFS_KEY,
@@ -88,8 +152,20 @@ export const useUIStore = defineStore("ui", () => {
           terminalFont: terminalFont.value,
           terminalFontSize: terminalFontSize.value,
           swapPanels: swapPanels.value,
+          rightPanelVisible: rightPanelVisible.value,
+          theme: theme.value,
+          soundEnabled: soundEnabled.value,
+          soundDoneEnabled: soundDoneEnabled.value,
+          soundWaitingEnabled: soundWaitingEnabled.value,
+          soundDoneId: soundDoneId.value,
+          soundDoneCustomPath: soundDoneCustomPath.value,
+          soundWaitingId: soundWaitingId.value,
+          soundWaitingCustomPath: soundWaitingCustomPath.value,
+          soundVolume: soundVolume.value,
+          maxAgents: maxAgents.value,
         } satisfies Prefs),
       );
+      applyTheme();
       document.documentElement.style.setProperty("--font-ui", uiFont.value);
       // The UI uses fixed px sizes, so the effective scale combines the explicit
       // scale with the font-size ratio (relative to the baseline). Use CSS `zoom`
@@ -117,6 +193,13 @@ export const useUIStore = defineStore("ui", () => {
   function toggleSettings() {
     settingsOpen.value = !settingsOpen.value;
   }
+  function toggleRightPanel() {
+    rightPanelVisible.value = !rightPanelVisible.value;
+  }
+
+  function setTheme(key: string) {
+    theme.value = key;
+  }
 
   function resetFonts() {
     uiFont.value = DEFAULT_PREFS.uiFont;
@@ -134,6 +217,21 @@ export const useUIStore = defineStore("ui", () => {
     terminalFont,
     terminalFontSize,
     swapPanels,
+    rightPanelVisible,
+    toggleRightPanel,
+    theme,
+    activeTheme,
+    themes: THEMES,
+    setTheme,
+    soundEnabled,
+    soundDoneEnabled,
+    soundWaitingEnabled,
+    soundDoneId,
+    soundDoneCustomPath,
+    soundWaitingId,
+    soundWaitingCustomPath,
+    soundVolume,
+    maxAgents,
     openSettings,
     closeSettings,
     toggleSettings,

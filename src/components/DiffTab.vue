@@ -20,6 +20,9 @@ import {
   FileDiff,
   parsePatchFiles,
 } from "@pierre/diffs";
+import { useUIStore } from "@/stores/ui";
+
+const ui = useUIStore();
 
 const props = defineProps<{
   diffFile: string;
@@ -74,7 +77,7 @@ function render() {
 
       let instance!: FileDiff;
       instance = new FileDiff({
-        theme: "github-dark",
+        theme: ui.activeTheme.shiki,
         diffStyle: "unified",
         expansionLineCount: 5,
         renderHeaderMetadata() {
@@ -97,6 +100,8 @@ function render() {
 
 onMounted(() => render());
 watch(() => props.diff, () => render());
+// Re-render with the new syntax theme when the app theme changes.
+watch(() => ui.activeTheme.shiki, () => render());
 onBeforeUnmount(() => cleanUp());
 </script>
 
@@ -107,7 +112,7 @@ onBeforeUnmount(() => cleanUp());
   overflow: hidden;
   width: 100%;
   height: 100%;
-  background: #0d1117;
+  background: var(--bg-base);
 }
 
 .diff-tab-header {

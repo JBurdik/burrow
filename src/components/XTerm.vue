@@ -13,7 +13,7 @@ import { useUIStore } from "@/stores/ui";
 import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{ ptyId: number; cwd: string; initialCmd?: string; resultToken?: string }>();
-const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; done: [] }>();
+const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string] }>();
 
 const ui = useUIStore();
 
@@ -35,35 +35,22 @@ const SPAWN_RE = /\x1b\]9999;spawn;([A-Za-z0-9+/=]*);([A-Za-z0-9+/=]*);([A-Za-z0
 const b64decode = (s: string) =>
   s ? new TextDecoder().decode(Uint8Array.from(atob(s), (c) => c.charCodeAt(0))) : "";
 
+// Last known foreground process name (from the poll) — gates OSC titles.
+let foreground = "";
+
+// Strip control/non-printable chars (mid-OSC replay garbage), trim, cap length.
+function sanitizeTitle(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 80);
+}
+
 let outputBuffer = "";
 let hooksSettingsPath = "";
 let unlistenHook: UnlistenFn | null = null;
 
 onMounted(async () => {
   term = new Terminal({
-    theme: {
-      background: "#0a0a0a",
-      foreground: "#e2e8f0",
-      cursor: "#3b82f6",
-      cursorAccent: "#0a0a0a",
-      selectionBackground: "#1e3a5f",
-      black: "#1e293b",
-      red: "#ef4444",
-      green: "#22c55e",
-      yellow: "#eab308",
-      blue: "#3b82f6",
-      magenta: "#a855f7",
-      cyan: "#06b6d4",
-      white: "#cbd5e1",
-      brightBlack: "#475569",
-      brightRed: "#f87171",
-      brightGreen: "#4ade80",
-      brightYellow: "#fbbf24",
-      brightBlue: "#60a5fa",
-      brightMagenta: "#c084fc",
-      brightCyan: "#22d3ee",
-      brightWhite: "#f1f5f9",
-    },
+    theme: ui.activeTheme.xterm,
     fontFamily: ui.terminalFont,
     fontSize: ui.terminalFontSize,
     lineHeight: 1.4,
@@ -79,9 +66,22 @@ onMounted(async () => {
   term.open(hostEl.value!);
   fitAddon.fit();
 
-  // OSC title sequences set by the shell or programs (e.g. vim, tmux)
-  term.onTitleChange((title) => {
-    if (title) emit("title", title);
+  // OSC title sequences set by the shell or programs (e.g. vim, tmux).
+  // Gated: the interactive shell (zsh/bash) sets the OSC title to the cwd or
+  // last command as cosmetics — that's junk for a tab name. Worse, on reattach
+  // the daemon ring buffer (evicts front chunks at 512KB) can replay a snapshot
+  // that starts mid-OSC, so xterm parses a TRUNCATED title (the "cafenaite" bug).
+  // So: only accept OSC titles for plain TUI programs (vim/tmux). Ignore them
+  // when the shell is foreground (cwd/cmd junk) AND when an agent is foreground
+  // (Claude Code sets its own OSC title "ClaudeCode", which would override the
+  // poll's "🤖 Claude"). The foreground-process poll is the authoritative source.
+  term.onTitleChange((raw) => {
+    const title = sanitizeTitle(raw);
+    if (!title) return;
+    if (!foreground) return;
+    if (SHELL_RE.test(foreground)) return;                      // shell prompt junk
+    if (CLAUDE_RE.test(foreground) || CODEX_RE.test(foreground)) return; // agent self-title
+    emit("title", title);
   });
 
   // Agent status (running/waiting/done) is driven by hooks installed GLOBALLY in
@@ -109,11 +109,16 @@ onMounted(async () => {
     launchArgs = `--settings ${hooksSettingsPath}`;
   }
 
+  // Forward the agent's hook state straight through as ONE semantic event. The
+  // old path emitted busy+needsInput as two separate signals, whose ordering let
+  // a trailing "waiting" clobber a fresh "done" (done → blue bug). A single
+  // running|waiting|done event has no ordering hazard; Terminal.vue owns the
+  // transition. The 2s poll never fabricates agent status, so these hooks are the
+  // sole source of truth for an agent's running/waiting/done.
   unlistenHook = await listen<string>(`pty-hook-${props.ptyId}`, (event) => {
     const state = event.payload;
-    if (state === "running")      { emit("busy", true);  emit("needsInput", false); }
-    else if (state === "waiting") { emit("busy", true);  emit("needsInput", true);  }
-    else if (state === "done")    { emit("done");  emit("busy", false); }
+    if (state === "running" || state === "waiting" || state === "done")
+      emit("agentState", state);
   });
 
   // Create PTY
@@ -180,28 +185,44 @@ onMounted(async () => {
   });
   resizeObserver.observe(hostEl.value!);
 
-  // Poll foreground process every 2s → auto-title
+  // Poll foreground process → auto-title. Runs once immediately (so tabs get a
+  // correct name right after reload instead of waiting 2s) then every 2s.
   let lastProcess = "";
-  pollTimer = setInterval(async () => {
+  // Sticky across polls: once an agent is seen foreground, the session stays
+  // "agent" until the shell returns. Child processes the agent spawns (a pager,
+  // git, node) then can't steal the tab name mid-conversation (the rename bug).
+  let isAgentSession = false;
+  const poll = async () => {
     const proc = await invoke<string>("get_pty_foreground", { id: props.ptyId });
+    // Empty = an unknown/race reading from the daemon, NOT proof the shell is
+    // idle. Treating it as idle reset the tab to "Terminal N" mid-conversation.
+    // Skip it entirely — keep the last known title/state.
+    if (!proc) return;
+    foreground = proc;
     if (proc === lastProcess) return;
     lastProcess = proc;
 
-    const idle = !proc || SHELL_RE.test(proc);
     const isClaude = CLAUDE_RE.test(proc);
     const isAgent = isClaude || CODEX_RE.test(proc);
 
-    if (idle) {
-      // Back at the shell prompt → whatever ran has exited. Clear any running
-      // state (also rescues a stuck dot if an agent was Ctrl+C'd with no done hook).
+    if (SHELL_RE.test(proc)) {
+      // Back at the shell prompt → whatever ran (agent or command) has exited.
+      // Clear running state (rescues a stuck dot if an agent was interrupted with
+      // no done hook) and reset the tab name.
+      isAgentSession = false;
       emit("busy", false);
       emit("title", "");          // reset → Terminal N
     } else if (isAgent) {
       // An agent is the foreground process — but it stays foreground whether it's
       // THINKING or sitting idle at its own prompt. Presence is NOT "busy": the
       // poll must never fabricate a status here, or the spinner sticks forever.
-      // Busy/running/waiting/done come ONLY from the agent's hooks (listener above).
+      // running/waiting/done come ONLY from the agent's hooks (listener above).
+      isAgentSession = true;
       emit("title", isClaude ? "🤖 Claude" : proc);
+    } else if (isAgentSession) {
+      // A non-shell child process INSIDE a live agent session (the agent opened a
+      // pager, ran git, spawned node…). Keep the agent's title and don't flip to
+      // a plain-command "busy" — the agent's hooks remain the status source.
     } else {
       // Plain foreground command (npm test, vim, python…): presence == busy.
       emit("busy", true);
@@ -209,7 +230,9 @@ onMounted(async () => {
       emit("needsInput", NEEDS_INPUT_RE.test(stripped.slice(-200)));
       emit("title", proc);        // e.g. "vim", "python3", "node"
     }
-  }, 2000);
+  };
+  poll();
+  pollTimer = setInterval(poll, 2000);
 });
 
 onBeforeUnmount(async () => {
@@ -232,6 +255,14 @@ watch(
     term.options.fontSize = size as number;
     fitAddon?.fit();
     invoke("resize_pty", { id: props.ptyId, cols: term.cols, rows: term.rows });
+  },
+);
+
+// Live-apply theme changes to the running terminal.
+watch(
+  () => ui.activeTheme,
+  (t) => {
+    if (term) term.options.theme = t.xterm;
   },
 );
 

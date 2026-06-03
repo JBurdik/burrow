@@ -22,7 +22,7 @@
 # Sub-agents run INTERACTIVELY on your subscription (plain `claude`, never -p).
 
 sub="$1"
-[ -n "$sub" ] || { echo "usage: burrow spawn|wait|status|hook|notify <args>" >&2; exit 1; }
+[ -n "$sub" ] || { echo "usage: burrow spawn|collect|wait|sessions|status|hook|notify <args>" >&2; exit 1; }
 shift
 
 case "$sub" in
@@ -64,10 +64,16 @@ case "$sub" in
     printf '%s' "$ws"     > "$d/ws"
     : > "$d/ready"
 
+    # Soft concurrency limit (per workspace), surfaced for the agent's benefit.
+    # NOT enforced here — the /burrow skill is told to respect it. Configurable in
+    # Burrow Settings, published to this file (default 3 when absent).
+    limit=3
+    [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/max_agents" ] && \
+      limit=$(cat "$BURROW_HOME_DIR/max_agents" 2>/dev/null)
     if [ -n "$token" ]; then
-      echo "burrow: spawned sub-agent (token=$token) — use 'burrow wait $token'" >&2
+      echo "burrow: spawned sub-agent (token=$token) — fire-and-forget; later 'burrow collect $token' for its result (soft limit ${limit}/ws)" >&2
     else
-      echo "burrow: spawned a new tab" >&2
+      echo "burrow: spawned a new tab (soft limit ${limit} sub-agents/ws)" >&2
     fi
     exit 0
     ;;
@@ -105,11 +111,16 @@ case "$sub" in
     state="$1"
     [ -n "$state" ] || { echo "burrow status: no state (running|waiting|done)" >&2; exit 1; }
     [ -n "$BURROW_PTY_ID" ] || exit 0
-    # Port: env first, else the live hook.port file (survives an app restart, when
-    # the env-baked port is stale).
-    port="$BURROW_HOOK_PORT"
-    [ -z "$port" ] && [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
+    # Port: the LIVE hook.port file is authoritative — the app rewrites it every
+    # launch with the current (random) server port, and there is only ever one
+    # running app. BURROW_HOOK_PORT is baked into the PTY env at creation, so a PTY
+    # that survived an app restart (reattached from the daemon) carries a STALE
+    # port; trusting it POSTs to a dead port and the status dot never updates.
+    # So: file first, env only as a fallback when the file is missing.
+    port=""
+    [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
       port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+    [ -z "$port" ] && port="$BURROW_HOOK_PORT"
     [ -n "$port" ] || exit 0
     curl -sf -X POST "http://127.0.0.1:$port/hook" \
       -H 'Content-Type: application/json' \
@@ -126,8 +137,20 @@ case "$sub" in
     json=$(cat)
     ev=$(printf '%s' "$json" | sed -n 's/.*"hook_event_name"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
     case "$ev" in
-      UserPromptSubmit|PostToolUse) state=running ;;
-      PreToolUse|Notification)      state=waiting ;;
+      UserPromptSubmit|PreToolUse|PostToolUse) state=running ;;
+      Notification)
+        # `Notification` is ambiguous: Claude fires it BOTH for a permission
+        # prompt (genuinely waiting on the user) AND ~60s after a turn ends, idle
+        # at the prompt ("Claude is waiting for your input"). The idle ping is NOT
+        # "blocked on me" — the turn is already over — so mapping it to `waiting`
+        # (blue) made finished agents look stuck-blue. Disambiguate by message:
+        # an idle ping means done; anything else (permission, etc.) means waiting.
+        msg=$(printf '%s' "$json" | sed -n 's/.*"message"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+        case "$msg" in
+          *waiting\ for\ your\ input*) state=done ;;
+          *)                          state=waiting ;;
+        esac ;;
+      PermissionRequest)            state=waiting ;;
       Stop|SessionEnd)              state=done ;;
       *)                            exit 0 ;;
     esac
@@ -186,11 +209,77 @@ case "$sub" in
         try { fs.writeFileSync(path.join(dir, tok + ".done"), ""); } catch {}
       });
     '
+    # Also report the turn as done to the status server. A spawned sub-agent runs
+    # with a per-launch `--settings` whose Stop hook is THIS capture; Claude Code
+    # gives that file precedence and does NOT also run the globally-installed
+    # `burrow hook` Stop (same event), so without this the sub-agent's status dot
+    # would stay stuck orange after it finishes. (No-op outside Burrow.)
+    burrow status done
     exit 0
     ;;
 
+  collect)
+    # burrow collect [token...]   — NON-BLOCKING recap of finished sub-agents.
+    # Prints the result of every given token that has finished (its `<token>.done`
+    # exists), then CONSUMES it (deletes .done + .result) so a later collect only
+    # returns newly-finished ones. With no tokens, collects every finished result
+    # in the session. Never blocks — the spawning agent calls this whenever it
+    # wants a recap, without waiting on the sub-agents.
+    dir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}"
+    if [ $# -eq 0 ]; then
+      for df in "$dir"/*.done; do
+        [ -f "$df" ] || continue
+        b=$(basename "$df"); set -- "$@" "${b%.done}"
+      done
+    fi
+    any=0; pending=""
+    for tok in "$@"; do
+      if [ -f "$dir/$tok.done" ]; then
+        any=1
+        echo "=== $tok ==="
+        [ -f "$dir/$tok.result" ] && cat "$dir/$tok.result"
+        echo
+        rm -f "$dir/$tok.done" "$dir/$tok.result"
+      else
+        pending="$pending $tok"
+      fi
+    done
+    [ "$any" = 0 ] && echo "burrow collect: nothing finished yet" >&2
+    [ -n "$pending" ] && echo "burrow collect: still running:$pending" >&2
+    exit 0
+    ;;
+
+  sessions)
+    # burrow sessions [--count]   — list live PTY sessions the daemon is holding.
+    # Talks the daemon's newline-JSON protocol over its Unix socket (Auth then
+    # ListSessions). Reads socket path + auth token from BURROW_HOME_DIR.
+    home="${BURROW_HOME_DIR:?burrow: BURROW_HOME_DIR unset — run inside Burrow}"
+    count_only=0
+    [ "$1" = "--count" ] && count_only=1
+    BURROW_HOME="$home" BURROW_COUNT="$count_only" python3 - <<'PY'
+import socket, json, os, sys
+home = os.environ["BURROW_HOME"]
+try:
+    tok = open(os.path.join(home, "daemon.token")).read().strip()
+    s = socket.socket(socket.AF_UNIX); s.connect(os.path.join(home, "daemon.sock"))
+    f = s.makefile("rwb")
+    def send(o): f.write((json.dumps(o)+"\n").encode()); f.flush(); return json.loads(f.readline())
+    send({"id": 1, "cmd": "Auth", "token": tok})
+    sess = send({"id": 2, "cmd": "ListSessions"}).get("sessions", [])
+except Exception as e:
+    print(f"burrow sessions: cannot reach daemon ({e})", file=sys.stderr); sys.exit(1)
+alive = [x for x in sess if x.get("alive")]
+if os.environ.get("BURROW_COUNT") == "1":
+    print(len(alive)); sys.exit(0)
+print(f"{len(alive)} live session(s):")
+for x in alive:
+    print(f"  pty {x.get('pty_id'):<5} {x.get('cwd','')}")
+PY
+    exit $?
+    ;;
+
   *)
-    echo "burrow: unknown command '$sub' (use spawn|wait|status|notify)" >&2
+    echo "burrow: unknown command '$sub' (use spawn|collect|wait|sessions|status|hook|notify)" >&2
     exit 1
     ;;
 esac

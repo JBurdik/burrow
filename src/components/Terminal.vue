@@ -73,7 +73,7 @@
             :ref="(el) => registerLeaf(pane.leaf.id, el)"
             @title="(t) => onLeafTitle(pane.leaf.id, t)"
             @busy="(b) => onLeafBusy(pane.leaf.id, b)"
-            @done="() => onLeafDone(pane.leaf.id)"
+            @agent-state="(s) => onAgentState(pane.leaf.id, s)"
             @needs-input="(b) => onLeafNeedsInput(pane.leaf.id, b)"
             @spawn="(req) => addTab(req.cmd, { cwd: req.cwd || undefined, resultToken: req.token || undefined })"
           />
@@ -97,7 +97,7 @@
         </div>
         <div class="confirm-actions">
           <button class="confirm-btn" @click="answerClose(false)">Cancel</button>
-          <button class="confirm-btn danger" @click="answerClose(true)">Close</button>
+          <button class="confirm-btn danger" @click="answerClose(true)">Close <span class="confirm-kbd">⌘↵</span></button>
         </div>
       </div>
     </div>
@@ -114,6 +114,7 @@ import AgentToolbar from "./AgentToolbar.vue";
 import { type Leaf, type TreeNode } from "./TerminalSplitView.vue";
 import { nextPtyId, initPtyCounter } from "@/lib/ptyId";
 import { spinnerFrame } from "@/lib/spinner";
+import { playSound } from "@/lib/sounds";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { useNotificationsStore } from "@/stores/notifications";
@@ -337,6 +338,8 @@ function settleDone(leaf: Leaf, tab: Tab) {
   } else {
     leaf.status = "review";
     doneTimers.delete(leaf.id);
+    // Audible cue only when the user is away (the review case) — not while watching.
+    playSound("done");
   }
   notifyDone(leaf.title);
 }
@@ -352,13 +355,26 @@ function markTabSeen(tab: Tab) {
   }
 }
 
-// OSC 9998;done fired — force done status regardless of poll-driven busy state
-function onLeafDone(id: number) {
+// The agent's hook state (running | waiting | done), forwarded verbatim from
+// XTerm. ONE semantic event → one clean transition, so a trailing "waiting" can
+// never clobber a fresh "done". A new turn arrives as "running", which is the
+// only thing that resurrects a finished leaf — exactly right.
+function onAgentState(id: number, s: string) {
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
-    if (leaf.status === "idle") break;
-    settleDone(leaf, tab);
+    if (s === "running") {
+      clearTimeout(doneTimers.get(id));
+      doneTimers.delete(id);
+      leaf.busy = true;
+      leaf.status = "running";
+    } else if (s === "waiting") {
+      leaf.busy = true;
+      if (leaf.status !== "waiting") playSound("waiting"); // once per transition
+      leaf.status = "waiting";
+    } else if (s === "done") {
+      settleDone(leaf, tab); // sets busy=false, done (watching) or review (away)
+    }
     break;
   }
 }
@@ -385,7 +401,11 @@ function onLeafNeedsInput(id: number, needs: boolean) {
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
-    if (leaf.busy) leaf.status = needs ? "waiting" : "running";
+    if (leaf.busy) {
+      const enteringWait = needs && leaf.status !== "waiting";
+      leaf.status = needs ? "waiting" : "running";
+      if (enteringWait) playSound("waiting"); // once per transition into waiting
+    }
     break;
   }
 }
@@ -406,12 +426,25 @@ const confirm = ref<{ name: string; resolve: (ok: boolean) => void } | null>(nul
 function confirmClose(name: string): Promise<boolean> {
   return new Promise((resolve) => {
     confirm.value = { name, resolve };
+    window.addEventListener("keydown", onConfirmKey);
   });
 }
 
 function answerClose(ok: boolean) {
+  window.removeEventListener("keydown", onConfirmKey);
   confirm.value?.resolve(ok);
   confirm.value = null;
+}
+
+function onConfirmKey(e: KeyboardEvent) {
+  if (!confirm.value) return;
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    answerClose(true);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    answerClose(false);
+  }
 }
 
 // ── tab management ──────────────────────────────────────────────────────────
@@ -678,7 +711,7 @@ defineExpose({ addTab, spawnAgent, openDiffInTab });
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: #0a0a0a;
+  background: var(--terminal-bg);
   overflow: hidden;
   min-width: 0;
 }
@@ -785,7 +818,7 @@ defineExpose({ addTab, spawnAgent, openDiffInTab });
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #0a0a0a;
+  background: var(--terminal-bg);
 }
 
 .pane.focused::after {
@@ -855,6 +888,11 @@ defineExpose({ addTab, spawnAgent, openDiffInTab });
   color: #f87171;
 }
 .confirm-btn.danger:hover { background: rgba(239, 68, 68, 0.25); }
+.confirm-kbd {
+  margin-left: 6px;
+  opacity: 0.6;
+  font-size: 11px;
+}
 
 .terminal-welcome {
   flex: 1;
@@ -864,7 +902,7 @@ defineExpose({ addTab, spawnAgent, openDiffInTab });
   justify-content: center;
   gap: 12px;
   color: var(--text-secondary);
-  background: #0a0a0a;
+  background: var(--terminal-bg);
 }
 .welcome-icon { color: var(--text-muted); }
 .welcome-title { font-size: 14px; font-weight: 500; color: var(--text-primary); }

@@ -24,11 +24,11 @@ const ICON_MIGRATIONS: Record<string, AgentIcon> = {
 };
 
 const DEFAULTS: AgentConfig[] = [
-  { id: "claude", name: "Claude Code", command: "claude", args: "--dangerously-skip-permissions", shortcut: "⌘1", color: "#d97757", icon: "claude" },
-  { id: "codex", name: "Codex", command: "codex", args: "", shortcut: "⌘2", color: "#34d399", icon: "openai" },
-  { id: "gh-copilot", name: "GitHub Copilot", command: "copilot", args: "", shortcut: "⌘3", color: "#8957e5", icon: "github-copilot" },
-  { id: "aider", name: "Aider", command: "aider", args: "", shortcut: "⌘4", color: "#fbbf24", icon: "robot" },
-  { id: "cursor", name: "Cursor AI", command: "cursor-agent", args: "", shortcut: "⌘5", color: "#f472b6", icon: "terminal" },
+  { id: "claude", name: "Claude Code", command: "claude", args: "--dangerously-skip-permissions", shortcut: "⌘⇧1", color: "#d97757", icon: "claude" },
+  { id: "codex", name: "Codex", command: "codex", args: "", shortcut: "⌘⇧2", color: "#34d399", icon: "openai" },
+  { id: "gh-copilot", name: "GitHub Copilot", command: "copilot", args: "", shortcut: "⌘⇧3", color: "#8957e5", icon: "github-copilot" },
+  { id: "aider", name: "Aider", command: "aider", args: "", shortcut: "⌘⇧4", color: "#fbbf24", icon: "robot" },
+  { id: "cursor", name: "Cursor AI", command: "cursor-agent", args: "", shortcut: "⌘⇧5", color: "#f472b6", icon: "terminal" },
 ];
 
 function load(): AgentConfig[] {
