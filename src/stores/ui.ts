@@ -180,22 +180,28 @@ export const useUIStore = defineStore("ui", () => {
       // scale with the font-size ratio (relative to the baseline). Use CSS `zoom`
       // (not `transform: scale`) so text re-rasterizes crisply at the real DPI —
       // `transform` scales a 1x bitmap and looks blurry on macOS WKWebView.
-      const scale = effectiveScale.value;
-      const app = document.getElementById("app");
-      if (app) {
-        // zoom magnifies layout, so shrink the box by 1/scale first — after zoom it
-        // lands exactly at the window size (otherwise content overflows on the right).
-        // Counter-size in `%` (of the unzoomed <body>), NOT vw/vh: macOS WKWebView
-        // evaluates viewport units against the *zoomed* viewport, double-counting the
-        // scale, so `(100/scale)vw` landed short and left empty bands on the right and
-        // bottom when scale ≠ 1. `%` resolves against <body>, which isn't zoomed.
-        app.style.setProperty("zoom", scale === 1 ? "" : String(scale));
-        app.style.width = scale === 1 ? "" : `${100 / scale}%`;
-        app.style.height = scale === 1 ? "" : `${100 / scale}%`;
-      }
+      applyAppScale();
     },
     { immediate: true },
   );
+
+  // Counter-size #app so `zoom` lands exactly on the window. `zoom` magnifies layout,
+  // so a plain 100vw box would overflow by `scale` on the right; we shrink it by
+  // 1/scale first. Size in real CSS-px read from window.innerWidth/Height — NOT vw/vh
+  // or %: a descendant's `zoom` leaves window.innerWidth untouched, so
+  // `(innerWidth/scale)px * zoom(scale) === innerWidth` holds on every WebKit build.
+  // Viewport/percentage units get re-evaluated against the *zoomed* viewport
+  // inconsistently across macOS WKWebView versions, which left empty bands on the
+  // right + bottom for some users. px must be recomputed on resize (vw/% wouldn't).
+  function applyAppScale() {
+    const scale = effectiveScale.value;
+    const app = document.getElementById("app");
+    if (!app) return;
+    app.style.setProperty("zoom", scale === 1 ? "" : String(scale));
+    app.style.width = scale === 1 ? "" : `${window.innerWidth / scale}px`;
+    app.style.height = scale === 1 ? "" : `${window.innerHeight / scale}px`;
+  }
+  window.addEventListener("resize", applyAppScale);
 
   function openSettings() {
     settingsOpen.value = true;

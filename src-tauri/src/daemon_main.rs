@@ -28,8 +28,15 @@ use tokio::sync::{broadcast, RwLock};
 
 const RING_LIMIT: usize = 512 * 1024; // 512 KB per PTY
 // Generous so a bursty TUI repaint (Copilot/Claude) doesn't overrun a momentarily
-// busy client before it drains; on overrun we still resync via the ring snapshot.
+// busy client; on overrun we just skip ahead (Lagged) rather than replay queries.
 const BROADCAST_CAP: usize = 8192;
+
+// Bump ONLY when daemon-side PTY behavior changes (shell flags, env, transport).
+// The app compares this against the running daemon on launch; a mismatch retires
+// the old daemon so the change takes effect after an auto-update. Leaving it
+// unchanged across app-only releases keeps live PTY sessions alive across updates.
+// MUST stay identical to DAEMON_PROTO_VERSION in lib.rs.
+const DAEMON_PROTO_VERSION: &str = "2";
 
 struct RingBuffer {
     chunks: VecDeque<Vec<u8>>,
@@ -102,6 +109,11 @@ async fn main() {
     let socket_path = data_dir.join("daemon.sock");
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path).expect("failed to bind daemon socket");
+
+    // Publish our PID so a newer app version can retire us on update (the running
+    // daemon survives app restarts, so without this an auto-update keeps using the
+    // old daemon binary and PTY-level fixes never take effect).
+    let _ = std::fs::write(data_dir.join("daemon.pid"), std::process::id().to_string());
 
     let state = Arc::new(DaemonState {
         sessions: RwLock::new(HashMap::new()),
@@ -178,6 +190,7 @@ async fn handle_client(stream: tokio::net::UnixStream, state: Arc<DaemonState>) 
             "KillPty" => cmd_kill(&msg, id, &w, &state).await?,
             "GetForeground" => cmd_foreground(&msg, id, &w, &state).await?,
             "ListSessions" => cmd_list(id, &w, &state).await?,
+            "Version" => reply(&w, id, json!({"ok": true, "version": DAEMON_PROTO_VERSION})).await?,
             _ => reply(&w, id, json!({"ok": false, "error": "unknown command"})).await?,
         }
     }

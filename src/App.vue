@@ -283,12 +283,6 @@ function onKeydown(e: KeyboardEvent) {
   --titlebar-height: 36px;
 }
 
-html,
-body {
-  width: 100vw;
-  height: 100vh;
-}
-
 body {
   background: var(--bg-base);
   color: var(--text-primary);

@@ -30,6 +30,12 @@ pub struct Workspace {
 
 const BURROW_SCRIPT: &str = include_str!("../bin/burrow");
 
+// Must stay identical to DAEMON_PROTO_VERSION in daemon_main.rs. Bumped only when
+// daemon-side PTY behavior changes, so app-only updates don't needlessly restart
+// the daemon (which would kill live PTY sessions). A mismatch on launch retires the
+// stale daemon so the new behavior takes effect after an auto-update.
+const DAEMON_PROTO_VERSION: &str = "2";
+
 fn ensure_burrow_bin(app: &AppHandle) -> Option<std::path::PathBuf> {
     let dir = app.path().app_data_dir().ok()?.join("bin");
     std::fs::create_dir_all(&dir).ok()?;
@@ -499,7 +505,24 @@ fn daemon_ensure(data_dir: &Path, app: &AppHandle) -> Result<Arc<DaemonClient>, 
         if socket_path.exists() {
             let client = Arc::new(DaemonClient::new(socket_path.clone(), token, app.clone()));
             if client.probe() {
-                return Ok(client);
+                // Reuse only if it's THIS build. The daemon survives app restarts, so
+                // after an auto-update the running daemon is the previous version and
+                // lacks this build's PTY-level changes (e.g. the login-shell `-l`).
+                // On a version mismatch, retire it (kill its published PID) and fall
+                // through to spawn a fresh daemon, which removes + rebinds the socket.
+                if client.version().as_deref() == Some(DAEMON_PROTO_VERSION) {
+                    return Ok(client);
+                }
+                if let Ok(pid) = std::fs::read_to_string(data_dir.join("daemon.pid")) {
+                    if let Ok(pid) = pid.trim().parse::<u32>() {
+                        let _ = std::process::Command::new("kill")
+                            .arg("-9")
+                            .arg(pid.to_string())
+                            .status();
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let _ = std::fs::remove_file(&socket_path);
             }
         }
     }

@@ -155,4 +155,12 @@ impl DaemonClient {
             .map(|r| r["ok"].as_bool() == Some(true))
             .unwrap_or(false)
     }
+
+    /// The running daemon's build version, or None if it predates the Version
+    /// command (an old daemon replies `unknown command`).
+    pub fn version(&self) -> Option<String> {
+        self.cmd(json!({"cmd": "Version"}))
+            .ok()
+            .and_then(|r| r.get("version").and_then(|v| v.as_str()).map(String::from))
+    }
 }
