@@ -16,35 +16,16 @@
       </button>
       <span v-if="store.agents.length === 0" class="no-agents">No agents configured</span>
     </div>
-
-    <div class="at-divider" />
-    <div class="at-spacer" />
-
-    <div class="cmd-input">
-      <PhCaretRight :size="11" class="cmd-icon" />
-      <span class="cmd-placeholder">run agent...</span>
-      <span class="cmd-kbd">⌘K</span>
-    </div>
-
-    <div class="at-gap" />
-    <PhActivity :size="14" class="toolbar-icon" />
-    <PhSidebar
-      :size="14"
-      class="toolbar-icon"
-      :class="{ on: ui.rightPanelVisible }"
-      :title="ui.rightPanelVisible ? 'Hide side panel' : 'Show side panel'"
-      @click="ui.toggleRightPanel()"
-    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { PhCaretRight, PhActivity, PhSidebar, PhRobot, PhSparkle, PhCode, PhGitBranch, PhTerminal } from "@phosphor-icons/vue";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
-import OpenAIIcon from "@/components/icons/OpenAIIcon.vue";
 import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
+import OpenAIIcon from "@/components/icons/OpenAIIcon.vue";
 import { useAgentsStore, type AgentIcon } from "@/stores/agents";
 import { useUIStore } from "@/stores/ui";
+import { PhCode, PhGitBranch, PhRobot, PhSparkle, PhTerminal } from "@phosphor-icons/vue";
 
 const iconMap: Record<AgentIcon, unknown> = {
   sparkle: PhSparkle,
