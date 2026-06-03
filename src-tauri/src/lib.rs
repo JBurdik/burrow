@@ -472,6 +472,12 @@ fn create_pty(
     let mut env = serde_json::Map::new();
     env.insert("TERM".into(), json!("xterm-256color"));
     env.insert("COLORTERM".into(), json!("truecolor"));
+    // Some TUIs (e.g. GitHub Copilot CLI) gate their full-screen rendering on a
+    // non-empty TERM_PROGRAM — an unset value reads as a dumb/non-interactive
+    // terminal and they refuse to draw (blank screen). Real emulators always set
+    // it (Apple_Terminal, WarpTerminal, vscode…), so we identify ourselves too.
+    env.insert("TERM_PROGRAM".into(), json!("Burrow"));
+    env.insert("TERM_PROGRAM_VERSION".into(), json!(env!("CARGO_PKG_VERSION")));
 
     if let Some(bin_dir) = ensure_burrow_bin(&app) {
         let existing = std::env::var("PATH").unwrap_or_default();

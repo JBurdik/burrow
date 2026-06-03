@@ -24,7 +24,6 @@ import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
 import OpenAIIcon from "@/components/icons/OpenAIIcon.vue";
 import { useAgentsStore, type AgentIcon } from "@/stores/agents";
-import { useUIStore } from "@/stores/ui";
 import { PhCode, PhGitBranch, PhRobot, PhSparkle, PhTerminal } from "@phosphor-icons/vue";
 
 const iconMap: Record<AgentIcon, unknown> = {
@@ -44,7 +43,6 @@ function iconFor(icon: AgentIcon) {
 defineEmits<{ launch: [cmd: string] }>();
 
 const store = useAgentsStore();
-const ui = useUIStore();
 </script>
 
 <style scoped>

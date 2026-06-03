@@ -322,6 +322,10 @@ async fn spawn_session(
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut cmd = CommandBuilder::new(&shell);
+    // Login shell so ~/.zprofile / ~/.zlogin run — that's where many setups
+    // (nvm, fnm, homebrew shellenv, copilot) put PATH. Non-login only sourced
+    // ~/.zshrc, so those tools were missing inside Burrow PTYs.
+    cmd.arg("-l");
     cmd.cwd(&cwd);
     for (k, v) in &env {
         if let Some(s) = v.as_str() {

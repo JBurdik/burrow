@@ -17,12 +17,41 @@ const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [
 
 const ui = useUIStore();
 
-// The whole UI is magnified by CSS `zoom` on #app (see ui.ts); the terminal rides
-// that zoom like every other panel. (An earlier attempt to counter-zoom the host
-// to net-zoom-1 and re-grow it to `scale*100%` — to fix a selection-row offset —
-// made the host overflow the pane/window under WebKit's zoom layout model, so the
-// terminal is back to a plain flex child at its natural font size.)
+// The whole UI is magnified by CSS `zoom: s` on #app (ui.ts). That breaks mouse
+// selection in xterm: getCoords does `clientX - getBoundingClientRect().left`
+// (ZOOMED/visual px) ÷ cell size (the canvas measureText metric, UNZOOMED layout
+// px) — under an ancestor zoom the two disagree by `s`, so the selection lands a
+// row/col off. Fix: counter-zoom the host to net-zoom-1 (zoom: 1/s) so rect and
+// cell metric share one space, and re-grow the box so it still fills the pane.
+//
+// Crucially the re-grow is in PX (parent.clientWidth * s), NOT `s*100%`. A `%`
+// width resolves against a containing block already inflated by the #app-zoom
+// chain and compounds — measured at scale 1.23 it overflowed the pane by ~23%
+// (host 1575px vs pane 1280px) and spilled off the window. PX from the parent's
+// own layout width lands the zoomed footprint back exactly on the pane.
+// Verified in a real WebKit-zoom browser: px → rect==offset (net-zoom-1) and
+// host==pane (no overflow); % → 295px horizontal overflow.
+const scaledFontSize = () => ui.terminalFontSize * ui.effectiveScale;
+
 const hostEl = ref<HTMLElement>();
+
+function applyCounterZoom() {
+  const el = hostEl.value;
+  const parent = el?.parentElement;
+  if (!el || !parent) return;
+  const s = ui.effectiveScale;
+  if (s === 1) {
+    el.style.zoom = "";
+    el.style.width = "";
+    el.style.height = "";
+    el.style.flex = "";
+    return;
+  }
+  el.style.flex = "none";
+  el.style.zoom = String(1 / s);
+  el.style.width = `${parent.clientWidth * s}px`;
+  el.style.height = `${parent.clientHeight * s}px`;
+}
 let term: Terminal;
 let fitAddon: FitAddon;
 let unlisten: UnlistenFn | null = null;
@@ -55,6 +84,10 @@ function sanitizeTitle(s: string): string {
 }
 
 let outputBuffer = "";
+// Timestamp of the last PTY output chunk — used to detect when the shell has
+// finished its startup (sourcing .zprofile/.zshrc, printing the first prompt)
+// and gone quiet, so we can inject the launch command without racing the init.
+let lastDataAt = 0;
 let hooksSettingsPath = "";
 let unlistenHook: UnlistenFn | null = null;
 
@@ -79,7 +112,7 @@ onMounted(async () => {
   term = new Terminal({
     theme: ui.activeTheme.xterm,
     fontFamily: ui.terminalFont,
-    fontSize: ui.terminalFontSize,
+    fontSize: scaledFontSize(),
     lineHeight: 1.4,
     cursorBlink: true,
     cursorStyle: "bar",
@@ -91,6 +124,22 @@ onMounted(async () => {
   term.loadAddon(fitAddon);
   term.loadAddon(new WebLinksAddon());
   term.open(hostEl.value!);
+
+  // Neutralize synchronized-output mode (DEC private mode 2026). The GitHub
+  // Copilot CLI (and other Ink TUIs) wrap every frame in `?2026h … frame … ?2026l`.
+  // xterm.js 6.0.0 buffers all row repaints while the mode is on and only paints
+  // on the closing `?2026l`; inside Burrow that flush never lands, so copilot's
+  // alt-screen stayed permanently blank (Claude Code, which doesn't use 2026,
+  // was fine). Swallow just the 2026 set/reset so the mode never engages — every
+  // frame paints immediately, exactly like a terminal that doesn't advertise 2026,
+  // where copilot renders correctly. Only consume a lone `?2026`, so combined
+  // sequences (e.g. `?1049;2026h`) still reach xterm's built-in handler.
+  const isLone2026 = (params: (number | number[])[]) =>
+    params.length === 1 && (Array.isArray(params[0]) ? params[0][0] : params[0]) === 2026;
+  term.parser.registerCsiHandler({ prefix: "?", final: "h" }, isLone2026);
+  term.parser.registerCsiHandler({ prefix: "?", final: "l" }, isLone2026);
+
+  applyCounterZoom();
   safeFit();
   deferredFit();
 
@@ -174,17 +223,34 @@ onMounted(async () => {
     }
 
     outputBuffer = (outputBuffer + text).slice(-500);
+    lastDataAt = performance.now();
   });
 
-  // Send initial command after shell is ready (inject --settings for claude)
+  // Send initial command once the shell is actually ready (inject --settings for
+  // claude). A fixed timeout raced slow startups (a login shell sourcing
+  // .zprofile/.zshrc, an .zshrc that errors): the command was typed before the
+  // prompt existed, so the newline got eaten and the command sat unrun — or input
+  // interleaved with the prompt and zsh parsed the prompt text as a command.
+  // Instead wait for the PTY to emit output and then fall quiet (prompt printed,
+  // init done), with a hard cap so we never hang if the shell stays silent.
   if (props.initialCmd) {
-    setTimeout(() => {
-      const cmd = launchArgs
-        ? `${props.initialCmd} ${launchArgs}`
-        : props.initialCmd!;
-      const bytes = Array.from(new TextEncoder().encode(cmd + "\n"));
-      invoke("write_pty", { id: props.ptyId, data: bytes });
-    }, 600);
+    const cmd = launchArgs
+      ? `${props.initialCmd} ${launchArgs}`
+      : props.initialCmd!;
+    const QUIET_MS = 250;   // silence that signals "prompt is ready"
+    const MAX_WAIT_MS = 5000;
+    const startedAt = performance.now();
+    const trySend = () => {
+      const now = performance.now();
+      const ready = lastDataAt > 0 && now - lastDataAt >= QUIET_MS;
+      if (ready || now - startedAt >= MAX_WAIT_MS) {
+        const bytes = Array.from(new TextEncoder().encode(cmd + "\n"));
+        invoke("write_pty", { id: props.ptyId, data: bytes });
+      } else {
+        setTimeout(trySend, 100);
+      }
+    };
+    setTimeout(trySend, 100);
   }
 
   // Shift+Enter → send CSI u escape (kitty protocol) so Claude Code inserts a newline
@@ -205,9 +271,12 @@ onMounted(async () => {
     invoke("write_pty", { id: props.ptyId, data: bytes });
   });
 
-  // Resize
-  resizeObserver = new ResizeObserver(() => safeFit());
-  resizeObserver.observe(hostEl.value!);
+  // Resize. Observe the PARENT, not the host: under a non-1 scale the host's own
+  // size is driven by applyCounterZoom (explicit px), so watching the host would
+  // miss pane/window resizes and risk a feedback loop. The parent reflects the
+  // real available space — recompute the counter-zoom box, then refit.
+  resizeObserver = new ResizeObserver(() => { applyCounterZoom(); safeFit(); });
+  resizeObserver.observe(hostEl.value!.parentElement ?? hostEl.value!);
 
   // Poll foreground process → auto-title. Runs once immediately (so tabs get a
   // correct name right after reload instead of waiting 2s) then every 2s.
@@ -276,14 +345,16 @@ onBeforeUnmount(async () => {
   term?.dispose();
 });
 
-// Live-apply terminal font preference changes. UI scale is handled by the #app
-// zoom (ui.ts), so only the explicit font family/size matter here; refit after.
+// Live-apply terminal font + UI-scale changes. The host counter-zooms to net-1,
+// so the visual size comes from xterm's own fontSize (scaled by effectiveScale);
+// a scale change also resizes the counter-zoom box, so recompute it then refit.
 watch(
-  () => [ui.terminalFont, ui.terminalFontSize],
-  ([font, size]) => {
+  () => [ui.terminalFont, ui.terminalFontSize, ui.effectiveScale],
+  ([font]) => {
     if (!term) return;
     term.options.fontFamily = font as string;
-    term.options.fontSize = size as number;
+    term.options.fontSize = scaledFontSize();
+    applyCounterZoom();
     fitAddon?.fit();
     invoke("resize_pty", { id: props.ptyId, cols: term.cols, rows: term.rows });
   },
