@@ -111,20 +111,27 @@ case "$sub" in
     state="$1"
     [ -n "$state" ] || { echo "burrow status: no state (running|waiting|done)" >&2; exit 1; }
     [ -n "$BURROW_PTY_ID" ] || exit 0
-    # Port: the LIVE hook.port file is authoritative — the app rewrites it every
-    # launch with the current (random) server port, and there is only ever one
-    # running app. BURROW_HOOK_PORT is baked into the PTY env at creation, so a PTY
-    # that survived an app restart (reattached from the daemon) carries a STALE
-    # port; trusting it POSTs to a dead port and the status dot never updates.
-    # So: file first, env only as a fallback when the file is missing.
-    port=""
+    # Two possible ports, neither reliable alone:
+    #   - $BURROW_HOOK_PORT  is baked into the PTY env at creation → CORRECT for a
+    #     fresh PTY in the running app, but STALE for one reattached after restart.
+    #   - $BURROW_HOME_DIR/hook.port is rewritten each launch → CORRECT after a
+    #     restart, but the file is a single shared writer: a second instance (e.g.
+    #     a `tauri:dev` run) overwrites it with ITS port, then dies, leaving the
+    #     surviving app's PTYs pointing at a dead port. (This was the regression:
+    #     file-first trusted that stale port and the status dot never updated.)
+    # So try BOTH (env first), POST to whichever actually answers. -f makes curl
+    # fail on a dead port so we fall through to the next candidate.
+    file_port=""
     [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
-      port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
-    [ -z "$port" ] && port="$BURROW_HOOK_PORT"
-    [ -n "$port" ] || exit 0
-    curl -sf -X POST "http://127.0.0.1:$port/hook" \
-      -H 'Content-Type: application/json' \
-      -d "{\"ptyId\":$BURROW_PTY_ID,\"state\":\"$state\"}" >/dev/null 2>&1 || true
+      file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+    for port in "$BURROW_HOOK_PORT" "$file_port"; do
+      [ -n "$port" ] || continue
+      if curl -sf -X POST "http://127.0.0.1:$port/hook" \
+          -H 'Content-Type: application/json' \
+          -d "{\"ptyId\":$BURROW_PTY_ID,\"state\":\"$state\"}" >/dev/null 2>&1; then
+        break
+      fi
+    done
     exit 0
     ;;
 

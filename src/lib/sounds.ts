@@ -8,11 +8,18 @@ import soft3 from "@/assets/sounds/soft-3.wav";
 import whisper1 from "@/assets/sounds/whisper-1.wav";
 import whisper2 from "@/assets/sounds/whisper-2.wav";
 import voice1 from "@/assets/sounds/voice-1.wav";
+import needYou1 from "@/assets/sounds/need-you-1.wav";
+import needYou2 from "@/assets/sounds/need-you-2.wav";
+import needYouVoice from "@/assets/sounds/need-you-voice.wav";
+
+export type SoundKind = "done" | "waiting";
 
 export interface BuiltinSound {
   id: string;
   label: string;
   url: string;
+  // Restrict a sound to specific kinds; omitted = available to all.
+  kinds?: SoundKind[];
 }
 
 export const BUILTIN_SOUNDS: BuiltinSound[] = [
@@ -22,9 +29,14 @@ export const BUILTIN_SOUNDS: BuiltinSound[] = [
   { id: "whisper-1", label: "Whisper 1", url: whisper1 },
   { id: "whisper-2", label: "Whisper 2", url: whisper2 },
   { id: "voice-1", label: "Voice 1", url: voice1 },
+  { id: "need-you-1", label: "Need You 1", url: needYou1, kinds: ["waiting"] },
+  { id: "need-you-2", label: "Need You 2", url: needYou2, kinds: ["waiting"] },
+  { id: "need-you-voice", label: "Need You (Voice)", url: needYouVoice, kinds: ["waiting"] },
 ];
 
-export type SoundKind = "done" | "waiting";
+export function soundsForKind(kind: SoundKind): BuiltinSound[] {
+  return BUILTIN_SOUNDS.filter((s) => !s.kinds || s.kinds.includes(kind));
+}
 
 // Cache object URLs for custom files keyed by their disk path, so we read the
 // bytes off disk once per path instead of on every play.

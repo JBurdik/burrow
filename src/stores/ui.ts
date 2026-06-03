@@ -67,7 +67,7 @@ const DEFAULT_PREFS: Prefs = {
   soundWaitingEnabled: true,
   soundDoneId: "soft-1",
   soundDoneCustomPath: "",
-  soundWaitingId: "whisper-1",
+  soundWaitingId: "need-you-1",
   soundWaitingCustomPath: "",
   soundVolume: 70,
   maxAgents: 3,

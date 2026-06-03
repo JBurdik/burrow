@@ -477,7 +477,7 @@
               </div>
               <div class="sound-ctl">
                 <select class="select" :value="ui.soundDoneId" @change="ui.soundDoneId = val($event)">
-                  <option v-for="s in BUILTIN_SOUNDS" :key="s.id" :value="s.id">{{ s.label }}</option>
+                  <option v-for="s in soundsForKind('done')" :key="s.id" :value="s.id">{{ s.label }}</option>
                   <option value="custom">Custom file…</option>
                 </select>
                 <button class="icon-btn" title="Test" @click="playSound('done', true)"><PhPlay :size="13" /></button>
@@ -511,7 +511,7 @@
               </div>
               <div class="sound-ctl">
                 <select class="select" :value="ui.soundWaitingId" @change="ui.soundWaitingId = val($event)">
-                  <option v-for="s in BUILTIN_SOUNDS" :key="s.id" :value="s.id">{{ s.label }}</option>
+                  <option v-for="s in soundsForKind('waiting')" :key="s.id" :value="s.id">{{ s.label }}</option>
                   <option value="custom">Custom file…</option>
                 </select>
                 <button class="icon-btn" title="Test" @click="playSound('waiting', true)"><PhPlay :size="13" /></button>
@@ -657,7 +657,7 @@ import { useAgentsStore, type AgentIcon } from "@/stores/agents";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore, UI_FONTS, TERMINAL_FONTS } from "@/stores/ui";
 import { THEMES } from "@/themes";
-import { BUILTIN_SOUNDS, playSound, type SoundKind } from "@/lib/sounds";
+import { soundsForKind, playSound, type SoundKind } from "@/lib/sounds";
 
 defineEmits<{ close: [] }>();
 
