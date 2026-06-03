@@ -67,6 +67,23 @@ let outputBuffer = "";
 let hooksSettingsPath = "";
 let unlistenHook: UnlistenFn | null = null;
 
+// Fit, then re-fit after layout and web-fonts settle. On restart the first fit
+// can run before the surrounding panels are laid out or the mono web-font has
+// loaded — xterm then measures the wrong cell width and picks too many cols/rows,
+// so the terminal overflows the panel. The container size never changes again, so
+// the ResizeObserver never corrects it. Re-fitting on the next frames + after
+// fonts.ready re-measures with the real metrics and resizes the PTY to match.
+function safeFit() {
+  if (!term || !fitAddon || !hostEl.value) return;
+  if (hostEl.value.offsetWidth === 0 || hostEl.value.offsetHeight === 0) return;
+  fitAddon.fit();
+  invoke("resize_pty", { id: props.ptyId, cols: term.cols, rows: term.rows });
+}
+function deferredFit() {
+  requestAnimationFrame(() => requestAnimationFrame(safeFit));
+  document.fonts?.ready.then(safeFit).catch(() => {});
+}
+
 onMounted(async () => {
   term = new Terminal({
     theme: ui.activeTheme.xterm,
@@ -83,7 +100,8 @@ onMounted(async () => {
   term.loadAddon(fitAddon);
   term.loadAddon(new WebLinksAddon());
   term.open(hostEl.value!);
-  fitAddon.fit();
+  safeFit();
+  deferredFit();
 
   // OSC title sequences set by the shell or programs (e.g. vim, tmux, Claude).
   // The interactive shell (zsh/bash) sets the OSC title to the cwd or last
@@ -197,10 +215,7 @@ onMounted(async () => {
   });
 
   // Resize
-  resizeObserver = new ResizeObserver(() => {
-    fitAddon.fit();
-    invoke("resize_pty", { id: props.ptyId, cols: term.cols, rows: term.rows });
-  });
+  resizeObserver = new ResizeObserver(() => safeFit());
   resizeObserver.observe(hostEl.value!);
 
   // Poll foreground process → auto-title. Runs once immediately (so tabs get a
@@ -293,7 +308,7 @@ watch(
   },
 );
 
-defineExpose({ focus() { term?.focus(); } });
+defineExpose({ focus() { term?.focus(); }, refit() { safeFit(); deferredFit(); } });
 </script>
 
 <style scoped>

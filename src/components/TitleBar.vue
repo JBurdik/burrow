@@ -78,16 +78,16 @@ const isDev = import.meta.env.DEV;
 .titlebar {
   height: var(--titlebar-height);
   background: var(--bg-panel);
-}
-
-.titlebar.dev {
-  background: #5c1a1a;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   flex-shrink: 0;
   /* macOS Overlay titlebar sits on top — match its height so native buttons line up */
   padding-top: env(titlebar-area-y, 0px);
+}
+
+.titlebar.dev {
+  background: #5c1a1a;
 }
 
 /* Reserve room for the three native traffic light buttons */
