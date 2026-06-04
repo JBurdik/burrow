@@ -325,17 +325,31 @@ onMounted(async () => {
     setTimeout(trySend, 100);
   }
 
-  // Shift+Enter → send CSI u escape (kitty protocol) so Claude Code inserts a newline
+  // Custom key handling on top of xterm's defaults.
   term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+    // Shift+Enter → CSI u escape (kitty protocol) so Claude Code inserts a newline.
     if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
-      if (e.type === "keydown") {
-        const bytes = Array.from(new TextEncoder().encode("\x1b[13;2u"));
-        invoke("write_pty", { id: props.ptyId, data: bytes });
-      }
+      if (e.type === "keydown") send("\x1b[13;2u");
       return false; // prevent xterm from also sending \r
+    }
+    // Option/Alt + ←/→ → word-wise cursor movement. macOS terminals map Option
+    // to readline's word-left/right (ESC b / ESC f); xterm.js doesn't do this on
+    // its own, so emit the sequences ourselves and swallow the key.
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      if (e.type === "keydown") send(e.key === "ArrowLeft" ? "\x1bb" : "\x1bf");
+      return false;
+    }
+    // Option/Alt + Backspace → delete the previous word (readline: ESC DEL).
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === "Backspace" || e.key === "Delete")) {
+      if (e.type === "keydown") send("\x1b\x7f");
+      return false;
     }
     return true;
   });
+
+  function send(s: string) {
+    invoke("write_pty", { id: props.ptyId, data: Array.from(new TextEncoder().encode(s)) });
+  }
 
   // Send input from xterm → Rust PTY
   term.onData((data) => {

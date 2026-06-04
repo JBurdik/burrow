@@ -87,18 +87,17 @@
             v-for="(tab, tabIdx) in termTabs.tabsByWs[item.id]"
             :key="tab.id"
             class="ws-term"
+            :data-reorder-idx="tabIdx"
+            :data-reorder-group="String(item.id)"
             :class="{
               active:
                 store.active?.id === item.id && termTabs.activeByWs[item.id] === tab.id,
-              'drag-over': dragOverKey === `${item.id}-${tabIdx}`,
+              'drag-over':
+                tabDragGroup === String(item.id) && tabOverIdx === tabIdx && tabDragIdx !== tabIdx,
+              dragging: tabDragGroup === String(item.id) && tabDragIdx === tabIdx,
             }"
-            draggable="true"
             @click.stop="selectTab(item, tab.id)"
-            @dragstart="(e) => onDragStart(item.id, tabIdx, e)"
-            @dragover="(e) => onDragOver(item.id, tabIdx, e)"
-            @dragleave="onDragLeave"
-            @drop="(e) => onDrop(item.id, tabIdx, e)"
-            @dragend="onDragEnd"
+            @pointerdown="(e: PointerEvent) => tabDragDown(tabIdx, e, String(item.id))"
           >
             <PhRobot v-if="tab.isAgent" :size="11" class="ws-term-icon agent" />
             <PhTerminal v-else :size="11" class="ws-term-icon" />
@@ -219,6 +218,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore, type Workspace } from "@/stores/workspace";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { spinnerFrame } from "@/lib/spinner";
+import { usePointerReorder } from "@/composables/usePointerReorder";
 
 const store = useWorkspaceStore();
 const termTabs = useTerminalTabsStore();
@@ -307,38 +307,17 @@ watch(() => store.workspaces, (wss) => wss.forEach(ws => {
 }), { deep: true });
 
 // ── drag-to-reorder ──────────────────────────────────────────────────────────
-const dragSrc = ref<{ wsId: number; fromIdx: number } | null>(null);
-const dragOverKey = ref<string | null>(null);
-
-function onDragStart(wsId: number, fromIdx: number, e: DragEvent) {
-  dragSrc.value = { wsId, fromIdx };
-  e.dataTransfer!.effectAllowed = "move";
-}
-
-function onDragOver(wsId: number, toIdx: number, e: DragEvent) {
-  if (!dragSrc.value || dragSrc.value.wsId !== wsId) return;
-  e.preventDefault();
-  e.dataTransfer!.dropEffect = "move";
-  dragOverKey.value = `${wsId}-${toIdx}`;
-}
-
-function onDragLeave() {
-  dragOverKey.value = null;
-}
-
-function onDrop(wsId: number, toIdx: number, e: DragEvent) {
-  e.preventDefault();
-  const src = dragSrc.value;
-  dragSrc.value = null;
-  dragOverKey.value = null;
-  if (!src || src.wsId !== wsId || src.fromIdx === toIdx) return;
-  termTabs.reorder(wsId, src.fromIdx, toIdx);
-}
-
-function onDragEnd() {
-  dragSrc.value = null;
-  dragOverKey.value = null;
-}
+// Pointer-based (not HTML5 DnD): Tauri's native drag-drop handler swallows the
+// webview's drop events. Group = workspace id, so a tab only reorders within its
+// own project's list.
+const {
+  dragIdx: tabDragIdx,
+  overIdx: tabOverIdx,
+  dragGroup: tabDragGroup,
+  down: tabDragDown,
+} = usePointerReorder((from, to, group) => {
+  if (group != null) termTabs.reorder(Number(group), from, to);
+});
 
 function mimeForPath(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
@@ -643,6 +622,8 @@ async function confirmCreate() {
 .ws-term-add:hover { color: var(--text-secondary); }
 
 .ws-term.drag-over { background: var(--bg-hover); outline: 1px solid var(--accent); outline-offset: -1px; }
+.ws-term.dragging { opacity: 0.4; }
+.ws-term { touch-action: none; }
 
 .ws-empty {
   font-size: 11px;
