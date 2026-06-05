@@ -36,6 +36,17 @@ enum Corner {
     BottomRight,
 }
 
+impl Corner {
+    fn from_str(s: &str) -> Corner {
+        match s {
+            "top-left" => Corner::TopLeft,
+            "bottom-left" => Corner::BottomLeft,
+            "bottom-right" => Corner::BottomRight,
+            _ => Corner::TopRight,
+        }
+    }
+}
+
 /// One float window's layout slot. Sizes are LOGICAL px and tracked here (not
 /// queried from the window) so re-stacking is deterministic even right after a
 /// window is created, before its size is realized — that race was placing new
@@ -43,16 +54,15 @@ enum Corner {
 #[derive(Clone)]
 struct FloatWin {
     label: String,
-    corner: Corner,
     w: f64,
     h: f64,
 }
 
-/// Ordered float windows. They snap to one of the 4 screen corners and stack
-/// vertically within a corner in insertion order. The only allowed movement is
-/// snapping to a corner; on drag-end a window is reassigned to its nearest corner
-/// and the whole layout re-stacks.
+/// Float windows all snap to ONE user-chosen corner (a Setting, not where they're
+/// dropped) and stack vertically there in insertion order. Dragging just returns
+/// a window to that corner.
 struct FloatLayoutState {
+    corner: Mutex<Corner>,
     wins: Mutex<Vec<FloatWin>>,
 }
 
@@ -1359,17 +1369,16 @@ fn open_float_window(
         }
     }
 
-    // Register in the layout (default: top-right, collapsed-bar size) and
-    // stack/position it deterministically — uses the tracked size, so no
+    // Register in the layout (collapsed-bar size) and stack/position it
+    // deterministically at the configured corner — uses the tracked size, so no
     // off-screen race against the not-yet-realized window size.
-    let wins = {
+    {
         let mut wins = layout.wins.lock().unwrap();
         if !wins.iter().any(|f| f.label == label) {
-            wins.push(FloatWin { label: label.clone(), corner: Corner::TopRight, w: 240.0, h: 36.0 });
+            wins.push(FloatWin { label: label.clone(), w: 240.0, h: 36.0 });
         }
-        wins.clone()
-    };
-    reposition_floats(&app, &wins);
+    }
+    reflow(&app, &layout);
 
     Ok(())
 }
@@ -1388,16 +1397,15 @@ fn set_window_size(
             .map_err(|e| e.to_string())?;
     }
     // Track the new size + re-stack: a collapse/expand changes this window's
-    // height, so everything in its corner shifts.
-    let wins = {
+    // height, so everything below it shifts.
+    {
         let mut wins = layout.wins.lock().unwrap();
         if let Some(e) = wins.iter_mut().find(|f| f.label == label) {
             e.w = width;
             e.h = height;
         }
-        wins.clone()
-    };
-    reposition_floats(&app, &wins);
+    }
+    reflow(&app, &layout);
     Ok(())
 }
 
@@ -1416,98 +1424,99 @@ const FLOAT_TOP_INSET: f64 = 36.0; // clear the menu bar on the top corners
 const FLOAT_BOTTOM_INSET: f64 = 14.0;
 const FLOAT_GAP: f64 = 10.0;
 
-/// The monitor a float layout should anchor to — use the main window's.
+/// The monitor a float layout should anchor to — the one the MAIN window is
+/// currently on (not the system primary), so bubbles land on the screen the user
+/// is actually looking at on a multi-monitor setup.
 fn float_monitor(app: &AppHandle) -> Option<tauri::Monitor> {
     let w = app
         .get_webview_window("main")
         .or_else(|| app.webview_windows().into_values().next())?;
-    w.primary_monitor().ok().flatten()
+    w.current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| w.primary_monitor().ok().flatten())
 }
 
-/// Re-stack every float window: group by corner (insertion order), and lay each
-/// group out from its corner, offsetting by each window's tracked height + a gap.
-/// Uses the LOGICAL sizes stored in FloatWin (not live queries) so it's correct
-/// the instant a window is created.
-fn reposition_floats(app: &AppHandle, wins: &[FloatWin]) {
+/// Re-stack every float window at the single configured corner, in insertion
+/// order, offsetting by each window's tracked height + a gap. Uses the LOGICAL
+/// sizes stored in FloatWin (not live queries) so it's correct the instant a
+/// window is created.
+fn reposition_floats(app: &AppHandle, corner: Corner, wins: &[FloatWin]) {
     let Some(mon) = float_monitor(app) else { return };
     let scale = mon.scale_factor();
     let msize = mon.size().to_logical::<f64>(scale);
     let mpos = mon.position().to_logical::<f64>(scale);
 
-    for corner in [
-        Corner::TopLeft,
-        Corner::TopRight,
-        Corner::BottomLeft,
-        Corner::BottomRight,
-    ] {
-        let mut cum = 0.0;
-        for fw in wins.iter().filter(|f| f.corner == corner) {
-            let Some(win) = app.get_webview_window(&fw.label) else { continue };
-            let (w, h) = (fw.w, fw.h);
-            let x = match corner {
-                Corner::TopLeft | Corner::BottomLeft => mpos.x + FLOAT_SIDE_INSET,
-                Corner::TopRight | Corner::BottomRight => {
-                    mpos.x + msize.width - w - FLOAT_SIDE_INSET
-                }
-            };
-            let y = match corner {
-                Corner::TopLeft | Corner::TopRight => mpos.y + FLOAT_TOP_INSET + cum,
-                Corner::BottomLeft | Corner::BottomRight => {
-                    mpos.y + msize.height - FLOAT_BOTTOM_INSET - cum - h
-                }
-            };
-            let _ = win.set_position(tauri::LogicalPosition::new(x, y));
-            cum += h + FLOAT_GAP;
-        }
+    let mut cum = 0.0;
+    for fw in wins {
+        let Some(win) = app.get_webview_window(&fw.label) else { continue };
+        let (w, h) = (fw.w, fw.h);
+        let x = match corner {
+            Corner::TopLeft | Corner::BottomLeft => mpos.x + FLOAT_SIDE_INSET,
+            Corner::TopRight | Corner::BottomRight => mpos.x + msize.width - w - FLOAT_SIDE_INSET,
+        };
+        let y = match corner {
+            Corner::TopLeft | Corner::TopRight => mpos.y + FLOAT_TOP_INSET + cum,
+            Corner::BottomLeft | Corner::BottomRight => {
+                mpos.y + msize.height - FLOAT_BOTTOM_INSET - cum - h
+            }
+        };
+        // Clamp fully on-screen (a manually-resized window can exceed its slot;
+        // never let it spill off the monitor edge).
+        let x = x.max(mpos.x).min((mpos.x + msize.width - w).max(mpos.x));
+        let y = y.max(mpos.y).min((mpos.y + msize.height - h).max(mpos.y));
+        let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+        cum += h + FLOAT_GAP;
     }
 }
 
-/// Which corner is a window's center nearest to (relative to its monitor)?
-fn nearest_corner(app: &AppHandle, label: &str) -> Option<Corner> {
-    let win = app.get_webview_window(label)?;
-    let mon = win.current_monitor().ok().flatten().or_else(|| float_monitor(app))?;
-    let scale = mon.scale_factor();
-    let msize = mon.size().to_logical::<f64>(scale);
-    let mpos = mon.position().to_logical::<f64>(scale);
-    let wpos = win.outer_position().ok()?.to_logical::<f64>(scale);
-    let wsize = win.outer_size().ok()?.to_logical::<f64>(scale);
-    let cx = wpos.x + wsize.width / 2.0;
-    let cy = wpos.y + wsize.height / 2.0;
-    let left = cx < mpos.x + msize.width / 2.0;
-    let top = cy < mpos.y + msize.height / 2.0;
-    Some(match (top, left) {
-        (true, true) => Corner::TopLeft,
-        (true, false) => Corner::TopRight,
-        (false, true) => Corner::BottomLeft,
-        (false, false) => Corner::BottomRight,
-    })
+/// Re-stack using the currently-configured corner + tracked window list.
+fn reflow(app: &AppHandle, layout: &FloatLayoutState) {
+    let corner = *layout.corner.lock().unwrap();
+    let wins = layout.wins.lock().unwrap().clone();
+    reposition_floats(app, corner, &wins);
 }
 
-/// Called on drag-end: reassign the window to its nearest corner and re-stack.
+/// Setting changed (or initial sync): set the corner all floats snap to + re-stack.
+#[tauri::command]
+fn set_float_corner(app: AppHandle, corner: String, layout: State<FloatLayoutState>) {
+    *layout.corner.lock().unwrap() = Corner::from_str(&corner);
+    reflow(&app, &layout);
+}
+
+/// Drag-end: the corner is fixed by the Setting, so just return the window to its
+/// stack slot at the configured corner.
 #[tauri::command]
 fn snap_float_window(app: AppHandle, label: String, layout: State<FloatLayoutState>) {
-    let Some(corner) = nearest_corner(&app, &label) else { return };
-    let wins = {
+    let _ = label;
+    reflow(&app, &layout);
+}
+
+/// Called on manual window resize: read the window's real size into the layout
+/// (otherwise stacking uses a stale size → overlap/overflow) and re-stack.
+#[tauri::command]
+fn sync_float_size(app: AppHandle, label: String, layout: State<FloatLayoutState>) {
+    let Some(win) = app.get_webview_window(&label) else { return };
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let Ok(sz) = win.inner_size() else { return };
+    let lsz = sz.to_logical::<f64>(scale);
+    {
         let mut wins = layout.wins.lock().unwrap();
         if let Some(e) = wins.iter_mut().find(|f| f.label == label) {
-            e.corner = corner;
+            e.w = lsz.width;
+            e.h = lsz.height;
         }
-        wins.clone()
-    };
-    reposition_floats(&app, &wins);
+    }
+    reflow(&app, &layout);
 }
 
 #[tauri::command]
 fn close_float_window(app: AppHandle, label: String, layout: State<FloatLayoutState>) {
-    let wins = {
-        let mut wins = layout.wins.lock().unwrap();
-        wins.retain(|f| f.label != label);
-        wins.clone()
-    };
+    layout.wins.lock().unwrap().retain(|f| f.label != label);
     if let Some(win) = app.get_webview_window(&label) {
         let _ = win.close();
     }
-    reposition_floats(&app, &wins);
+    reflow(&app, &layout);
 }
 
 /// Snapshot handshake routed through Rust app.emit (frontend→frontend `emit`
@@ -1527,6 +1536,13 @@ fn send_float_snapshot(app: AppHandle, pty_id: u32, data: String, cols: u16, row
     );
 }
 
+/// Source terminal resized → tell its float mirror the new grid dims so it can
+/// match (the shared PTY's resize already triggers the agent to repaint).
+#[tauri::command]
+fn notify_float_grid(app: AppHandle, pty_id: u32, cols: u16, rows: u16) {
+    let _ = app.emit(&format!("float-grid-{pty_id}"), json!({ "cols": cols, "rows": rows }));
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1544,7 +1560,10 @@ pub fn run() {
             let conn = init_db(app.handle()).expect("DB init failed");
             app.manage(DbState { conn: Mutex::new(conn) });
             app.manage(FloatParamsState { map: Mutex::new(std::collections::HashMap::new()) });
-            app.manage(FloatLayoutState { wins: Mutex::new(Vec::new()) });
+            app.manage(FloatLayoutState {
+                corner: Mutex::new(Corner::TopRight),
+                wins: Mutex::new(Vec::new()),
+            });
 
             // Vertically center the native traffic lights in the 36px titlebar.
             // (--titlebar-height = 36; button cluster ~16px tall → y ≈ 10.)
@@ -1618,9 +1637,12 @@ pub fn run() {
             get_float_params,
             set_window_size,
             snap_float_window,
+            sync_float_size,
             close_float_window,
             request_float_snapshot,
             send_float_snapshot,
+            notify_float_grid,
+            set_float_corner,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

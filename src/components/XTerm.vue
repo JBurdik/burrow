@@ -186,6 +186,20 @@ function safeFit() {
   if (hostEl.value.offsetWidth === 0 || hostEl.value.offsetHeight === 0) return;
   fitAddon.fit();
   invoke("resize_pty", { id: props.ptyId, cols: term.cols, rows: term.rows });
+  notifyFloatGrid();
+}
+
+// Tell any floating mirror of this pty that the grid changed, so it can match
+// cols/rows (the shared PTY's SIGWINCH already makes the agent repaint; the
+// float just needs the new dims to render that repaint correctly).
+let lastGridCols = 0;
+let lastGridRows = 0;
+function notifyFloatGrid() {
+  if (!term) return;
+  if (term.cols === lastGridCols && term.rows === lastGridRows) return;
+  lastGridCols = term.cols;
+  lastGridRows = term.rows;
+  invoke("notify_float_grid", { ptyId: props.ptyId, cols: term.cols, rows: term.rows }).catch(() => {});
 }
 function deferredFit() {
   requestAnimationFrame(() => requestAnimationFrame(safeFit));

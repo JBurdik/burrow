@@ -60,6 +60,7 @@ const expanded = ref(false);
 let term: Terminal | null = null;
 let unlistenData: UnlistenFn | null = null;
 let unlistenSnap: UnlistenFn | null = null;
+let unlistenGrid: UnlistenFn | null = null;
 let unlistenHook: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let doneTimer: ReturnType<typeof setTimeout> | null = null;
@@ -73,7 +74,9 @@ let termMounted = false;
 let phase: "idle" | "loading" | "live" = "idle";
 let liveQueue: Uint8Array[] = [];
 let unlistenMoved: UnlistenFn | null = null;
+let unlistenResized: UnlistenFn | null = null;
 let moveTimer: ReturnType<typeof setTimeout> | null = null;
+let resizeWinTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function focusMain() {
   await emit("float-focus-tab", { ptyId: props.ptyId, wsId: props.wsId });
@@ -138,6 +141,23 @@ function fitFont() {
   if (term.options.fontSize !== fs) term.options.fontSize = fs;
 }
 
+// Match the float's grid to the source (cols×rows) AND size the WINDOW so that
+// grid renders at a comfortable ~12px font — the source is often very wide, so a
+// fixed window would force a tiny font. Aspect follows the terminal; capped to a
+// sane max, and the user can still resize afterwards.
+function applyGrid(cols: number, rows: number) {
+  if (!term || cols <= 0 || rows <= 0) return;
+  if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
+  const TARGET_FS = 12;
+  const winW = Math.min(1000, Math.round(cols * TARGET_FS * 0.6 + 12));
+  const winH = Math.min(680, Math.round(rows * TARGET_FS * 1.4 + 32 + 10));
+  invoke("set_window_size", { label: `float-${props.ptyId}`, width: winW, height: winH })
+    .then(() => nextTick())
+    .then(() => fitFont())
+    .catch(() => {});
+  fitFont();
+}
+
 function mountTerm() {
   if (!hostEl.value || termMounted) return;
   termMounted = true;
@@ -192,13 +212,28 @@ onMounted(async () => {
       if (phase !== "loading") return;
       if (snapTimer) { clearTimeout(snapTimer); snapTimer = null; }
       const { data, cols, rows } = event.payload;
-      // Fix the float's grid to the main window's, then font-scale to fit.
-      if (cols > 0 && rows > 0) { term?.resize(cols, rows); fitFont(); }
+      // Match grid + size the window for a readable mirror.
+      applyGrid(cols, rows);
       term?.reset();
       term?.write(data);
       while (liveQueue.length) term?.write(liveQueue.shift()!);
       phase = "live";
       term?.focus();
+    },
+  );
+
+  // The source terminal resized → match its new grid so the live repaint (the
+  // shared PTY's SIGWINCH already triggered the agent) renders correctly.
+  unlistenGrid = await listen<{ cols: number; rows: number }>(
+    `float-grid-${props.ptyId}`,
+    (event) => {
+      if (!term || phase !== "live") return;
+      const { cols, rows } = event.payload;
+      // Source terminal resized → match its grid AND resize the float window so
+      // the mirror stays readable (not just a font tweak inside a fixed window).
+      if (cols > 0 && rows > 0 && (cols !== term.cols || rows !== term.rows)) {
+        applyGrid(cols, rows);
+      }
     },
   );
 
@@ -218,8 +253,9 @@ onMounted(async () => {
   // Snapping itself moves the window → guard against an infinite snap loop with
   // a short suppression window.
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  const win = getCurrentWindow();
   let snapping = false;
-  unlistenMoved = await getCurrentWindow().onMoved(() => {
+  unlistenMoved = await win.onMoved(() => {
     if (snapping) return;
     if (moveTimer) clearTimeout(moveTimer);
     moveTimer = setTimeout(async () => {
@@ -228,17 +264,29 @@ onMounted(async () => {
       setTimeout(() => { snapping = false; }, 150);
     }, 220);
   });
+
+  // Manual window resize: sync the real size into the layout + re-stack so the
+  // others realign and nothing overflows the screen edge.
+  unlistenResized = await win.onResized(() => {
+    if (resizeWinTimer) clearTimeout(resizeWinTimer);
+    resizeWinTimer = setTimeout(() => {
+      invoke("sync_float_size", { label: `float-${props.ptyId}` }).catch(() => {});
+    }, 200);
+  });
 });
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   unlistenData?.();
   unlistenSnap?.();
+  unlistenGrid?.();
   unlistenHook?.();
   unlistenMoved?.();
+  unlistenResized?.();
   if (doneTimer) clearTimeout(doneTimer);
   if (snapTimer) clearTimeout(snapTimer);
   if (moveTimer) clearTimeout(moveTimer);
+  if (resizeWinTimer) clearTimeout(resizeWinTimer);
   term?.dispose();
 });
 

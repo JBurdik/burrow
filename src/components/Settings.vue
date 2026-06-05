@@ -299,6 +299,26 @@
             </div>
           </div>
 
+          <div class="settings-group">
+            <span class="group-label">Floating windows</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Snap corner</span>
+                <span class="field-desc">Which screen corner popped-out terminal bubbles snap to and stack at</span>
+              </div>
+              <select
+                class="select"
+                :value="ui.floatCorner"
+                @change="ui.floatCorner = ($event.target as HTMLSelectElement).value"
+              >
+                <option value="top-right">Top right</option>
+                <option value="top-left">Top left</option>
+                <option value="bottom-right">Bottom right</option>
+                <option value="bottom-left">Bottom left</option>
+              </select>
+            </div>
+          </div>
+
           <div class="sec-foot">
             <button class="reset-btn" @click="store.reset()">
               <PhArrowCounterClockwise :size="12" /> Reset to defaults
