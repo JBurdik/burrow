@@ -380,10 +380,9 @@ export const THEMES: Theme[] = [
     key: "lime-void",
     label: "Lime Void 🟢",
     isDark: true,
-    // Solid dark-lime theme. (Previously a see-through "glass" variant relying on
-    // window transparency + OS vibrancy, but that backdrop never reliably renders
-    // on the Tauri window — it just left every surface, incl. the Settings
-    // overlay, unreadably translucent. Now fully opaque; electric lime accent.)
+    // Solid dark-lime theme. (A see-through "glass" variant relying on window
+    // transparency + OS vibrancy was tried but caused system instability and
+    // left surfaces unreadable, so it's fully opaque. Electric lime accent.)
     vars: {
       "bg-base": "#060a06",
       "bg-panel": "#0c140c",

@@ -1254,16 +1254,10 @@ pub fn run() {
                 use tauri_plugin_decorum::WebviewWindowExt;
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_traffic_lights_inset(13.0, 10.0);
-                    // OS-level backdrop blur (vibrancy). Always applied; only
-                    // shows where a theme leaves bg-base/panels translucent
-                    // (the "Lime Void" theme). Opaque themes fully cover it.
-                    use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
-                    let _ = apply_vibrancy(
-                        &win,
-                        NSVisualEffectMaterial::UnderWindowBackground,
-                        None,
-                        None,
-                    );
+                    // OS vibrancy intentionally NOT applied: it caused system-wide
+                    // lag/freezes on this machine. All themes are opaque, so there
+                    // is nothing to frost anyway. (Window is also no longer
+                    // transparent — see tauri.conf.json.)
                 }
             }
 
