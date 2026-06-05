@@ -575,6 +575,17 @@ fn daemon_ensure(data_dir: &Path, app: &AppHandle) -> Result<Arc<DaemonClient>, 
         }
     }
 
+    // Reaching here means no usable daemon (probe failed, socket missing, or a
+    // version mismatch we already killed). The published PID — if still alive — is
+    // therefore an unreachable orphan: it lost the socket but keeps running until
+    // reboot, leaking a process + its dead PTYs every time this path is hit. Reap it
+    // before spawning a replacement (kill is a no-op if it's already gone).
+    if let Ok(pid) = std::fs::read_to_string(data_dir.join("daemon.pid")) {
+        if let Ok(pid) = pid.trim().parse::<u32>() {
+            let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
+        }
+    }
+
     // Spawn new daemon
     let daemon_bin = find_daemon_binary(app)?;
     std::process::Command::new(&daemon_bin)

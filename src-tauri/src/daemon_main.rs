@@ -115,6 +115,31 @@ async fn main() {
     // old daemon binary and PTY-level fixes never take effect).
     let _ = std::fs::write(data_dir.join("daemon.pid"), std::process::id().to_string());
 
+    // Orphan self-reaper. If the app can't reach us on launch (transient probe
+    // miss, stale socket) it spawns a fresh daemon, which removes + rebinds the
+    // socket path — leaving us alive but unreachable (our PTYs unrouteable). The
+    // app's PID-reap is best-effort, so back it up: record the inode we bound and
+    // poll it; once the path is gone or points at a different inode, a newer
+    // daemon owns the socket and our sessions can never be reached again — exit.
+    {
+        use std::os::unix::fs::MetadataExt;
+        let socket_path = socket_path.clone();
+        let bound = std::fs::metadata(&socket_path).map(|m| (m.dev(), m.ino())).ok();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                let still_ours = matches!(
+                    (std::fs::metadata(&socket_path).map(|m| (m.dev(), m.ino())).ok(), bound),
+                    (Some(cur), Some(b)) if cur == b
+                );
+                if !still_ours {
+                    eprintln!("[burrow-daemon] socket rebound by a newer daemon — exiting");
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
+
     let state = Arc::new(DaemonState {
         sessions: RwLock::new(HashMap::new()),
         auth_token,
