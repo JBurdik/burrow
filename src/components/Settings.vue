@@ -75,18 +75,14 @@
               v-for="(a, i) in store.agents"
               :key="a.id"
               class="row"
-              :class="{ dragging: dragIndex === i, 'drag-over': dragOverIndex === i }"
-              @dragenter.prevent="onDragOver(i)"
-              @dragover.prevent="onDragOver(i)"
-              @drop.prevent="onDrop(i)"
+              :data-reorder-idx="i"
+              :class="{ dragging: dragIndex === i, 'drag-over': dragOverIndex === i && dragIndex !== i }"
             >
               <!-- Drag handle -->
               <div
                 class="col-grip grip"
-                draggable="true"
                 title="Drag to reorder"
-                @dragstart="onDragStart(i, $event)"
-                @dragend="onDragEnd"
+                @pointerdown="(e: PointerEvent) => onGripDown(i, e)"
               >
                 <PhDotsSixVertical :size="14" />
               </div>
@@ -300,6 +296,26 @@
                 />
                 <span class="size-unit">agents</span>
               </div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <span class="group-label">Floating windows</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Snap corner</span>
+                <span class="field-desc">Which screen corner popped-out terminal bubbles snap to and stack at</span>
+              </div>
+              <select
+                class="select"
+                :value="ui.floatCorner"
+                @change="ui.floatCorner = ($event.target as HTMLSelectElement).value"
+              >
+                <option value="top-right">Top right</option>
+                <option value="top-left">Top left</option>
+                <option value="bottom-right">Bottom right</option>
+                <option value="bottom-left">Bottom left</option>
+              </select>
             </div>
           </div>
 
@@ -898,6 +914,7 @@ import { useUIStore, UI_FONTS, TERMINAL_FONTS } from "@/stores/ui";
 import { useUpdateStore } from "@/stores/update";
 import { THEMES } from "@/themes";
 import { soundsForKind, playSound, type SoundKind } from "@/lib/sounds";
+import { usePointerReorder } from "@/composables/usePointerReorder";
 
 defineEmits<{ close: [] }>();
 
@@ -1120,30 +1137,15 @@ const flagDraft = ref("");
 const iconPickerId = ref<string | null>(null);
 const showTemplatePicker = ref(false);
 
-// --- Reorder (drag & drop) ---
-const dragIndex = ref<number | null>(null);
-const dragOverIndex = ref<number | null>(null);
-
-function onDragStart(i: number, e: DragEvent) {
-  dragIndex.value = i;
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = "move";
-    // WebKit (Tauri's WKWebView) won't fire drop unless drag data is set.
-    e.dataTransfer.setData("text/plain", String(i));
-  }
-}
-function onDragOver(i: number) {
-  if (dragIndex.value !== null) dragOverIndex.value = i;
-}
-function onDrop(i: number) {
-  if (dragIndex.value !== null) store.move(dragIndex.value, i);
-  dragIndex.value = null;
-  dragOverIndex.value = null;
-}
-function onDragEnd() {
-  dragIndex.value = null;
-  dragOverIndex.value = null;
-}
+// --- Reorder (pointer-based) ---
+// HTML5 drag-and-drop is unreliable here: Tauri's WKWebView keeps its native
+// drag-drop handler on (for terminal file drops), which swallows the webview's
+// own `drop` events. Pointer events sidestep it. Drag the grip handle.
+const {
+  dragIdx: dragIndex,
+  overIdx: dragOverIndex,
+  down: onGripDown,
+} = usePointerReorder((from, to) => store.move(from, to));
 
 // --- Shortcut recorder ---
 const recordingId = ref<string | null>(null);
@@ -1488,6 +1490,7 @@ const SHORTCUT_GROUPS = [
   color: #3a3a3a;
   cursor: grab;
   align-items: center;
+  touch-action: none;
 }
 .grip:hover { color: #888; }
 .grip:active { cursor: grabbing; }

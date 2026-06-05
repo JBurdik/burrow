@@ -77,15 +77,17 @@ impl DaemonClient {
         serde_json::from_str(line.trim()).map_err(|e| e.to_string())
     }
 
-    /// Open a persistent AttachPty stream, forwarding data as Tauri events.
+    /// Open a persistent AttachPty stream, forwarding data as `pty-data-{id}`.
     pub fn start_stream(&self, pty_id: u32) {
         let stop = Arc::new(AtomicBool::new(false));
         self.streams.lock().unwrap().insert(pty_id, stop.clone());
+        self.spawn_stream(pty_id, format!("pty-data-{pty_id}"), stop);
+    }
 
+    fn spawn_stream(&self, pty_id: u32, event_name: String, stop: Arc<AtomicBool>) {
         let socket_path = self.socket_path.clone();
         let token = self.token.clone();
         let app = self.app.clone();
-        let event_name = format!("pty-data-{pty_id}");
 
         std::thread::spawn(move || {
             let stream = match UnixStream::connect(&socket_path) {

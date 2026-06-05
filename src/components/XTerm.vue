@@ -11,6 +11,7 @@ import { ref, onMounted, onBeforeUnmount, watch } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -94,7 +95,9 @@ function applyCounterZoom() {
 }
 let term: Terminal;
 let fitAddon: FitAddon;
+let serializeAddon: SerializeAddon;
 let unlisten: UnlistenFn | null = null;
+let unlistenSnapReq: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver;
 let pollTimer: ReturnType<typeof setInterval>;
 let dbgTimer: ReturnType<typeof setInterval>;
@@ -183,6 +186,20 @@ function safeFit() {
   if (hostEl.value.offsetWidth === 0 || hostEl.value.offsetHeight === 0) return;
   fitAddon.fit();
   invoke("resize_pty", { id: props.ptyId, cols: term.cols, rows: term.rows });
+  notifyFloatGrid();
+}
+
+// Tell any floating mirror of this pty that the grid changed, so it can match
+// cols/rows (the shared PTY's SIGWINCH already makes the agent repaint; the
+// float just needs the new dims to render that repaint correctly).
+let lastGridCols = 0;
+let lastGridRows = 0;
+function notifyFloatGrid() {
+  if (!term) return;
+  if (term.cols === lastGridCols && term.rows === lastGridRows) return;
+  lastGridCols = term.cols;
+  lastGridRows = term.rows;
+  invoke("notify_float_grid", { ptyId: props.ptyId, cols: term.cols, rows: term.rows }).catch(() => {});
 }
 function deferredFit() {
   requestAnimationFrame(() => requestAnimationFrame(safeFit));
@@ -207,6 +224,11 @@ onMounted(async () => {
   fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.loadAddon(new WebLinksAddon());
+  // SerializeAddon lets a floating-bubble window request a snapshot of THIS
+  // terminal's current screen (incl. alt-screen TUIs) to reconstruct it exactly
+  // on expand — the daemon ring-buffer replay can't rebuild an alt-screen.
+  serializeAddon = new SerializeAddon();
+  term.loadAddon(serializeAddon);
   term.open(hostEl.value!);
 
   applyCounterZoom();
@@ -267,6 +289,25 @@ onMounted(async () => {
       emit("agentState", state);
   });
 
+  // Float-bubble snapshot responder: a floating window mirroring THIS pty asks
+  // for the current screen on expand. SerializeAddon rebuilds the exact visible
+  // state (alt-screen + modes) which the float writes into a fresh xterm. We
+  // never tear this down per-tab visibility — main XTerms stay mounted (v-show),
+  // so a hidden tab still answers. (tauriEmit, not the Vue `emit` above.)
+  unlistenSnapReq = await listen(`float-snap-req-${props.ptyId}`, async () => {
+    try {
+      // Send the grid dims too: the float must use the SAME cols/rows so the
+      // serialized screen (and subsequent live bytes, laid out for this grid)
+      // render identically — it font-scales to fit instead of reflowing.
+      await invoke("send_float_snapshot", {
+        ptyId: props.ptyId,
+        data: serializeAddon.serialize(),
+        cols: term.cols,
+        rows: term.rows,
+      });
+    } catch { /* float falls back to live-only after its timeout */ }
+  });
+
   // Create PTY
   await invoke("create_pty", {
     id: props.ptyId,
@@ -325,17 +366,31 @@ onMounted(async () => {
     setTimeout(trySend, 100);
   }
 
-  // Shift+Enter → send CSI u escape (kitty protocol) so Claude Code inserts a newline
+  // Custom key handling on top of xterm's defaults.
   term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+    // Shift+Enter → CSI u escape (kitty protocol) so Claude Code inserts a newline.
     if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
-      if (e.type === "keydown") {
-        const bytes = Array.from(new TextEncoder().encode("\x1b[13;2u"));
-        invoke("write_pty", { id: props.ptyId, data: bytes });
-      }
+      if (e.type === "keydown") send("\x1b[13;2u");
       return false; // prevent xterm from also sending \r
+    }
+    // Option/Alt + ←/→ → word-wise cursor movement. macOS terminals map Option
+    // to readline's word-left/right (ESC b / ESC f); xterm.js doesn't do this on
+    // its own, so emit the sequences ourselves and swallow the key.
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      if (e.type === "keydown") send(e.key === "ArrowLeft" ? "\x1bb" : "\x1bf");
+      return false;
+    }
+    // Option/Alt + Backspace → delete the previous word (readline: ESC DEL).
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === "Backspace" || e.key === "Delete")) {
+      if (e.type === "keydown") send("\x1b\x7f");
+      return false;
     }
     return true;
   });
+
+  function send(s: string) {
+    invoke("write_pty", { id: props.ptyId, data: Array.from(new TextEncoder().encode(s)) });
+  }
 
   // Send input from xterm → Rust PTY
   term.onData((data) => {
@@ -455,6 +510,7 @@ onBeforeUnmount(async () => {
   resizeObserver?.disconnect();
   unlisten?.();
   unlistenHook?.();
+  unlistenSnapReq?.();
   unlistenDrop?.();
   term?.textarea?.removeEventListener("paste", onPaste);
   // detach_pty closes the data stream but leaves the PTY alive in the daemon,

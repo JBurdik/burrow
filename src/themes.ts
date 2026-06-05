@@ -378,14 +378,14 @@ export const THEMES: Theme[] = [
   },
   {
     key: "lime-void",
-    label: "Lime Void 🟢 (glass)",
+    label: "Lime Void 🟢",
     isDark: true,
-    // Fully see-through window: bg-base transparent so the OS vibrancy blur of
-    // whatever's behind the window shows. Panels are barely-there translucent
-    // black, frosted by backdropBlur. Electric lime is the one loud accent.
+    // Solid dark-lime theme. (A see-through "glass" variant relying on window
+    // transparency + OS vibrancy was tried but caused system instability and
+    // left surfaces unreadable, so it's fully opaque. Electric lime accent.)
     vars: {
-      "bg-base": "transparent",
-      "bg-panel": "rgba(8, 14, 8, 0.42)",
+      "bg-base": "#060a06",
+      "bg-panel": "#0c140c",
       "bg-hover": "rgba(174, 255, 0, 0.14)",
       "bg-selected": "rgba(174, 255, 0, 0.22)",
       border: "rgba(174, 255, 0, 0.35)",
@@ -399,8 +399,7 @@ export const THEMES: Theme[] = [
       red: "#ff5470",
     },
     xterm: {
-      // Translucent so the frosted backdrop shows behind terminal text too.
-      background: "rgba(6, 10, 6, 0.34)",
+      background: "#060a06",
       foreground: "#eaffd6",
       cursor: "#aeff00",
       cursorAccent: "#060a06",
@@ -423,7 +422,6 @@ export const THEMES: Theme[] = [
       brightWhite: "#ffffff",
     },
     shiki: "github-dark",
-    backdropBlur: "blur(28px) saturate(160%)",
   },
 ];
 

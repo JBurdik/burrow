@@ -84,6 +84,7 @@ import { useAgentsStore } from "@/stores/agents";
 import { useUpdateStore } from "@/stores/update";
 import { matchesShortcut } from "@/lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 const sidebarWidth = ref(220);
 const rightPanelWidth = ref(300);
@@ -201,19 +202,36 @@ async function openNewWorkspace() {
 // the initial PTY/workspace load) and every 6 hours after. Silent: failures in
 // browser-only dev (no Tauri) are swallowed.
 let updateTimer: number | undefined;
-onMounted(() => {
+let unlistenFloat: UnlistenFn | null = null;
+
+onMounted(async () => {
   ws.load();
   window.addEventListener("keydown", onKeydown);
   window.addEventListener('mousemove', onResizeMove);
   window.addEventListener('mouseup', onResizeUp);
   setTimeout(() => update.check({ silent: true }), 3000);
   updateTimer = window.setInterval(() => update.check({ silent: true }), 6 * 60 * 60 * 1000);
+
+  // Float bubble "focus main" — switch to the right workspace + leaf
+  unlistenFloat = await listen<{ ptyId: number; wsId: number }>(
+    "float-focus-tab",
+    ({ payload }) => {
+      const target = ws.workspaces.find((w) => w.id === payload.wsId);
+      if (target) ws.open(target);
+      // Defer focus until Terminal for that workspace is mounted/active
+      setTimeout(() => {
+        const term = termRefs.get(payload.wsId);
+        term?.focusLeaf(payload.ptyId);
+      }, 50);
+    },
+  );
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
   window.removeEventListener('mousemove', onResizeMove);
   window.removeEventListener('mouseup', onResizeUp);
   if (updateTimer) clearInterval(updateTimer);
+  unlistenFloat?.();
 });
 
 function onKeydown(e: KeyboardEvent) {

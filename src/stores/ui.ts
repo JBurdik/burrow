@@ -47,6 +47,7 @@ interface Prefs {
   soundVolume: number; // 0-100
   maxAgents: number; // soft per-workspace sub-agent cap for the /burrow skill
   debugOverlay: boolean; // show the per-terminal diagnostic overlay (XTerm.vue)
+  floatCorner: string; // which screen corner floating windows snap+stack to
 }
 
 // The px sizes in the stylesheets are authored at this baseline. `zoom` scales
@@ -73,6 +74,7 @@ const DEFAULT_PREFS: Prefs = {
   soundVolume: 70,
   maxAgents: 3,
   debugOverlay: false,
+  floatCorner: "top-right",
 };
 
 function loadPrefs(): Prefs {
@@ -112,6 +114,15 @@ export const useUIStore = defineStore("ui", () => {
   const soundVolume = ref(loaded.soundVolume);
   const maxAgents = ref(loaded.maxAgents);
   const debugOverlay = ref(loaded.debugOverlay);
+  const floatCorner = ref(loaded.floatCorner);
+
+  // Push the float-window corner to Rust whenever it changes (and on load), so
+  // every floating window snaps + stacks at the chosen corner.
+  watch(
+    floatCorner,
+    (c) => { invoke("set_float_corner", { corner: c }).catch(() => {}); },
+    { immediate: true },
+  );
 
   // Publish the soft sub-agent cap to a file the `burrow` CLI can read (it can't
   // see localStorage). No-op in browser-only dev where Tauri invoke is absent.
@@ -144,7 +155,8 @@ export const useUIStore = defineStore("ui", () => {
     if (t.xterm.background) root.style.setProperty("--terminal-bg", t.xterm.background);
     // Optional full-window meme wallpaper (joke themes); `none` clears it.
     root.style.setProperty("--bg-image", t.bgImage ?? "none");
-    // Frosted-glass backdrop for translucent themes (Lime Void); else none.
+    // Frosted-glass backdrop for translucent themes; else none. (No bundled theme
+    // sets this — transparent/vibrancy themes were removed for causing lag.)
     root.style.setProperty("--backdrop-blur", t.backdropBlur ?? "none");
     root.style.colorScheme = t.isDark ? "dark" : "light";
   }
@@ -153,7 +165,7 @@ export const useUIStore = defineStore("ui", () => {
   watch(
     [uiFont, uiFontSize, uiScale, terminalFont, terminalFontSize, swapPanels, theme,
      soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
-     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay],
+     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner],
     () => {
       localStorage.setItem(
         PREFS_KEY,
@@ -176,6 +188,7 @@ export const useUIStore = defineStore("ui", () => {
           soundVolume: soundVolume.value,
           maxAgents: maxAgents.value,
           debugOverlay: debugOverlay.value,
+          floatCorner: floatCorner.value,
         } satisfies Prefs),
       );
       applyTheme();
@@ -257,6 +270,7 @@ export const useUIStore = defineStore("ui", () => {
     soundVolume,
     maxAgents,
     debugOverlay,
+    floatCorner,
     openSettings,
     closeSettings,
     toggleSettings,

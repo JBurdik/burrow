@@ -12,9 +12,13 @@
         <div
           class="ws-item"
           :class="{ active: store.active?.id === item.id }"
-          @click="store.open(item)"
+          @click="openWs(item)"
           @contextmenu.prevent.stop="openCtxMenu(item, $event)"
         >
+          <button class="ws-caret" :title="collapsed[item.id] ? 'Expand' : 'Collapse'" @click.stop="toggleCollapse(item.id)">
+            <PhCaretRight v-if="collapsed[item.id]" :size="11" weight="bold" />
+            <PhCaretDown v-else :size="11" weight="bold" />
+          </button>
           <div class="ws-icon-wrap" @click.stop="pickIcon(item.id)" title="Change icon">
             <img v-if="store.icons[item.id]" :src="store.icons[item.id]" class="ws-custom-icon" />
             <PhFolder v-else :size="14" weight="fill" class="ws-icon" />
@@ -82,23 +86,22 @@
           </div>
         </div>
 
-        <div v-if="termTabs.tabsByWs[item.id]?.length" class="ws-terminals">
+        <div v-if="!collapsed[item.id] && termTabs.tabsByWs[item.id]?.length" class="ws-terminals">
           <div
             v-for="(tab, tabIdx) in termTabs.tabsByWs[item.id]"
             :key="tab.id"
             class="ws-term"
+            :data-reorder-idx="tabIdx"
+            :data-reorder-group="String(item.id)"
             :class="{
               active:
                 store.active?.id === item.id && termTabs.activeByWs[item.id] === tab.id,
-              'drag-over': dragOverKey === `${item.id}-${tabIdx}`,
+              'drag-over':
+                tabDragGroup === String(item.id) && tabOverIdx === tabIdx && tabDragIdx !== tabIdx,
+              dragging: tabDragGroup === String(item.id) && tabDragIdx === tabIdx,
             }"
-            draggable="true"
             @click.stop="selectTab(item, tab.id)"
-            @dragstart="(e) => onDragStart(item.id, tabIdx, e)"
-            @dragover="(e) => onDragOver(item.id, tabIdx, e)"
-            @dragleave="onDragLeave"
-            @drop="(e) => onDrop(item.id, tabIdx, e)"
-            @dragend="onDragEnd"
+            @pointerdown="(e: PointerEvent) => tabDragDown(tabIdx, e, String(item.id))"
           >
             <PhRobot v-if="tab.isAgent" :size="11" class="ws-term-icon agent" />
             <PhTerminal v-else :size="11" class="ws-term-icon" />
@@ -213,15 +216,44 @@ import {
   PhPencilSimple,
   PhImage,
   PhTrash,
+  PhCaretRight,
+  PhCaretDown,
 } from "@phosphor-icons/vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore, type Workspace } from "@/stores/workspace";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { spinnerFrame } from "@/lib/spinner";
+import { usePointerReorder } from "@/composables/usePointerReorder";
 
 const store = useWorkspaceStore();
 const termTabs = useTerminalTabsStore();
+
+// ── collapse / expand per workspace ──────────────────────────────────────────
+const COLLAPSE_KEY = "burrow.ws.collapsed";
+const collapsed = ref<Record<number, boolean>>(loadCollapsed());
+
+function loadCollapsed(): Record<number, boolean> {
+  try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}"); }
+  catch { return {}; }
+}
+function setCollapsed(id: number, val: boolean) {
+  collapsed.value[id] = val;
+  localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed.value));
+}
+function toggleCollapse(id: number) {
+  const next = !collapsed.value[id];
+  setCollapsed(id, next);
+  // Expanding a never-opened workspace shows no tabs until its Terminal mounts.
+  if (!next) { const w = store.workspaces.find((x) => x.id === id); if (w) store.open(w); }
+}
+
+// Item click: toggle collapse. Expanding also opens the workspace.
+function openWs(item: Workspace) {
+  const next = !collapsed.value[item.id];
+  setCollapsed(item.id, next);
+  if (!next) store.open(item);
+}
 
 // ── branch switcher ──────────────────────────────────────────────────────────
 interface GitOutput { stdout: string; stderr: string; code: number; }
@@ -307,38 +339,17 @@ watch(() => store.workspaces, (wss) => wss.forEach(ws => {
 }), { deep: true });
 
 // ── drag-to-reorder ──────────────────────────────────────────────────────────
-const dragSrc = ref<{ wsId: number; fromIdx: number } | null>(null);
-const dragOverKey = ref<string | null>(null);
-
-function onDragStart(wsId: number, fromIdx: number, e: DragEvent) {
-  dragSrc.value = { wsId, fromIdx };
-  e.dataTransfer!.effectAllowed = "move";
-}
-
-function onDragOver(wsId: number, toIdx: number, e: DragEvent) {
-  if (!dragSrc.value || dragSrc.value.wsId !== wsId) return;
-  e.preventDefault();
-  e.dataTransfer!.dropEffect = "move";
-  dragOverKey.value = `${wsId}-${toIdx}`;
-}
-
-function onDragLeave() {
-  dragOverKey.value = null;
-}
-
-function onDrop(wsId: number, toIdx: number, e: DragEvent) {
-  e.preventDefault();
-  const src = dragSrc.value;
-  dragSrc.value = null;
-  dragOverKey.value = null;
-  if (!src || src.wsId !== wsId || src.fromIdx === toIdx) return;
-  termTabs.reorder(wsId, src.fromIdx, toIdx);
-}
-
-function onDragEnd() {
-  dragSrc.value = null;
-  dragOverKey.value = null;
-}
+// Pointer-based (not HTML5 DnD): Tauri's native drag-drop handler swallows the
+// webview's drop events. Group = workspace id, so a tab only reorders within its
+// own project's list.
+const {
+  dragIdx: tabDragIdx,
+  overIdx: tabOverIdx,
+  dragGroup: tabDragGroup,
+  down: tabDragDown,
+} = usePointerReorder((from, to, group) => {
+  if (group != null) termTabs.reorder(Number(group), from, to);
+});
 
 function mimeForPath(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
@@ -513,6 +524,20 @@ async function confirmCreate() {
 .ws-item:hover { background: var(--bg-hover); }
 .ws-item.active { background: var(--bg-selected); }
 
+.ws-caret {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  margin: 0 -2px 0 -4px;
+  flex-shrink: 0;
+  border-radius: 3px;
+}
+.ws-caret:hover { color: var(--text-primary); }
+
 .ws-icon { color: #60a5fa; flex-shrink: 0; }
 .ws-item.active .ws-icon { color: var(--accent); }
 
@@ -643,6 +668,8 @@ async function confirmCreate() {
 .ws-term-add:hover { color: var(--text-secondary); }
 
 .ws-term.drag-over { background: var(--bg-hover); outline: 1px solid var(--accent); outline-offset: -1px; }
+.ws-term.dragging { opacity: 0.4; }
+.ws-term { touch-action: none; }
 
 .ws-empty {
   font-size: 11px;
