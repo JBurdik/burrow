@@ -368,6 +368,13 @@ onMounted(async () => {
 
   // Custom key handling on top of xterm's defaults.
   term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+    // Cmd+K → clear the terminal (iTerm-style: wipe scrollback + viewport, keep
+    // the current prompt line). xterm's clear() drops every line above the cursor
+    // row; we swallow the key so it never reaches the PTY.
+    if (e.metaKey && !e.ctrlKey && !e.altKey && (e.key === "k" || e.key === "K")) {
+      if (e.type === "keydown") term.clear();
+      return false;
+    }
     // Shift+Enter → CSI u escape (kitty protocol) so Claude Code inserts a newline.
     if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       if (e.type === "keydown") send("\x1b[13;2u");
