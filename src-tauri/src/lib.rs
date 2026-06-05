@@ -798,6 +798,104 @@ fn get_pty_foreground(id: u32, daemon: State<DaemonState>) -> String {
     resp["process"].as_str().unwrap_or("").to_string()
 }
 
+// ── System & daemon stats (title-bar dropdown) ────────────────────────────────
+
+#[derive(Serialize)]
+pub struct SystemStats {
+    /// Aggregate CPU usage across all cores, 0–100.
+    pub cpu_percent: f32,
+    pub mem_used: u64,
+    pub mem_total: u64,
+}
+
+/// CPU + RAM usage for the whole machine. CPU needs two samples spaced by the
+/// refresh interval, so we sleep briefly between them.
+#[tauri::command]
+fn system_stats() -> SystemStats {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_cpu_usage();
+    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    sys.refresh_cpu_usage();
+    sys.refresh_memory();
+    let cpu_percent = sys.global_cpu_usage();
+    SystemStats {
+        cpu_percent,
+        mem_used: sys.used_memory(),
+        mem_total: sys.total_memory(),
+    }
+}
+
+#[derive(Serialize)]
+pub struct DaemonStats {
+    pub connected: bool,
+    pub pid: Option<u32>,
+    pub total: usize,
+    pub alive: usize,
+}
+
+/// Session counts + pid for the live daemon — drives the title-bar dropdown.
+#[tauri::command]
+fn daemon_stats(daemon: State<DaemonState>, app: AppHandle) -> DaemonStats {
+    let pid = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|d| std::fs::read_to_string(d.join("daemon.pid")).ok())
+        .and_then(|s| s.trim().parse::<u32>().ok());
+    let guard = daemon.client.lock().unwrap();
+    let Some(client) = guard.as_ref() else {
+        return DaemonStats { connected: false, pid, total: 0, alive: 0 };
+    };
+    let Ok(resp) = client.cmd(json!({"cmd": "ListSessions"})) else {
+        return DaemonStats { connected: false, pid, total: 0, alive: 0 };
+    };
+    let sessions = resp["sessions"].as_array().cloned().unwrap_or_default();
+    let alive = sessions.iter().filter(|s| s["alive"].as_bool() == Some(true)).count();
+    DaemonStats { connected: true, pid, total: sessions.len(), alive }
+}
+
+/// Kill every dead (non-alive) PTY the daemon still holds. Returns count reaped.
+#[tauri::command]
+fn clean_daemon(daemon: State<DaemonState>) -> usize {
+    let guard = daemon.client.lock().unwrap();
+    let Some(client) = guard.as_ref() else { return 0 };
+    let Ok(resp) = client.cmd(json!({"cmd": "ListSessions"})) else { return 0 };
+    let mut reaped = 0;
+    for s in resp["sessions"].as_array().cloned().unwrap_or_default() {
+        if s["alive"].as_bool() == Some(false) {
+            if let Some(pid) = s["pty_id"].as_u64() {
+                let _ = client.cmd(json!({"cmd": "KillPty", "pty_id": pid}));
+                client.stop_stream(pid as u32);
+                reaped += 1;
+            }
+        }
+    }
+    reaped
+}
+
+/// Hard-restart the daemon: kill its process (taking all live PTYs with it) and
+/// spawn a fresh one, swapping the connected client in place. Returns the new pid.
+#[tauri::command]
+fn restart_daemon(daemon: State<DaemonState>, app: AppHandle) -> Result<u32, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    // Kill the published pid; daemon_ensure reaps any orphan too, but do it up
+    // front so the version-match reuse branch can't re-adopt the old process.
+    if let Ok(pid) = std::fs::read_to_string(data_dir.join("daemon.pid")) {
+        if let Ok(pid) = pid.trim().parse::<u32>() {
+            let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let _ = std::fs::remove_file(data_dir.join("daemon.sock"));
+    let client = daemon_ensure(&data_dir, &app)?;
+    *daemon.client.lock().unwrap() = Some(client);
+    std::fs::read_to_string(data_dir.join("daemon.pid"))
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .ok_or_else(|| "daemon restarted but pid unavailable".into())
+}
+
 // ── Spawn requests (burrow CLI) ───────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -1605,6 +1703,10 @@ pub fn run() {
             detach_pty,
             list_pty_sessions,
             get_pty_foreground,
+            system_stats,
+            daemon_stats,
+            clean_daemon,
+            restart_daemon,
             take_spawn_requests,
             reinstall_status_hooks,
             remove_status_hooks,
