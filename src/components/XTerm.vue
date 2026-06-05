@@ -11,6 +11,7 @@ import { ref, onMounted, onBeforeUnmount, watch } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -94,7 +95,9 @@ function applyCounterZoom() {
 }
 let term: Terminal;
 let fitAddon: FitAddon;
+let serializeAddon: SerializeAddon;
 let unlisten: UnlistenFn | null = null;
+let unlistenSnapReq: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver;
 let pollTimer: ReturnType<typeof setInterval>;
 let dbgTimer: ReturnType<typeof setInterval>;
@@ -207,6 +210,11 @@ onMounted(async () => {
   fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.loadAddon(new WebLinksAddon());
+  // SerializeAddon lets a floating-bubble window request a snapshot of THIS
+  // terminal's current screen (incl. alt-screen TUIs) to reconstruct it exactly
+  // on expand — the daemon ring-buffer replay can't rebuild an alt-screen.
+  serializeAddon = new SerializeAddon();
+  term.loadAddon(serializeAddon);
   term.open(hostEl.value!);
 
   applyCounterZoom();
@@ -265,6 +273,25 @@ onMounted(async () => {
     const state = event.payload;
     if (state === "running" || state === "waiting" || state === "done")
       emit("agentState", state);
+  });
+
+  // Float-bubble snapshot responder: a floating window mirroring THIS pty asks
+  // for the current screen on expand. SerializeAddon rebuilds the exact visible
+  // state (alt-screen + modes) which the float writes into a fresh xterm. We
+  // never tear this down per-tab visibility — main XTerms stay mounted (v-show),
+  // so a hidden tab still answers. (tauriEmit, not the Vue `emit` above.)
+  unlistenSnapReq = await listen(`float-snap-req-${props.ptyId}`, async () => {
+    try {
+      // Send the grid dims too: the float must use the SAME cols/rows so the
+      // serialized screen (and subsequent live bytes, laid out for this grid)
+      // render identically — it font-scales to fit instead of reflowing.
+      await invoke("send_float_snapshot", {
+        ptyId: props.ptyId,
+        data: serializeAddon.serialize(),
+        cols: term.cols,
+        rows: term.rows,
+      });
+    } catch { /* float falls back to live-only after its timeout */ }
   });
 
   // Create PTY
@@ -469,6 +496,7 @@ onBeforeUnmount(async () => {
   resizeObserver?.disconnect();
   unlisten?.();
   unlistenHook?.();
+  unlistenSnapReq?.();
   unlistenDrop?.();
   term?.textarea?.removeEventListener("paste", onPaste);
   // detach_pty closes the data stream but leaves the PTY alive in the daemon,

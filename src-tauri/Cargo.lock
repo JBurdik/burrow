@@ -13,7 +13,9 @@ name = "agentic-ide"
 version = "0.2.7"
 dependencies = [
  "base64 0.22.1",
+ "cocoa",
  "log",
+ "objc",
  "portable-pty",
  "rusqlite",
  "serde",

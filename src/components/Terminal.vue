@@ -18,8 +18,14 @@
           :class="`status-${tabStatus(tab)}`"
         >{{ tabStatus(tab) === 'running' ? spinnerFrame : '' }}</span>
         <span class="tab-label">{{ tabTitle(tab) }}</span>
+        <PhArrowSquareOut
+          :size="10"
+          class="tab-float"
+          title="Pop out as floating window"
+          @click.stop="popOutTab(tab)"
+        />
         <PhX
-          :size="9"
+          :size="10"
           weight="bold"
           class="tab-close"
           @click.stop="closeTab(tab.id)"
@@ -108,7 +114,7 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
-import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus } from "@phosphor-icons/vue";
+import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import XTerm from "./XTerm.vue";
 import DiffTab from "./DiffTab.vue";
@@ -760,7 +766,35 @@ onBeforeUnmount(() => {
   tabsStore.clear(props.workspaceId);
 });
 
-defineExpose({ addTab, spawnAgent, openDiffInTab, insertContext });
+function popOutTab(tab: Tab) {
+  const leaf =
+    focusedLeafId.value !== 0
+      ? findLeaf(tab.root, focusedLeafId.value) ?? getFirstLeaf(tab.root)
+      : getFirstLeaf(tab.root);
+  invoke("open_float_window", {
+    ptyId: leaf.id,
+    title: leaf.title,
+    wsId: props.workspaceId,
+  });
+}
+
+// Activate the tab containing ptyId and focus that leaf. Called by App.vue
+// when main window regains focus from a float bubble.
+function focusLeaf(ptyId: number) {
+  for (const tab of tabs.value) {
+    const leaf = findLeaf(tab.root, ptyId);
+    if (leaf) {
+      activeTabId.value = tab.id;
+      nextTick(() => {
+        focusedLeafId.value = ptyId;
+        xtermRefs.get(ptyId)?.focus();
+      });
+      return;
+    }
+  }
+}
+
+defineExpose({ addTab, spawnAgent, openDiffInTab, insertContext, focusLeaf });
 </script>
 
 <style scoped>
@@ -854,14 +888,23 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, insertContext });
   100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
 }
 
-.tab-close {
-  opacity: 0.4;
+.tab-close,
+.tab-float {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
   border-radius: 3px;
-  padding: 2px;
   flex-shrink: 0;
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s, background 0.1s;
 }
-.tab-close:hover { opacity: 1; background: rgba(239,68,68,0.2); color: var(--red); }
+.tab:hover .tab-close,
+.tab:hover .tab-float { opacity: 0.45; }
+.tab-close:hover { opacity: 1 !important; background: rgba(239,68,68,0.2); color: var(--red); }
+.tab-float:hover { opacity: 1 !important; background: rgba(255,255,255,0.1); }
 
 .terminal-body {
   flex: 1;
