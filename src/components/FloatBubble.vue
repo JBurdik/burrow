@@ -2,12 +2,13 @@
   <div class="bubble-root" :class="{ expanded }">
     <!-- ── Collapsed state: a thin bar (icon · title · status · close) ── -->
     <div v-if="!expanded" class="bubble-bar" data-tauri-drag-region @click="expand" :title="displayTitle">
-      <PhRobot v-if="isAgentSession" :size="13" class="bar-icon" />
-      <PhTerminal v-else :size="13" class="bar-icon" />
+      <img v-if="projectIcon" :src="projectIcon" class="proj-icon" alt="" />
+      <PhFolder v-else :size="13" weight="fill" class="proj-icon-glyph" />
+      <PhRobot v-if="isAgentSession" :size="12" class="bar-icon" />
+      <PhTerminal v-else :size="12" class="bar-icon" />
       <span class="bar-title">{{ displayTitle }}</span>
-      <span v-if="status !== 'idle'" class="bar-status-dot" :class="`status-${status}`">
-        {{ status === 'running' ? spinnerFrame : '' }}
-      </span>
+      <PhSpinner v-if="status === 'running'" :size="13" class="status-spin spin" />
+      <span v-else-if="status !== 'idle'" class="status-dot" :class="`status-${status}`" />
       <button class="bar-close" title="Close" @click.stop="closeWindow">
         <PhX :size="10" weight="bold" />
       </button>
@@ -16,9 +17,10 @@
     <!-- ── Expanded state: terminal panel ── -->
     <template v-else>
       <div class="bubble-header" data-tauri-drag-region>
-        <span v-if="status !== 'idle'" class="bubble-status-dot" :class="`status-${status}`">
-          {{ status === 'running' ? spinnerFrame : '' }}
-        </span>
+        <img v-if="projectIcon" :src="projectIcon" class="proj-icon" alt="" />
+        <PhFolder v-else :size="13" weight="fill" class="proj-icon-glyph" />
+        <PhSpinner v-if="status === 'running'" :size="13" class="status-spin spin" />
+        <span v-else-if="status !== 'idle'" class="status-dot" :class="`status-${status}`" />
         <span class="bubble-title" data-tauri-drag-region>{{ displayTitle }}</span>
         <div class="bubble-actions">
           <button class="bubble-btn" title="Focus in main window" @click="focusMain">
@@ -43,9 +45,8 @@ import { Terminal } from "@xterm/xterm";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit, type UnlistenFn } from "@tauri-apps/api/event";
-import { PhArrowSquareOut, PhMinus, PhRobot, PhTerminal, PhX } from "@phosphor-icons/vue";
+import { PhArrowSquareOut, PhMinus, PhRobot, PhTerminal, PhX, PhSpinner, PhFolder } from "@phosphor-icons/vue";
 import { useUIStore } from "@/stores/ui";
-import { spinnerFrame } from "@/lib/spinner";
 import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{ ptyId: number; wsId: number; initTitle: string }>();
@@ -56,6 +57,15 @@ const displayTitle = ref(props.initTitle || `PTY ${props.ptyId}`);
 const status = ref<"idle" | "running" | "waiting" | "done">("idle");
 const isAgentSession = ref(false);
 const expanded = ref(false);
+
+// Project (workspace) icon — read from the shared localStorage the workspace
+// store persists to (`ws-icons`: { wsId: dataURL }). Shows which project this
+// floating terminal belongs to. Null → fall back to a folder glyph.
+const projectIcon = ref<string | null>(null);
+try {
+  const icons = JSON.parse(localStorage.getItem("ws-icons") || "{}");
+  if (icons[props.wsId]) projectIcon.value = icons[props.wsId];
+} catch { /* no icons */ }
 
 let term: Terminal | null = null;
 let unlistenData: UnlistenFn | null = null;
@@ -126,19 +136,19 @@ async function expand() {
   for (const d of [60, 180, 400]) setTimeout(() => { fitFont(); term?.focus(); }, d);
 }
 
-// Keep the float's grid identical to the main terminal's (so the mirror renders
-// 1:1) and scale the FONT to fill the window — never reflow cols/rows (that would
-// diverge from the source). Monospace cell ≈ 0.6·fontSize wide, 1.4·fontSize tall.
+// Font is bound by WIDTH only. The float must keep the source's COLUMN count (so
+// line wrapping matches 1:1) but NOT its row count — so a shorter window just
+// shows fewer rows at the SAME big font instead of shrinking everything. Rows are
+// then whatever fits the height. Monospace cell ≈ 0.6·fs wide, 1.4·fs tall.
 function fitFont() {
   if (!term || !hostEl.value) return;
   const w = hostEl.value.clientWidth;
   const h = hostEl.value.clientHeight;
   if (w < 10 || h < 10) return;
-  const fs = Math.max(
-    4,
-    Math.min(28, Math.floor(Math.min(w / (term.cols * 0.6), h / (term.rows * 1.4)))),
-  );
+  const fs = Math.max(7, Math.min(22, Math.floor(w / (term.cols * 0.6))));
   if (term.options.fontSize !== fs) term.options.fontSize = fs;
+  const rows = Math.max(2, Math.floor(h / (fs * 1.4)));
+  if (rows !== term.rows) term.resize(term.cols, rows);
 }
 
 // Match the float's grid to the source (cols×rows) AND size the WINDOW so that
@@ -146,11 +156,15 @@ function fitFont() {
 // fixed window would force a tiny font. Aspect follows the terminal; capped to a
 // sane max, and the user can still resize afterwards.
 function applyGrid(cols: number, rows: number) {
-  if (!term || cols <= 0 || rows <= 0) return;
-  if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
-  const TARGET_FS = 12;
-  const winW = Math.min(1000, Math.round(cols * TARGET_FS * 0.6 + 12));
-  const winH = Math.min(680, Math.round(rows * TARGET_FS * 1.4 + 32 + 10));
+  if (!term || cols <= 0) return;
+  // Match WIDTH (cols) only — rows are set by fitFont to whatever the height fits.
+  if (cols !== term.cols) term.resize(cols, term.rows);
+  // Default window: wide enough for cols at a comfortable font, tall enough to
+  // show all source rows at that font. Font is width-bound, so a taller window
+  // doesn't shrink it — the user can shorten the height freely afterwards.
+  const TARGET_FS = 14;
+  const winW = Math.min(1100, Math.round(cols * TARGET_FS * 0.6 + 12));
+  const winH = Math.min(720, Math.round((rows > 0 ? rows : 24) * TARGET_FS * 1.4 + 32 + 10));
   invoke("set_window_size", { label: `float-${props.ptyId}`, width: winW, height: winH })
     .then(() => nextTick())
     .then(() => fitFont())
@@ -328,6 +342,7 @@ html, body, #app {
   align-items: center;
   gap: 7px;
   padding: 0 8px;
+  overflow: hidden;
   background: var(--bg-panel, #1c1c1e);
   border-radius: 8px;
   border: 1px solid rgba(255,255,255,0.14);
@@ -343,23 +358,23 @@ html, body, #app {
 
 .bar-icon { flex-shrink: 0; color: var(--accent, #7aa2f7); }
 
+/* Project icon (workspace) — shows which project the terminal belongs to. */
+.proj-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.proj-icon-glyph { flex-shrink: 0; color: var(--text-muted, #888); }
+
 .bar-title {
   flex: 1;
+  min-width: 0; /* shrink before the close button, so it never overflows */
   font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.bar-status-dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  font-size: 7px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .bar-close {
@@ -400,6 +415,7 @@ html, body, #app {
   padding: 0 10px;
   height: 32px;
   flex-shrink: 0;
+  overflow: hidden;
   background: var(--bg-panel, #111);
   border-bottom: 1px solid rgba(255,255,255,0.06);
   user-select: none;
@@ -408,6 +424,7 @@ html, body, #app {
 
 .bubble-title {
   flex: 1;
+  min-width: 0; /* let the title shrink so the action buttons never overflow */
   font-size: 11px;
   color: var(--text-secondary, #888);
   white-space: nowrap;
@@ -419,6 +436,7 @@ html, body, #app {
 .bubble-actions {
   display: flex;
   gap: 2px;
+  flex-shrink: 0;
   -webkit-app-region: no-drag;
 }
 
@@ -449,22 +467,22 @@ html, body, #app {
 .bubble-term :deep(.xterm) { height: 100%; }
 .bubble-term :deep(.xterm-viewport) { background: transparent !important; }
 
-.bubble-status-dot {
-  position: absolute;
-  bottom: 6px;
-  right: 6px;
-  width: 9px;
-  height: 9px;
+/* Status indicator — shared by bar + header.
+   running → orange loader (same PhSpinner + spin the app uses elsewhere),
+   waiting → blue dot, done → green dot. */
+.status-spin {
+  flex-shrink: 0;
+  color: #fb923c;
+}
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.status-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  border: 1.5px solid rgba(0,0,0,0.4);
 }
-.bubble-header .bubble-status-dot {
-  position: static;
-  width: 7px;
-  height: 7px;
-  border: none;
-}
-.status-running { background: #f59e0b; }
 .status-waiting { background: #3b82f6; }
 .status-done    { background: #84cc16; }
 </style>
