@@ -106,6 +106,14 @@ function collapse() {
   phase = "idle";
   liveQueue = [];
   if (snapTimer) { clearTimeout(snapTimer); snapTimer = null; }
+  // The v-if swap destroys the terminal's host element; dispose the term so the
+  // next expand mounts a FRESH one bound to the new host (otherwise it writes to
+  // the detached old element → blank pane after re-expand).
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+  term?.dispose();
+  term = null;
+  termMounted = false;
   invoke("set_window_size", { label: `float-${props.ptyId}`, width: 240, height: 36 }).catch(() => {});
 }
 
@@ -314,6 +322,11 @@ watch(() => ui.terminalFont, (font) => {
 </script>
 
 <style>
+/* The float window mounts FloatBubble directly (not App.vue), so App.vue's
+   global box-sizing reset doesn't apply here — without this, `width:100%` +
+   padding overflows and pushes the close button off the window edge. */
+*, *::before, *::after { box-sizing: border-box; }
+
 html, body, #app {
   width: 100%; height: 100%;
   margin: 0; padding: 0;
