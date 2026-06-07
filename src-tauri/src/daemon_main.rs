@@ -333,11 +333,22 @@ async fn cmd_kill(msg: &Value, id: u64, w: &WriterRef, state: &Arc<DaemonState>)
 
 async fn cmd_foreground(msg: &Value, id: u64, w: &WriterRef, state: &Arc<DaemonState>) -> Res {
     let pty_id = msg["pty_id"].as_u64().unwrap_or(0) as u32;
-    let sessions = state.sessions.read().await;
-    let proc = sessions.get(&pty_id)
-        .and_then(|s| s.master.lock().unwrap().process_group_leader())
-        .map(foreground_name)
-        .unwrap_or_default();
+    // Grab the pgid under the lock, then DROP it before shelling out to `ps`.
+    // `foreground_name` spawns a synchronous `ps` (tens of ms under load); running
+    // it on a tokio worker while holding `sessions.read()` blocked the worker and
+    // stalled unrelated commands like `CreatePty` — new terminals appeared to hang
+    // on init. spawn_blocking moves `ps` off the async workers entirely.
+    let pgid = {
+        let sessions = state.sessions.read().await;
+        sessions.get(&pty_id)
+            .and_then(|s| s.master.lock().unwrap().process_group_leader())
+    };
+    let proc = match pgid {
+        Some(pgid) => tokio::task::spawn_blocking(move || foreground_name(pgid))
+            .await
+            .unwrap_or_default(),
+        None => String::new(),
+    };
     reply(w, id, json!({"ok": true, "process": proc})).await
 }
 

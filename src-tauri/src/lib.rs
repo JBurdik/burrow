@@ -13,6 +13,18 @@ struct DaemonState {
     client: Mutex<Option<Arc<DaemonClient>>>,
 }
 
+impl DaemonState {
+    /// Clone the Arc<DaemonClient> and release the mutex immediately. The client
+    /// is itself thread-safe (each cmd opens its own connection), so holding the
+    /// outer mutex across the network round-trip only serialized unrelated calls
+    /// against each other — e.g. a 2s `get_pty_foreground` poll (which shells out
+    /// to `ps` daemon-side) would block a fresh `create_pty`, making new terminals
+    /// appear to hang on init. Cloning the Arc lets concurrent commands proceed.
+    fn client(&self) -> Option<Arc<DaemonClient>> {
+        self.client.lock().unwrap().clone()
+    }
+}
+
 struct DbState {
     conn: Mutex<Connection>,
 }
@@ -672,8 +684,7 @@ fn create_pty(
     daemon: State<DaemonState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let guard = daemon.client.lock().unwrap();
-    let client = guard.as_ref().ok_or("daemon not connected")?;
+    let client = daemon.client().ok_or("daemon not connected")?;
 
     // Build env for the shell: PATH (with burrow bin), BURROW_* vars
     let mut env = serde_json::Map::new();
@@ -725,8 +736,7 @@ fn create_pty(
 
 #[tauri::command]
 fn write_pty(id: u32, data: Vec<u8>, daemon: State<DaemonState>) -> Result<(), String> {
-    let guard = daemon.client.lock().unwrap();
-    let client = guard.as_ref().ok_or("daemon not connected")?;
+    let client = daemon.client().ok_or("daemon not connected")?;
     let enc = general_purpose::STANDARD.encode(&data);
     client.cmd(json!({"cmd": "WritePty", "pty_id": id, "data": enc}))?;
     Ok(())
@@ -734,8 +744,7 @@ fn write_pty(id: u32, data: Vec<u8>, daemon: State<DaemonState>) -> Result<(), S
 
 #[tauri::command]
 fn resize_pty(id: u32, cols: u16, rows: u16, daemon: State<DaemonState>) -> Result<(), String> {
-    let guard = daemon.client.lock().unwrap();
-    let client = guard.as_ref().ok_or("daemon not connected")?;
+    let client = daemon.client().ok_or("daemon not connected")?;
     client.cmd(json!({"cmd": "ResizePty", "pty_id": id, "cols": cols, "rows": rows}))?;
     Ok(())
 }
@@ -743,8 +752,7 @@ fn resize_pty(id: u32, cols: u16, rows: u16, daemon: State<DaemonState>) -> Resu
 /// Kill the PTY in the daemon (called when the user explicitly closes a tab).
 #[tauri::command]
 fn kill_pty(id: u32, daemon: State<DaemonState>) {
-    let guard = daemon.client.lock().unwrap();
-    if let Some(client) = guard.as_ref() {
+    if let Some(client) = daemon.client() {
         let _ = client.cmd(json!({"cmd": "KillPty", "pty_id": id}));
         client.stop_stream(id);
     }
@@ -754,8 +762,7 @@ fn kill_pty(id: u32, daemon: State<DaemonState>) {
 /// The PTY keeps running in the daemon so it can be reattached next session.
 #[tauri::command]
 fn detach_pty(id: u32, daemon: State<DaemonState>) {
-    let guard = daemon.client.lock().unwrap();
-    if let Some(client) = guard.as_ref() {
+    if let Some(client) = daemon.client() {
         client.stop_stream(id);
     }
 }
@@ -771,8 +778,7 @@ pub struct PtySessionInfo {
 /// List PTY sessions known to the daemon — used by Terminal.vue to restore tabs.
 #[tauri::command]
 fn list_pty_sessions(daemon: State<DaemonState>) -> Vec<PtySessionInfo> {
-    let guard = daemon.client.lock().unwrap();
-    let Some(client) = guard.as_ref() else { return vec![] };
+    let Some(client) = daemon.client() else { return vec![] };
     let Ok(resp) = client.cmd(json!({"cmd": "ListSessions"})) else { return vec![] };
     resp["sessions"]
         .as_array()
@@ -790,8 +796,7 @@ fn list_pty_sessions(daemon: State<DaemonState>) -> Vec<PtySessionInfo> {
 
 #[tauri::command]
 fn get_pty_foreground(id: u32, daemon: State<DaemonState>) -> String {
-    let guard = daemon.client.lock().unwrap();
-    let Some(client) = guard.as_ref() else { return String::new() };
+    let Some(client) = daemon.client() else { return String::new() };
     let Ok(resp) = client.cmd(json!({"cmd": "GetForeground", "pty_id": id})) else {
         return String::new()
     };
@@ -843,8 +848,7 @@ fn daemon_stats(daemon: State<DaemonState>, app: AppHandle) -> DaemonStats {
         .ok()
         .and_then(|d| std::fs::read_to_string(d.join("daemon.pid")).ok())
         .and_then(|s| s.trim().parse::<u32>().ok());
-    let guard = daemon.client.lock().unwrap();
-    let Some(client) = guard.as_ref() else {
+    let Some(client) = daemon.client() else {
         return DaemonStats { connected: false, pid, total: 0, alive: 0 };
     };
     let Ok(resp) = client.cmd(json!({"cmd": "ListSessions"})) else {
@@ -858,8 +862,7 @@ fn daemon_stats(daemon: State<DaemonState>, app: AppHandle) -> DaemonStats {
 /// Kill every dead (non-alive) PTY the daemon still holds. Returns count reaped.
 #[tauri::command]
 fn clean_daemon(daemon: State<DaemonState>) -> usize {
-    let guard = daemon.client.lock().unwrap();
-    let Some(client) = guard.as_ref() else { return 0 };
+    let Some(client) = daemon.client() else { return 0 };
     let Ok(resp) = client.cmd(json!({"cmd": "ListSessions"})) else { return 0 };
     let mut reaped = 0;
     for s in resp["sessions"].as_array().cloned().unwrap_or_default() {
