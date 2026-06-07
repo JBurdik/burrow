@@ -74,6 +74,7 @@ export interface SplitNode {
   direction: "h" | "v";
   first: TreeNode;
   second: TreeNode;
+  ratio?: number;   // fraction of space given to `first` (0..1), default 0.5
 }
 
 export type TreeNode = Leaf | SplitNode;

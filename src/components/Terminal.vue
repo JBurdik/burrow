@@ -86,6 +86,13 @@
             @spawn="(req) => addTab(req.cmd, { cwd: req.cwd || undefined, resultToken: req.token || undefined })"
           />
         </div>
+        <div
+          v-for="(div, i) in paneDividers(tab)"
+          :key="`div-${i}`"
+          class="pane-divider"
+          :style="dividerStyle(div)"
+          @mousedown.stop.prevent="startDividerDrag($event, div)"
+        />
       </div>
     </div>
     <div v-else class="terminal-welcome">
@@ -119,7 +126,7 @@ import { invoke } from "@tauri-apps/api/core";
 import XTerm from "./XTerm.vue";
 import DiffTab from "./DiffTab.vue";
 import AgentToolbar from "./AgentToolbar.vue";
-import { type Leaf, type TreeNode } from "./TerminalSplitView.vue";
+import { type Leaf, type TreeNode, type SplitNode } from "./TerminalSplitView.vue";
 import { nextPtyId, initPtyCounter } from "@/lib/ptyId";
 import { spinnerFrame } from "@/lib/spinner";
 import { playSound } from "@/lib/sounds";
@@ -170,26 +177,50 @@ function registerLeaf(id: number, el: unknown) {
 // only changes these rects, so existing XTerm instances/PTYs are reused — no
 // remount, no blink.
 interface Rect { left: number; top: number; width: number; height: number; }
+// A draggable boundary between two sibling panes. `node` is the split it resizes
+// (drag mutates node.ratio); `nodeRect` is that split's full area (for mapping the
+// pointer back to a ratio); `dir` follows the split direction.
+interface Divider { node: SplitNode; dir: "h" | "v"; rect: Rect; nodeRect: Rect; }
 
 function paneLayout(tab: Tab): { leaf: Leaf; rect: Rect }[] {
   const out: { leaf: Leaf; rect: Rect }[] = [];
-  walkLayout(tab.root, { left: 0, top: 0, width: 100, height: 100 }, out);
+  walkLayout(tab.root, { left: 0, top: 0, width: 100, height: 100 }, out, []);
   return out;
 }
 
-function walkLayout(node: TreeNode, rect: Rect, out: { leaf: Leaf; rect: Rect }[]) {
+function paneDividers(tab: Tab): Divider[] {
+  const divs: Divider[] = [];
+  walkLayout(tab.root, { left: 0, top: 0, width: 100, height: 100 }, [], divs);
+  return divs;
+}
+
+function walkLayout(
+  node: TreeNode,
+  rect: Rect,
+  out: { leaf: Leaf; rect: Rect }[],
+  divs: Divider[],
+) {
   if (node.type === "leaf") {
     out.push({ leaf: node, rect });
     return;
   }
+  const r = node.ratio ?? 0.5;
   if (node.direction === "h") {
-    const w = rect.width / 2;
-    walkLayout(node.first, { ...rect, width: w }, out);
-    walkLayout(node.second, { ...rect, left: rect.left + w, width: w }, out);
+    const w = rect.width * r;
+    walkLayout(node.first, { ...rect, width: w }, out, divs);
+    walkLayout(node.second, { ...rect, left: rect.left + w, width: rect.width - w }, out, divs);
+    divs.push({
+      node, dir: "h", nodeRect: rect,
+      rect: { left: rect.left + w, top: rect.top, width: 0, height: rect.height },
+    });
   } else {
-    const h = rect.height / 2;
-    walkLayout(node.first, { ...rect, height: h }, out);
-    walkLayout(node.second, { ...rect, top: rect.top + h, height: h }, out);
+    const h = rect.height * r;
+    walkLayout(node.first, { ...rect, height: h }, out, divs);
+    walkLayout(node.second, { ...rect, top: rect.top + h, height: rect.height - h }, out, divs);
+    divs.push({
+      node, dir: "v", nodeRect: rect,
+      rect: { left: rect.left, top: rect.top + h, width: rect.width, height: 0 },
+    });
   }
 }
 
@@ -201,6 +232,60 @@ function rectStyle(r: Rect) {
     width: `calc(${r.width}% - ${r.left > 0 ? 1 : 0}px)`,
     height: `calc(${r.height}% - ${r.top > 0 ? 1 : 0}px)`,
   };
+}
+
+// A 7px-wide hit zone centered on the boundary; the visible 1px line is the gap
+// behind it. The handle straddles the seam so the cursor target is generous.
+function dividerStyle(d: Divider) {
+  if (d.dir === "h") {
+    return {
+      left: `${d.rect.left}%`, top: `${d.rect.top}%`,
+      width: "7px", height: `${d.rect.height}%`,
+      transform: "translateX(-50%)", cursor: "col-resize",
+    };
+  }
+  return {
+    left: `${d.rect.left}%`, top: `${d.rect.top}%`,
+    width: `${d.rect.width}%`, height: "7px",
+    transform: "translateY(-50%)", cursor: "row-resize",
+  };
+}
+
+// ── divider drag ──────────────────────────────────────────────────────────────
+let dragDiv: { node: SplitNode; dir: "h" | "v"; nodeRect: Rect; container: HTMLElement } | null = null;
+
+function startDividerDrag(e: MouseEvent, d: Divider) {
+  const container = (e.currentTarget as HTMLElement).closest(".terminal-tab-content") as HTMLElement | null;
+  if (!container) return;
+  dragDiv = { node: d.node, dir: d.dir, nodeRect: d.nodeRect, container };
+  e.preventDefault();
+  window.addEventListener("mousemove", onDividerMove);
+  window.addEventListener("mouseup", endDividerDrag);
+  document.body.style.userSelect = "none";
+}
+
+function onDividerMove(e: MouseEvent) {
+  if (!dragDiv) return;
+  // getBoundingClientRect and clientX share the #app-zoom visual space, so the
+  // ratio is correct under any UI scale (both scale together, cancel out).
+  const box = dragDiv.container.getBoundingClientRect();
+  const { node, dir, nodeRect } = dragDiv;
+  let ratio: number;
+  if (dir === "h") {
+    const pct = ((e.clientX - box.left) / box.width) * 100;
+    ratio = (pct - nodeRect.left) / nodeRect.width;
+  } else {
+    const pct = ((e.clientY - box.top) / box.height) * 100;
+    ratio = (pct - nodeRect.top) / nodeRect.height;
+  }
+  node.ratio = Math.max(0.08, Math.min(0.92, ratio));
+}
+
+function endDividerDrag() {
+  dragDiv = null;
+  window.removeEventListener("mousemove", onDividerMove);
+  window.removeEventListener("mouseup", endDividerDrag);
+  document.body.style.userSelect = "";
 }
 
 // ── tree helpers ────────────────────────────────────────────────────────────
@@ -237,7 +322,7 @@ function insertSplit(
 ): TreeNode {
   if (node.type === "leaf") {
     if (node.id === targetId)
-      return { type: "split", direction, first: node, second: newLeaf };
+      return { type: "split", direction, first: node, second: newLeaf, ratio: 0.5 };
     return node;
   }
   return {
@@ -929,6 +1014,13 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, insertContext, focusLeaf });
   overflow: hidden;
   background: var(--terminal-bg);
 }
+
+.pane-divider {
+  position: absolute;
+  z-index: 5;
+  background: transparent;
+}
+.pane-divider:hover { background: var(--accent); opacity: 0.4; }
 
 .pane.focused::after {
   content: "";

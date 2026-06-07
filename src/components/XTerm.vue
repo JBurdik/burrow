@@ -88,10 +88,20 @@ function applyCounterZoom() {
     el.style.flex = "";
     return;
   }
+  // Basis is the host's OWN natural flex slot, NOT parent.clientHeight: the parent
+  // pane also holds a 26px titlebar when split, so parent.clientHeight overcounts
+  // and the host spills past the pane bottom. Reset to flex first, read the laid-out
+  // slot (flexbox already excludes the titlebar), then grow that by `s`.
+  el.style.flex = "";
+  el.style.zoom = "";
+  el.style.width = "";
+  el.style.height = "";
+  const w = el.clientWidth;
+  const h = el.clientHeight;
   el.style.flex = "none";
   el.style.zoom = String(1 / s);
-  el.style.width = `${parent.clientWidth * s}px`;
-  el.style.height = `${parent.clientHeight * s}px`;
+  el.style.width = `${w * s}px`;
+  el.style.height = `${h * s}px`;
 }
 let term: Terminal;
 let fitAddon: FitAddon;

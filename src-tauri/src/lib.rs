@@ -85,6 +85,8 @@ pub struct Workspace {
     pub path: String,
     pub created_at: i64,
     pub last_opened: Option<i64>,
+    pub parent_id: Option<i64>,
+    pub worktree_branch: Option<String>,
 }
 
 // ── burrow CLI ────────────────────────────────────────────────────────────────
@@ -1037,7 +1039,7 @@ fn read_dir_shallow(path: String) -> Result<Vec<DirEntry>, String> {
 fn list_workspaces(db: State<DbState>) -> Result<Vec<Workspace>, String> {
     let conn = db.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT id, name, path, created_at, last_opened FROM workspaces ORDER BY COALESCE(last_opened, 0) DESC, created_at DESC")
+        .prepare("SELECT id, name, path, created_at, last_opened, parent_id, worktree_branch FROM workspaces ORDER BY COALESCE(last_opened, 0) DESC, created_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| Ok(Workspace {
@@ -1046,6 +1048,8 @@ fn list_workspaces(db: State<DbState>) -> Result<Vec<Workspace>, String> {
             path: row.get(2)?,
             created_at: row.get(3)?,
             last_opened: row.get(4)?,
+            parent_id: row.get(5)?,
+            worktree_branch: row.get(6)?,
         }))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -1062,7 +1066,7 @@ fn create_workspace(name: String, path: String, db: State<DbState>) -> Result<Wo
         rusqlite::params![name, path, now],
     ).map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
-    Ok(Workspace { id, name, path, created_at: now, last_opened: None })
+    Ok(Workspace { id, name, path, created_at: now, last_opened: None, parent_id: None, worktree_branch: None })
 }
 
 #[tauri::command]
@@ -1085,6 +1089,126 @@ fn rename_workspace(id: i64, name: String, db: State<DbState>) -> Result<(), Str
 fn touch_workspace(id: i64, db: State<DbState>) -> Result<(), String> {
     db.conn.lock().unwrap()
         .execute("UPDATE workspaces SET last_opened = ?1 WHERE id = ?2", rusqlite::params![unix_now(), id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Git worktrees ───────────────────────────────────────────────────────────────
+
+fn expand_tilde(app: &AppHandle, p: &str) -> String {
+    if let Some(rest) = p.strip_prefix("~") {
+        if let Ok(home) = app.path().home_dir() {
+            return format!("{}{}", home.display(), rest);
+        }
+    }
+    p.to_string()
+}
+
+/// Run git in `repo` with `args`, returning Ok(stdout) on success or Err(stderr) on failure.
+fn git_in(repo: &str, args: &[&str]) -> Result<String, String> {
+    match std::process::Command::new(git_binary()).args(args).current_dir(repo).output() {
+        Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr).into_owned();
+            Err(if err.trim().is_empty() { format!("git exited with {}", out.status.code().unwrap_or(-1)) } else { err })
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn create_worktree(
+    parent_id: i64,
+    branch: String,
+    base_ref: Option<String>,
+    path: String,
+    app: AppHandle,
+    db: State<DbState>,
+) -> Result<Workspace, String> {
+    let branch = branch.trim().to_string();
+    if branch.is_empty() {
+        return Err("Branch name is required".into());
+    }
+    // Resolve the parent repo path; `parent_id IS NULL` enforces "no worktree of a worktree".
+    let repo: String = {
+        let conn = db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT path FROM workspaces WHERE id = ?1 AND parent_id IS NULL",
+            rusqlite::params![parent_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Parent repo not found (or it is itself a worktree)".to_string())?
+    };
+
+    let wt_path = expand_tilde(&app, &path);
+    if let Some(parent) = std::path::Path::new(&wt_path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    // New-vs-existing branch: probe whether the local branch already exists.
+    let exists = git_in(&repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
+    if exists {
+        git_in(&repo, &["worktree", "add", &wt_path, &branch])?;
+    } else {
+        let base = base_ref.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("HEAD");
+        git_in(&repo, &["worktree", "add", "-b", &branch, &wt_path, base])?;
+    }
+
+    let now = unix_now();
+    let id = {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO workspaces (name, path, created_at, parent_id, worktree_branch) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![branch, wt_path, now, parent_id, branch],
+        )
+        .map_err(|e| {
+            // Roll back the git worktree so a DB collision doesn't leave an orphan on disk.
+            let _ = git_in(&repo, &["worktree", "remove", "--force", &wt_path]);
+            e.to_string()
+        })?;
+        conn.last_insert_rowid()
+    };
+
+    Ok(Workspace {
+        id,
+        name: branch.clone(),
+        path: wt_path,
+        created_at: now,
+        last_opened: None,
+        parent_id: Some(parent_id),
+        worktree_branch: Some(branch),
+    })
+}
+
+#[tauri::command]
+fn remove_worktree(id: i64, force: bool, db: State<DbState>) -> Result<(), String> {
+    let (wt_path, repo): (String, String) = {
+        let conn = db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT w.path, p.path FROM workspaces w JOIN workspaces p ON w.parent_id = p.id WHERE w.id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "Worktree not found".to_string())?
+    };
+
+    let dir_gone = !std::path::Path::new(&wt_path).exists();
+    if dir_gone {
+        // Directory removed out from under us — just reconcile git's registry.
+        let _ = git_in(&repo, &["worktree", "prune"]);
+    } else {
+        let mut args = vec!["worktree", "remove", wt_path.as_str()];
+        if force {
+            args.push("--force");
+        }
+        if let Err(e) = git_in(&repo, &args) {
+            // Surface the failure (e.g. uncommitted changes) so the UI can offer a force retry.
+            return Err(e);
+        }
+    }
+
+    db.conn.lock().unwrap()
+        .execute("DELETE FROM workspaces WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1388,6 +1512,8 @@ fn init_db(app: &AppHandle) -> Result<Connection, rusqlite::Error> {
     // Idempotent migrations: add new columns (ignored if already present)
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN pty_id INTEGER");
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN cwd TEXT");
+    let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN parent_id INTEGER");
+    let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN worktree_branch TEXT");
     Ok(conn)
 }
 
@@ -1723,6 +1849,8 @@ pub fn run() {
             delete_workspace,
             rename_workspace,
             touch_workspace,
+            create_worktree,
+            remove_worktree,
             list_terminal_tabs,
             save_terminal_tabs,
             get_app_version,

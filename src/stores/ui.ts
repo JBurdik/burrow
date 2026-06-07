@@ -48,6 +48,7 @@ interface Prefs {
   maxAgents: number; // soft per-workspace sub-agent cap for the /burrow skill
   debugOverlay: boolean; // show the per-terminal diagnostic overlay (XTerm.vue)
   floatCorner: string; // which screen corner floating windows snap+stack to
+  worktreesDir: string; // parent dir for git worktrees: <dir>/<repo>/<branch>
 }
 
 // The px sizes in the stylesheets are authored at this baseline. `zoom` scales
@@ -75,6 +76,7 @@ const DEFAULT_PREFS: Prefs = {
   maxAgents: 3,
   debugOverlay: false,
   floatCorner: "top-right",
+  worktreesDir: "~/burrow-worktrees",
 };
 
 function loadPrefs(): Prefs {
@@ -115,6 +117,7 @@ export const useUIStore = defineStore("ui", () => {
   const maxAgents = ref(loaded.maxAgents);
   const debugOverlay = ref(loaded.debugOverlay);
   const floatCorner = ref(loaded.floatCorner);
+  const worktreesDir = ref(loaded.worktreesDir);
 
   // Push the float-window corner to Rust whenever it changes (and on load), so
   // every floating window snaps + stacks at the chosen corner.
@@ -165,7 +168,7 @@ export const useUIStore = defineStore("ui", () => {
   watch(
     [uiFont, uiFontSize, uiScale, terminalFont, terminalFontSize, swapPanels, theme,
      soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
-     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner],
+     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir],
     () => {
       localStorage.setItem(
         PREFS_KEY,
@@ -189,6 +192,7 @@ export const useUIStore = defineStore("ui", () => {
           maxAgents: maxAgents.value,
           debugOverlay: debugOverlay.value,
           floatCorner: floatCorner.value,
+          worktreesDir: worktreesDir.value,
         } satisfies Prefs),
       );
       applyTheme();
@@ -271,6 +275,7 @@ export const useUIStore = defineStore("ui", () => {
     maxAgents,
     debugOverlay,
     floatCorner,
+    worktreesDir,
     openSettings,
     closeSettings,
     toggleSettings,

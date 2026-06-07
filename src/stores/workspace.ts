@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
 export interface Workspace {
@@ -8,6 +8,8 @@ export interface Workspace {
   path: string;
   created_at: number;
   last_opened: number | null;
+  parent_id?: number | null;
+  worktree_branch?: string | null;
 }
 
 export const useWorkspaceStore = defineStore("workspace", () => {
@@ -19,6 +21,17 @@ export const useWorkspaceStore = defineStore("workspace", () => {
 
   // Custom icons stored as data URLs in localStorage
   const icons = ref<Record<number, string>>({});
+
+  // Top-level repo workspaces (no parent). Worktrees are nested under their parent.
+  const topLevel = computed(() => workspaces.value.filter((w) => !w.parent_id));
+  // Worktree rows grouped by their parent repo id.
+  const worktreesByParent = computed(() => {
+    const m: Record<number, Workspace[]> = {};
+    for (const w of workspaces.value) {
+      if (w.parent_id) (m[w.parent_id] ??= []).push(w);
+    }
+    return m;
+  });
 
   function _loadIcons() {
     try {
@@ -52,7 +65,41 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     return ws;
   }
 
+  async function createWorktree(
+    parentId: number,
+    branch: string,
+    baseRef: string | null,
+    path: string,
+  ): Promise<Workspace> {
+    const ws = await invoke<Workspace>("create_worktree", {
+      parentId,
+      branch,
+      baseRef: baseRef || null,
+      path,
+    });
+    await load();
+    return ws;
+  }
+
+  async function removeWorktree(id: number, force = false) {
+    await invoke("remove_worktree", { id, force });
+    workspaces.value = workspaces.value.filter((w) => w.id !== id);
+    opened.value = opened.value.filter((w) => w.id !== id);
+    if (active.value?.id === id) active.value = null;
+    clearIcon(id);
+  }
+
   async function remove(id: number) {
+    // Remove any child worktrees first so we don't leave dangling git worktrees
+    // or orphaned rows pointing at a deleted parent.
+    const children = worktreesByParent.value[id] || [];
+    for (const wt of children) {
+      try {
+        await removeWorktree(wt.id);
+      } catch {
+        // best-effort: keep going so the parent can still be deleted
+      }
+    }
     await invoke("delete_workspace", { id });
     workspaces.value = workspaces.value.filter((w) => w.id !== id);
     opened.value = opened.value.filter((w) => w.id !== id);
@@ -78,5 +125,9 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   // Back to the picker: keep `opened` (and its live terminals) intact.
   function close() { active.value = null; }
 
-  return { workspaces, active, opened, icons, load, create, remove, rename, open, close, setIcon, clearIcon };
+  return {
+    workspaces, active, opened, icons, topLevel, worktreesByParent,
+    load, create, remove, rename, open, close, setIcon, clearIcon,
+    createWorktree, removeWorktree,
+  };
 });

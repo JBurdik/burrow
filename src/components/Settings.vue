@@ -604,6 +604,25 @@
           </div>
           <div class="sec-divider" />
 
+          <div class="settings-group">
+            <span class="group-label">Worktrees directory</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Where new git worktrees are created</span>
+                <span class="field-desc">Worktrees land at &lt;dir&gt;/&lt;repo&gt;/&lt;branch&gt;</span>
+              </div>
+              <div class="wt-dir-ctl">
+                <input
+                  class="select wt-dir-input"
+                  :value="ui.worktreesDir"
+                  @input="ui.worktreesDir = ($event.target as HTMLInputElement).value"
+                  spellcheck="false"
+                />
+                <button class="reset-btn" @click="pickWorktreesDir"><PhFolderOpen :size="12" /> Browse…</button>
+              </div>
+            </div>
+          </div>
+
           <div class="ws-list">
             <div v-for="w in wsStore.workspaces" :key="w.id" class="ws-row">
               <button class="ws-icon-btn" title="Change icon" @click="pickWsIcon(w.id)">
@@ -955,6 +974,11 @@ async function pickWsIcon(id: number) {
   if (!selected || typeof selected !== "string") return;
   const b64 = await invoke<string>("read_file_base64", { path: selected });
   wsStore.setIcon(id, `data:${mimeForPath(selected)};base64,${b64}`);
+}
+
+async function pickWorktreesDir() {
+  const selected = await openDialog({ directory: true, multiple: false });
+  if (typeof selected === "string") ui.worktreesDir = selected;
 }
 // Notification sounds: choose a custom audio file for done/waiting and store its
 // path; sounds.ts reads it lazily via read_file_base64.
@@ -1749,6 +1773,8 @@ const SHORTCUT_GROUPS = [
 
 .size-ctl { display: flex; align-items: center; gap: 6px; }
 .sound-ctl { display: flex; align-items: center; gap: 6px; }
+.wt-dir-ctl { display: flex; align-items: center; gap: 6px; }
+.wt-dir-input { min-width: 240px; font-family: var(--font-mono, monospace); }
 .icon-btn {
   display: flex;
   align-items: center;

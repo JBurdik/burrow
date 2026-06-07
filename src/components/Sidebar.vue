@@ -8,7 +8,7 @@
     </div>
 
     <div class="ws-list">
-      <div v-for="item in store.workspaces" :key="item.id" class="ws-group">
+      <div v-for="item in store.topLevel" :key="item.id" class="ws-group">
         <div
           class="ws-item"
           :class="{ active: store.active?.id === item.id }"
@@ -129,6 +129,28 @@
             <span class="ws-term-label">New terminal</span>
           </div>
         </div>
+
+        <!-- Worktrees subsection -->
+        <div v-if="!isCollapsed(item.id)" class="ws-worktrees">
+          <div class="ws-worktree-head">
+            <span>Worktrees</span>
+            <button class="icon-btn" title="New worktree" @click.stop="openWtDialog(item)">
+              <PhPlus :size="11" />
+            </button>
+          </div>
+          <div
+            v-for="wt in store.worktreesByParent[item.id] || []"
+            :key="wt.id"
+            class="ws-term ws-worktree"
+            :class="{ active: store.active?.id === wt.id }"
+            :title="wt.path"
+            @click.stop="openWs(wt)"
+            @contextmenu.prevent.stop="openWtCtxMenu(wt, $event)"
+          >
+            <PhGitBranch :size="11" class="ws-term-icon" />
+            <span class="ws-term-label">{{ wt.worktree_branch || wt.name }}</span>
+          </div>
+        </div>
       </div>
 
       <div v-if="store.workspaces.length === 0" class="ws-empty">
@@ -158,6 +180,21 @@
         <button v-if="store.icons[ctxMenu.wsId]" class="ctx-item" @click="ctxClearIcon()"><PhImage :size="13" />Reset icon</button>
         <div class="ctx-sep" />
         <button class="ctx-item ctx-danger" @click="ctxRemove()"><PhTrash :size="13" />Remove</button>
+      </div>
+    </Teleport>
+
+    <!-- Worktree context menu -->
+    <Teleport to="body">
+      <div
+        v-if="wtCtxMenu"
+        class="ctx-menu"
+        :style="{ left: wtCtxMenu.x + 'px', top: wtCtxMenu.y + 'px' }"
+        @click.stop
+        @contextmenu.prevent.stop
+      >
+        <button class="ctx-item" @click="wtCtxOpen()"><PhFolderOpen :size="13" />Open</button>
+        <div class="ctx-sep" />
+        <button class="ctx-item ctx-danger" @click="wtCtxRemove()"><PhTrash :size="13" />Remove worktree</button>
       </div>
     </Teleport>
 
@@ -199,11 +236,50 @@
         </div>
       </div>
     </div>
+
+    <!-- New worktree dialog -->
+    <div class="dialog-overlay" v-if="wtParent" @click.self="closeWtDialog">
+      <div class="dialog">
+        <h3>New worktree — {{ wtParent?.name }}</h3>
+        <label class="wt-label">Branch</label>
+        <input
+          v-model="wtBranch"
+          class="dialog-input"
+          placeholder="feature/my-branch"
+          list="wt-base-branches"
+          spellcheck="false"
+          @keydown.enter="confirmWorktree"
+          @keydown.esc="closeWtDialog"
+          ref="wtBranchEl"
+        />
+        <label class="wt-label">Base branch <span class="wt-hint">(only for a new branch)</span></label>
+        <input
+          v-model="wtBase"
+          class="dialog-input"
+          placeholder="defaults to current HEAD"
+          list="wt-base-branches"
+          spellcheck="false"
+          @keydown.enter="confirmWorktree"
+          @keydown.esc="closeWtDialog"
+        />
+        <datalist id="wt-base-branches">
+          <option v-for="b in wtBaseList" :key="b" :value="b" />
+        </datalist>
+        <p class="dialog-path">{{ wtTargetPath }}</p>
+        <p v-if="wtError" class="wt-error">{{ wtError }}</p>
+        <div class="dialog-actions">
+          <button class="btn-secondary" @click="closeWtDialog">Cancel</button>
+          <button class="btn-primary" @click="confirmWorktree" :disabled="!wtBranch.trim() || wtBusy">
+            {{ wtBusy ? "Creating…" : "Create" }}
+          </button>
+        </div>
+      </div>
+    </div>
   </aside>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, onMounted, watch } from "vue";
+import { ref, computed, nextTick, onMounted, watch } from "vue";
 import {
   PhFolderPlus,
   PhFolder,
@@ -223,11 +299,13 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore, type Workspace } from "@/stores/workspace";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
+import { useUIStore } from "@/stores/ui";
 import { spinnerFrame } from "@/lib/spinner";
 import { usePointerReorder } from "@/composables/usePointerReorder";
 
 const store = useWorkspaceStore();
 const termTabs = useTerminalTabsStore();
+const ui = useUIStore();
 
 // ── collapse / expand per workspace ──────────────────────────────────────────
 const COLLAPSE_KEY = "burrow.ws.collapsed";
@@ -277,6 +355,20 @@ async function fetchBranch(ws: Workspace) {
   } catch {}
 }
 
+// Parse `git branch --list` into a plain branch-name array. Shared by the branch
+// picker and the new-worktree base-branch field.
+async function listBranches(path: string): Promise<string[]> {
+  try {
+    const out = await invoke<GitOutput>("run_git", { cwd: path, args: ["branch", "--list"] });
+    if (out.code === 0) {
+      return out.stdout.split("\n")
+        .map(l => l.replace(/^\*?\s+/, "").trim())
+        .filter(Boolean);
+    }
+  } catch {}
+  return [];
+}
+
 async function openBranchPicker(ws: Workspace, e: MouseEvent) {
   e.stopPropagation();
   if (showBranchPicker.value === ws.id) { showBranchPicker.value = null; return; }
@@ -285,14 +377,7 @@ async function openBranchPicker(ws: Workspace, e: MouseEvent) {
   branchFilter.value = "";
   showBranchPicker.value = ws.id;
   try {
-    const out = await invoke<GitOutput>("run_git", { cwd: ws.path, args: ["branch", "--list"] });
-    if (out.code === 0) {
-      branchList.value = out.stdout.split("\n")
-        .map(l => l.replace(/^\*?\s+/, "").trim())
-        .filter(Boolean);
-    }
-  } catch (e: unknown) {
-    branchError.value = e instanceof Error ? e.message : "git error";
+    branchList.value = await listBranches(ws.path);
   } finally {
     branchLoading.value = false;
     await nextTick();
@@ -336,7 +421,7 @@ function showCreateOption() {
 
 onMounted(() => {
   store.workspaces.forEach(ws => fetchBranch(ws));
-  document.addEventListener("click", () => { showBranchPicker.value = null; ctxMenu.value = null; });
+  document.addEventListener("click", () => { showBranchPicker.value = null; ctxMenu.value = null; wtCtxMenu.value = null; });
 });
 watch(() => store.workspaces, (wss) => wss.forEach(ws => {
   if (!(ws.id in wsBranch.value)) fetchBranch(ws);
@@ -422,6 +507,84 @@ function ctxRemove() {
   const id = ctxMenu.value?.wsId;
   ctxMenu.value = null;
   if (id != null) store.remove(id);
+}
+
+// ── worktree context menu ────────────────────────────────────────────────────
+const wtCtxMenu = ref<{ wtId: number; x: number; y: number } | null>(null);
+
+function openWtCtxMenu(wt: Workspace, e: MouseEvent) {
+  const x = Math.min(e.clientX, window.innerWidth - 200);
+  wtCtxMenu.value = { wtId: wt.id, x, y: e.clientY };
+}
+function wtCtxItem(): Workspace | undefined {
+  return store.workspaces.find((w) => w.id === wtCtxMenu.value?.wtId);
+}
+function wtCtxOpen() {
+  const w = wtCtxItem();
+  wtCtxMenu.value = null;
+  if (w) store.open(w);
+}
+async function wtCtxRemove() {
+  const id = wtCtxMenu.value?.wtId;
+  wtCtxMenu.value = null;
+  if (id == null) return;
+  try {
+    await store.removeWorktree(id);
+  } catch (err) {
+    // Likely uncommitted changes — offer a forced removal.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (confirm(`Could not remove worktree:\n\n${msg}\n\nForce remove (discards uncommitted changes)?`)) {
+      try { await store.removeWorktree(id, true); }
+      catch (e2) { alert(`Force remove failed:\n${e2 instanceof Error ? e2.message : e2}`); }
+    }
+  }
+}
+
+// ── new worktree dialog ──────────────────────────────────────────────────────
+const wtParent = ref<Workspace | null>(null);
+const wtBranch = ref("");
+const wtBase = ref("");
+const wtBaseList = ref<string[]>([]);
+const wtBusy = ref(false);
+const wtError = ref("");
+const wtBranchEl = ref<HTMLInputElement>();
+
+const wtTargetPath = computed(() => {
+  if (!wtParent.value) return "";
+  const repo = wtParent.value.path.split("/").filter(Boolean).pop() || "repo";
+  const branch = wtBranch.value.trim() || "<branch>";
+  return `${ui.worktreesDir}/${repo}/${branch}`;
+});
+
+async function openWtDialog(parent: Workspace) {
+  wtParent.value = parent;
+  wtBranch.value = "";
+  wtBase.value = "";
+  wtError.value = "";
+  wtBaseList.value = [];
+  await nextTick();
+  wtBranchEl.value?.focus();
+  wtBaseList.value = await listBranches(parent.path);
+}
+
+function closeWtDialog() {
+  wtParent.value = null;
+}
+
+async function confirmWorktree() {
+  const branch = wtBranch.value.trim();
+  if (!wtParent.value || !branch || wtBusy.value) return;
+  wtBusy.value = true;
+  wtError.value = "";
+  try {
+    const ws = await store.createWorktree(wtParent.value.id, branch, wtBase.value.trim() || null, wtTargetPath.value);
+    wtParent.value = null;
+    store.open(ws);
+  } catch (err) {
+    wtError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    wtBusy.value = false;
+  }
 }
 
 // ── rename dialog ──────────────────────────────────────────────────────────
@@ -584,6 +747,43 @@ async function confirmCreate() {
 
 /* Nested terminal list */
 .ws-group { margin-bottom: 2px; }
+
+/* Worktrees subsection */
+.ws-worktrees {
+  margin: 0 4px 4px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-left: 1px solid var(--border);
+  padding-left: 6px;
+}
+.ws-worktree-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 8px 2px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.ws-worktree .ws-term-icon { color: #a78bfa; }
+.ws-worktree.active .ws-term-icon { color: var(--accent); }
+
+.wt-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: -6px;
+}
+.wt-hint { font-weight: 400; color: var(--text-muted); }
+.wt-error {
+  font-size: 11px;
+  color: var(--red);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .ws-terminals {
   margin: 1px 4px 4px 22px;
