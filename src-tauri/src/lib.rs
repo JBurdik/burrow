@@ -1783,6 +1783,7 @@ pub fn run() {
         .plugin(tauri_plugin_decorum::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let conn = init_db(app.handle()).expect("DB init failed");
             app.manage(DbState { conn: Mutex::new(conn) });

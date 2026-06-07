@@ -1,9 +1,12 @@
 <template>
   <aside class="sidebar">
     <div class="sidebar-header">
-      <span class="header-label">Workspaces</span>
+      <div class="header-title">
+        <span class="header-label">Workspaces</span>
+        <span v-if="store.topLevel.length" class="header-count">{{ store.topLevel.length }}</span>
+      </div>
       <button class="icon-btn" title="Open folder" @click="pickFolder">
-        <PhFolderPlus :size="14" />
+        <PhFolderPlus :size="15" />
       </button>
     </div>
 
@@ -647,49 +650,82 @@ async function confirmCreate() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
+  padding: 11px 12px 9px;
   flex-shrink: 0;
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .header-label {
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-secondary);
+}
+
+.header-count {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  border-radius: 9px;
+  padding: 1px 7px;
+  line-height: 1.5;
 }
 
 .icon-btn {
   background: none;
   border: none;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
-  padding: 2px 4px;
-  border-radius: 3px;
+  padding: 4px;
+  border-radius: 6px;
+  transition: color .12s, background .12s;
 }
 .icon-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.icon-btn:active { transform: scale(0.92); }
 
 .ws-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: 2px 0 8px;
 }
 
 .ws-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 9px;
+  padding: 7px 10px 7px 11px;
   cursor: pointer;
-  border-radius: 3px;
-  margin: 0 4px;
+  border-radius: 8px;
+  margin: 1px 6px;
   position: relative;
+  transition: background .12s;
+}
+.ws-item::before {
+  content: "";
+  position: absolute;
+  left: -2px;
+  top: 50%;
+  transform: translateY(-50%) scaleY(0);
+  width: 3px;
+  height: 18px;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: transform .15s ease;
 }
 .ws-item:hover { background: var(--bg-hover); }
-.ws-item.active { background: var(--bg-selected); }
+.ws-item.active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.ws-item.active::before { transform: translateY(-50%) scaleY(1); }
 
 .ws-caret {
   background: none;
@@ -699,10 +735,13 @@ async function confirmCreate() {
   display: flex;
   align-items: center;
   padding: 0;
-  margin: 0 -2px 0 -4px;
+  margin: 0 -3px 0 -5px;
   flex-shrink: 0;
   border-radius: 3px;
+  opacity: 0.6;
+  transition: opacity .12s, color .12s;
 }
+.ws-item:hover .ws-caret { opacity: 1; }
 .ws-caret:hover { color: var(--text-primary); }
 
 .ws-icon { color: #60a5fa; flex-shrink: 0; }
@@ -714,21 +753,23 @@ async function confirmCreate() {
 }
 
 .ws-name {
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 12.5px;
+  font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  letter-spacing: -0.01em;
 }
 
 .ws-path {
   font-size: 10px;
   font-family: var(--font-mono);
-  color: var(--text-secondary);
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  margin-top: 1px;
 }
 
 .ws-delete {
@@ -738,33 +779,34 @@ async function confirmCreate() {
   cursor: pointer;
   display: none;
   align-items: center;
-  padding: 3px 4px;
-  border-radius: 3px;
+  padding: 4px;
+  border-radius: 6px;
   flex-shrink: 0;
+  transition: color .12s, background .12s;
 }
 .ws-item:hover .ws-delete { display: flex; }
-.ws-delete:hover { color: var(--red); }
+.ws-delete:hover { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
 
 /* Nested terminal list */
-.ws-group { margin-bottom: 2px; }
+.ws-group { margin-bottom: 1px; }
 
 /* Worktrees subsection */
 .ws-worktrees {
-  margin: 0 4px 4px 22px;
+  margin: 0 8px 5px 24px;
   display: flex;
   flex-direction: column;
   gap: 1px;
-  border-left: 1px solid var(--border);
-  padding-left: 6px;
+  border-left: 1.5px solid var(--border);
+  padding-left: 8px;
 }
 .ws-worktree-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 2px 8px 2px 6px;
+  padding: 3px 8px 3px 4px;
   font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -786,26 +828,30 @@ async function confirmCreate() {
 }
 
 .ws-terminals {
-  margin: 1px 4px 4px 22px;
+  margin: 2px 8px 4px 24px;
   display: flex;
   flex-direction: column;
   gap: 1px;
-  border-left: 1px solid var(--border);
-  padding-left: 6px;
+  border-left: 1.5px solid var(--border);
+  padding-left: 8px;
 }
 
 .ws-term {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 3px;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 7px;
   cursor: pointer;
   color: var(--text-secondary);
   position: relative;
+  transition: background .12s, color .12s;
 }
 .ws-term:hover { background: var(--bg-hover); color: var(--text-primary); }
-.ws-term.active { background: var(--bg-selected); color: var(--text-primary); }
+.ws-term.active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text-primary);
+}
 
 .ws-term-icon { color: var(--text-muted); flex-shrink: 0; }
 .ws-term-icon.agent { color: var(--accent); }
@@ -814,7 +860,8 @@ async function confirmCreate() {
 .ws-term-label {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
+  font-size: 11.5px;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -876,11 +923,14 @@ async function confirmCreate() {
 .ws-term { touch-action: none; }
 
 .ws-empty {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-muted);
   text-align: center;
-  padding: 24px 16px;
-  line-height: 1.6;
+  padding: 40px 20px;
+  line-height: 1.7;
+  margin: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
 }
 
 .sidebar-footer {
@@ -892,17 +942,25 @@ async function confirmCreate() {
 .footer-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 7px;
   width: 100%;
-  background: none;
+  background: var(--bg-hover);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 8px;
   color: var(--text-secondary);
   cursor: pointer;
-  font-size: 11px;
-  padding: 5px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 8px 10px;
+  transition: color .12s, border-color .12s, background .12s;
 }
-.footer-btn:hover { color: var(--text-primary); border-color: #444; background: var(--bg-hover); }
+.footer-btn:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.footer-btn:active { transform: scale(0.985); }
 
 /* Dialog */
 .dialog-overlay {
@@ -1094,27 +1152,30 @@ async function confirmCreate() {
 
 .ws-icon-wrap {
   position: relative;
-  width: 14px;
-  height: 14px;
+  width: 26px;
+  height: 26px;
   flex-shrink: 0;
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: 7px;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: var(--bg-hover);
+  transition: background .12s;
+}
+.ws-item.active .ws-icon-wrap {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .ws-icon-wrap:hover::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: rgba(255,255,255,0.15);
-  border-radius: 3px;
+  background: rgba(255,255,255,0.12);
 }
 .ws-custom-icon {
-  width: 14px;
-  height: 14px;
+  width: 26px;
+  height: 26px;
   object-fit: cover;
-  border-radius: 2px;
 }
 </style>
