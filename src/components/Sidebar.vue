@@ -22,7 +22,7 @@
             <PhCaretRight v-if="isCollapsed(item.id)" :size="11" weight="bold" />
             <PhCaretDown v-else :size="11" weight="bold" />
           </button>
-          <div class="ws-icon-wrap" @click.stop="pickIcon(item.id)" title="Change icon">
+          <div class="ws-icon-wrap" title="Change icon via right-click menu">
             <img v-if="store.icons[item.id]" :src="store.icons[item.id]" class="ws-custom-icon" />
             <PhFolder v-else :size="14" weight="fill" class="ws-icon" />
           </div>
@@ -121,15 +121,6 @@
               title="Close"
               @click.stop="termTabs.close(item.id, tab.id)"
             />
-          </div>
-          <div
-            v-if="store.opened.some((w) => w.id === item.id)"
-            class="ws-term ws-term-add"
-            title="New terminal"
-            @click.stop="addTab(item)"
-          >
-            <PhPlus :size="11" />
-            <span class="ws-term-label">New terminal</span>
           </div>
         </div>
 
@@ -423,7 +414,13 @@ function showCreateOption() {
 }
 
 onMounted(() => {
-  store.workspaces.forEach(ws => fetchBranch(ws));
+  store.workspaces.forEach(ws => {
+    fetchBranch(ws);
+    // Persisted-expanded workspaces must reopen so their Terminal mounts and
+    // tabsByWs populates — otherwise the row looks expanded but lists no tabs
+    // until a manual collapse+expand fires store.open().
+    if (!isCollapsed(ws.id)) store.open(ws);
+  });
   document.addEventListener("click", () => { showBranchPicker.value = null; ctxMenu.value = null; wtCtxMenu.value = null; });
 });
 watch(() => store.workspaces, (wss) => wss.forEach(ws => {
@@ -468,11 +465,6 @@ async function pickIcon(id: number) {
 function selectTab(ws: Workspace, tabId: number) {
   if (store.active?.id !== ws.id) store.open(ws);
   nextTick(() => termTabs.activate(ws.id, tabId));
-}
-
-function addTab(ws: Workspace) {
-  if (store.active?.id !== ws.id) store.open(ws);
-  nextTick(() => termTabs.add(ws.id));
 }
 
 // ── context menu ───────────────────────────────────────────────────────────
@@ -915,9 +907,6 @@ async function confirmCreate() {
 .ws-term:hover .ws-term-close { opacity: 0.5; }
 .ws-term-close:hover { opacity: 1 !important; color: var(--red); }
 
-.ws-term-add { color: var(--text-muted); }
-.ws-term-add:hover { color: var(--text-secondary); }
-
 .ws-term.drag-over { background: var(--bg-hover); outline: 1px solid var(--accent); outline-offset: -1px; }
 .ws-term.dragging { opacity: 0.4; }
 .ws-term { touch-action: none; }
@@ -1155,7 +1144,6 @@ async function confirmCreate() {
   width: 26px;
   height: 26px;
   flex-shrink: 0;
-  cursor: pointer;
   border-radius: 7px;
   overflow: hidden;
   display: flex;
@@ -1166,12 +1154,6 @@ async function confirmCreate() {
 }
 .ws-item.active .ws-icon-wrap {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
-}
-.ws-icon-wrap:hover::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: rgba(255,255,255,0.12);
 }
 .ws-custom-icon {
   width: 26px;
