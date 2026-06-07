@@ -15,8 +15,8 @@
           @click="openWs(item)"
           @contextmenu.prevent.stop="openCtxMenu(item, $event)"
         >
-          <button class="ws-caret" :title="collapsed[item.id] ? 'Expand' : 'Collapse'" @click.stop="toggleCollapse(item.id)">
-            <PhCaretRight v-if="collapsed[item.id]" :size="11" weight="bold" />
+          <button class="ws-caret" :title="isCollapsed(item.id) ? 'Expand' : 'Collapse'" @click.stop="toggleCollapse(item.id)">
+            <PhCaretRight v-if="isCollapsed(item.id)" :size="11" weight="bold" />
             <PhCaretDown v-else :size="11" weight="bold" />
           </button>
           <div class="ws-icon-wrap" @click.stop="pickIcon(item.id)" title="Change icon">
@@ -86,7 +86,7 @@
           </div>
         </div>
 
-        <div v-if="!collapsed[item.id] && termTabs.tabsByWs[item.id]?.length" class="ws-terminals">
+        <div v-if="!isCollapsed(item.id) && termTabs.tabsByWs[item.id]?.length" class="ws-terminals">
           <div
             v-for="(tab, tabIdx) in termTabs.tabsByWs[item.id]"
             :key="tab.id"
@@ -237,12 +237,16 @@ function loadCollapsed(): Record<number, boolean> {
   try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}"); }
   catch { return {}; }
 }
+// Default collapsed: a workspace with no stored value reads as collapsed.
+function isCollapsed(id: number): boolean {
+  return collapsed.value[id] !== false;
+}
 function setCollapsed(id: number, val: boolean) {
   collapsed.value[id] = val;
   localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed.value));
 }
 function toggleCollapse(id: number) {
-  const next = !collapsed.value[id];
+  const next = !isCollapsed(id);
   setCollapsed(id, next);
   // Expanding a never-opened workspace shows no tabs until its Terminal mounts.
   if (!next) { const w = store.workspaces.find((x) => x.id === id); if (w) store.open(w); }
@@ -250,7 +254,7 @@ function toggleCollapse(id: number) {
 
 // Item click: toggle collapse. Expanding also opens the workspace.
 function openWs(item: Workspace) {
-  const next = !collapsed.value[item.id];
+  const next = !isCollapsed(item.id);
   setCollapsed(item.id, next);
   if (!next) store.open(item);
 }
