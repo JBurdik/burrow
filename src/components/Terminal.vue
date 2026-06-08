@@ -10,10 +10,12 @@
         :class="{ active: activeTabId === tab.id }"
         @click.stop="activateTab(tab.id)"
       >
-        <PhRobot v-if="tabIsAgent(tab)" :size="12" class="tab-agent-icon" />
+        <PhFileCode v-if="tabIsEditor(tab)" :size="12" class="tab-term-icon" />
+        <PhRobot v-else-if="tabIsAgent(tab)" :size="12" class="tab-agent-icon" />
         <PhTerminal v-else :size="12" class="tab-term-icon" />
+        <span v-if="tabIsEditor(tab) && tabDirty(tab)" class="dirty-dot" />
         <span
-          v-if="tabStatus(tab) !== 'idle'"
+          v-else-if="tabStatus(tab) !== 'idle'"
           class="status-dot"
           :class="`status-${tabStatus(tab)}`"
         >{{ tabStatus(tab) === 'running' ? spinnerFrame : '' }}</span>
@@ -52,10 +54,12 @@
           @mousedown.capture="onLeafFocus(pane.leaf.id)"
         >
           <div v-if="isTabSplit(tab)" class="pane-titlebar" @mousedown.stop>
-            <PhRobot v-if="pane.leaf.isAgent" :size="10" class="pane-title-icon agent" />
+            <PhFileCode v-if="pane.leaf.leafType === 'editor'" :size="10" class="pane-title-icon" />
+            <PhRobot v-else-if="pane.leaf.isAgent" :size="10" class="pane-title-icon agent" />
             <PhTerminal v-else :size="10" class="pane-title-icon" />
+            <span v-if="pane.leaf.leafType === 'editor' && pane.leaf.dirty" class="dirty-dot" />
             <span
-              v-if="pane.leaf.status !== 'idle'"
+              v-else-if="pane.leaf.status !== 'idle'"
               class="status-dot"
               :class="`status-${pane.leaf.status}`"
             >{{ pane.leaf.status === 'running' ? spinnerFrame : '' }}</span>
@@ -69,6 +73,17 @@
             :diff-file="pane.leaf.diffFile!"
             :diff-staged="pane.leaf.diffStaged ?? false"
             :diff="pane.leaf.diff || ''"
+          />
+          <CodeEditor
+            v-else-if="pane.leaf.leafType === 'editor'"
+            :leaf-id="pane.leaf.id"
+            :path="pane.leaf.filePath!"
+            :cwd="pane.leaf.cwd ?? cwd"
+            :ref="(el) => registerLeaf(pane.leaf.id, el)"
+            @title="(t) => onLeafTitle(pane.leaf.id, t)"
+            @dirty="(d) => onLeafDirty(pane.leaf.id, d)"
+            @saved="() => onLeafSaved(pane.leaf.id)"
+            @error="(m) => onLeafError(m)"
           />
           <XTerm
             v-else
@@ -106,9 +121,9 @@
 
     <div v-if="confirm" class="confirm-overlay" @mousedown.self="answerClose(false)">
       <div class="confirm-modal">
-        <div class="confirm-title">Close terminal</div>
+        <div class="confirm-title">{{ confirm.reason === 'unsaved' ? 'Unsaved changes' : 'Close terminal' }}</div>
         <div class="confirm-body">
-          "{{ confirm.name }}" has a running process. Close anyway?
+          "{{ confirm.name }}" {{ confirm.reason === 'unsaved' ? 'has unsaved changes' : 'has a running process' }}. Close anyway?
         </div>
         <div class="confirm-actions">
           <button class="confirm-btn" @click="answerClose(false)">Cancel</button>
@@ -121,10 +136,11 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
-import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut } from "@phosphor-icons/vue";
+import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut, PhFileCode } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import XTerm from "./XTerm.vue";
 import DiffTab from "./DiffTab.vue";
+import CodeEditor from "./CodeEditor.vue";
 import AgentToolbar from "./AgentToolbar.vue";
 import { type Leaf, type TreeNode, type SplitNode } from "./TerminalSplitView.vue";
 import { nextPtyId, initPtyCounter } from "@/lib/ptyId";
@@ -164,11 +180,13 @@ interface DaemonSession {
 const tabs = ref<Tab[]>([]);
 const activeTabId = ref(0);
 const focusedLeafId = ref(0);
-const xtermRefs = new Map<number, InstanceType<typeof XTerm>>();
+// Holds both XTerm and CodeEditor instances, keyed by leaf id. Both expose
+// focus(); editor leaves also expose save()/isDirty(), terminal leaves sendText().
+const xtermRefs = new Map<number, any>();
 let terminalCounter = 0;
 
 function registerLeaf(id: number, el: unknown) {
-  if (el) xtermRefs.set(id, el as InstanceType<typeof XTerm>);
+  if (el) xtermRefs.set(id, el);
   else xtermRefs.delete(id);
 }
 
@@ -348,6 +366,15 @@ function tabIsAgent(tab: Tab): boolean {
       ? findLeaf(tab.root, focusedLeafId.value) ?? getFirstLeaf(tab.root)
       : getFirstLeaf(tab.root);
   return leaf.isAgent;
+}
+
+// A single-leaf editor tab shows a file icon + dirty dot instead of a status dot.
+function tabIsEditor(tab: Tab): boolean {
+  return tab.root.type === "leaf" && tab.root.leafType === "editor";
+}
+
+function tabDirty(tab: Tab): boolean {
+  return getAllLeaves(tab.root).some((l) => l.leafType === "editor" && l.dirty);
 }
 
 const doneTimers = new Map<number, ReturnType<typeof setTimeout>>();
@@ -555,11 +582,11 @@ function tabStatus(tab: Tab): "idle" | "running" | "waiting" | "done" | "review"
 
 // ── in-app close confirmation ───────────────────────────────────────────────
 
-const confirm = ref<{ name: string; resolve: (ok: boolean) => void } | null>(null);
+const confirm = ref<{ name: string; reason: "running" | "unsaved"; resolve: (ok: boolean) => void } | null>(null);
 
-function confirmClose(name: string): Promise<boolean> {
+function confirmClose(name: string, reason: "running" | "unsaved" = "running"): Promise<boolean> {
   return new Promise((resolve) => {
-    confirm.value = { name, resolve };
+    confirm.value = { name, reason, resolve };
     window.addEventListener("keydown", onConfirmKey);
   });
 }
@@ -641,6 +668,69 @@ function openDiffInTab(file: string, staged: boolean, diff: string) {
   activeTabId.value = tab.id;
 }
 
+// ── editor leaves ─────────────────────────────────────────────────────────────
+
+function onLeafDirty(id: number, dirty: boolean) {
+  for (const tab of tabs.value) {
+    const leaf = findLeaf(tab.root, id);
+    if (!leaf) continue;
+    leaf.dirty = dirty;
+    break;
+  }
+}
+
+function onLeafSaved(_id: number) {
+  // Saving likely changed the working tree — refresh git panel if it's showing
+  // this workspace's repo.
+  if (gitStore.cwd === props.cwd) gitStore.refresh(true);
+}
+
+function onLeafError(msg: string) {
+  notifStore.push({ type: "error", title: "Editor", body: msg });
+}
+
+// Prefer the live editor instance (authoritative), fall back to the leaf flag.
+function isLeafDirty(leaf: Leaf): boolean {
+  const ref = xtermRefs.get(leaf.id);
+  if (ref?.isDirty) return ref.isDirty();
+  return !!leaf.dirty;
+}
+
+// Open a file from the explorer as an editor tab beside the terminal tabs. If the
+// file is already open anywhere, focus it instead of duplicating.
+function openFileInTab(path: string, name: string) {
+  for (const tab of tabs.value) {
+    const existing = getAllLeaves(tab.root).find(
+      (l) => l.leafType === "editor" && l.filePath === path,
+    );
+    if (existing) {
+      activeTabId.value = tab.id;
+      markTabSeen(tab);
+      focusedLeafId.value = existing.id;
+      nextTick(() => xtermRefs.get(existing.id)?.focus());
+      return;
+    }
+  }
+  const id = nextPtyId();
+  const leaf: Leaf = {
+    type: "leaf",
+    id,
+    title: name,
+    defaultTitle: name,
+    isAgent: false,
+    busy: false,
+    status: "idle",
+    leafType: "editor",
+    filePath: path,
+    dirty: false,
+  };
+  const tab: Tab = { id, root: leaf };
+  tabs.value.push(tab);
+  activeTabId.value = id;
+  focusedLeafId.value = id;
+  nextTick(() => xtermRefs.get(id)?.focus());
+}
+
 function splitFocused(direction: "h" | "v") {
   const tab = tabs.value.find((t) => t.id === activeTabId.value);
   if (!tab) return;
@@ -660,9 +750,16 @@ async function closeTab(tabId: number) {
     const ok = await confirmClose(busyLeaf.title);
     if (!ok) return;
   }
+  const dirtyLeaf = leaves.find((l) => l.leafType === "editor" && isLeafDirty(l));
+  if (dirtyLeaf) {
+    const ok = await confirmClose(dirtyLeaf.title, "unsaved");
+    if (!ok) return;
+  }
 
-  // Explicitly kill PTYs so the daemon drops them (not a detach — user closed the tab)
+  // Explicitly kill PTYs so the daemon drops them (not a detach — user closed the
+  // tab). Editor/diff leaves have no PTY — skip them.
   for (const leaf of leaves) {
+    if (leaf.leafType === "editor" || leaf.leafType === "diff") continue;
     invoke("kill_pty", { id: leaf.id }).catch(() => {});
   }
 
@@ -692,7 +789,13 @@ async function closePane(leafId: number) {
     const ok = await confirmClose(leaf.title);
     if (!ok) return;
   }
-  invoke("kill_pty", { id: leafId }).catch(() => {});
+  if (leaf?.leafType === "editor" && isLeafDirty(leaf)) {
+    const ok = await confirmClose(leaf.title, "unsaved");
+    if (!ok) return;
+  }
+  if (leaf && leaf.leafType !== "editor" && leaf.leafType !== "diff") {
+    invoke("kill_pty", { id: leafId }).catch(() => {});
+  }
   const newRoot = removeLeaf(tab.root, leafId)!;
   tab.root = newRoot;
   if (focusedLeafId.value === leafId) {
@@ -736,7 +839,11 @@ function allLeaves(): Leaf[] {
 }
 
 function persist() {
-  const payload: PersistedTab[] = allLeaves().map((l) => ({
+  // Editor leaves have no PTY — don't persist them as bogus pty rows. Restoring
+  // open editors on restart is a follow-up.
+  const payload: PersistedTab[] = allLeaves()
+    .filter((l) => l.leafType !== "editor")
+    .map((l) => ({
     title: l.defaultTitle,
     initial_cmd: l.initialCmd ?? null,
     pty_id: l.id,
@@ -879,7 +986,7 @@ function focusLeaf(ptyId: number) {
   }
 }
 
-defineExpose({ addTab, spawnAgent, openDiffInTab, insertContext, focusLeaf });
+defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, focusLeaf });
 </script>
 
 <style scoped>
@@ -958,6 +1065,13 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, insertContext, focusLeaf });
 @keyframes running-glow {
   0%, 100% { opacity: 0.7; text-shadow: 0 0 4px rgba(249, 115, 22, 0.7); }
   50%      { opacity: 1;   text-shadow: 0 0 8px rgba(249, 115, 22, 1), 0 0 14px rgba(249, 115, 22, 0.6); }
+}
+.dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-secondary);
 }
 .status-dot.status-waiting { background: #3b82f6; }
 .status-dot.status-done    { background: #84cc16; }

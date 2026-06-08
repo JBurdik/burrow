@@ -5,20 +5,30 @@
     :class="{ focused: focusedId === node.id }"
     @mousedown.capture="$emit('focus', (node as Leaf).id)"
   >
+    <DiffTab
+      v-if="(node as Leaf).leafType === 'diff'"
+      :diff-file="(node as Leaf).diffFile!"
+      :diff-staged="(node as Leaf).diffStaged ?? false"
+      :diff="(node as Leaf).diff || ''"
+    />
+    <CodeEditor
+      v-else-if="(node as Leaf).leafType === 'editor'"
+      :leaf-id="(node as Leaf).id"
+      :path="(node as Leaf).filePath!"
+      :cwd="(node as Leaf).cwd ?? cwd"
+      :ref="(el: unknown) => registerRef((node as Leaf).id, el)"
+      @title="(t: string) => $emit('title', (node as Leaf).id, t)"
+      @dirty="(d: boolean) => $emit('dirty', (node as Leaf).id, d)"
+      @saved="() => $emit('saved', (node as Leaf).id)"
+    />
     <XTerm
-      v-if="(node as Leaf).leafType !== 'diff'"
+      v-else
       :pty-id="(node as Leaf).id"
       :cwd="cwd"
       :initial-cmd="(node as Leaf).initialCmd"
       :ref="(el: unknown) => registerRef((node as Leaf).id, el)"
       @title="(t: string) => $emit('title', (node as Leaf).id, t)"
       @busy="(b: boolean) => $emit('busy', (node as Leaf).id, b)"
-    />
-    <DiffTab
-      v-else
-      :diff-file="(node as Leaf).diffFile!"
-      :diff-staged="(node as Leaf).diffStaged ?? false"
-      :diff="(node as Leaf).diff || ''"
     />
   </div>
   <div
@@ -33,6 +43,8 @@
       @focus="$emit('focus', $event)"
       @title="(id, t) => $emit('title', id, t)"
       @busy="(id, b) => $emit('busy', id, b)"
+      @dirty="(id, d) => $emit('dirty', id, d)"
+      @saved="(id) => $emit('saved', id)"
     />
     <div class="split-divider" :class="node.direction === 'h' ? 'divider-v' : 'divider-h'" />
     <TerminalSplitView
@@ -42,6 +54,8 @@
       @focus="$emit('focus', $event)"
       @title="(id, t) => $emit('title', id, t)"
       @busy="(id, b) => $emit('busy', id, b)"
+      @dirty="(id, d) => $emit('dirty', id, d)"
+      @saved="(id) => $emit('saved', id)"
     />
   </div>
 </template>
@@ -50,6 +64,7 @@
 import { inject } from "vue";
 import XTerm from "./XTerm.vue";
 import DiffTab from "./DiffTab.vue";
+import CodeEditor from "./CodeEditor.vue";
 import TerminalSplitView from "./TerminalSplitView.vue";
 
 export interface Leaf {
@@ -63,10 +78,12 @@ export interface Leaf {
   initialCmd?: string;
   cwd?: string;          // per-tab cwd override (else workspace cwd)
   resultToken?: string;  // set on tabs spawned via `burrow spawn --token`
-  leafType?: "terminal" | "diff";  // default "terminal"
+  leafType?: "terminal" | "diff" | "editor";  // default "terminal"
   diffFile?: string;
   diffStaged?: boolean;
   diff?: string;
+  filePath?: string;  // set when leafType === "editor" (absolute path)
+  dirty?: boolean;    // editor: unsaved changes
 }
 
 export interface SplitNode {
@@ -89,6 +106,8 @@ defineEmits<{
   focus: [id: number];
   title: [id: number, t: string];
   busy: [id: number, b: boolean];
+  dirty: [id: number, d: boolean];
+  saved: [id: number];
 }>();
 
 const registerRef = inject<(id: number, el: unknown) => void>("registerRef")!;
