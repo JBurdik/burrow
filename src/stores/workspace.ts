@@ -122,12 +122,18 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     active.value = ws;
   }
 
+  // Mount a workspace's Terminal (so it reattaches sessions / syncs tabs) WITHOUT
+  // making it active. Used to eager-mount worktrees under an expanded parent.
+  function ensureOpen(ws: Workspace) {
+    if (!opened.value.some((w) => w.id === ws.id)) opened.value.push(ws);
+  }
+
   // Back to the picker: keep `opened` (and its live terminals) intact.
   function close() { active.value = null; }
 
   return {
     workspaces, active, opened, icons, topLevel, worktreesByParent,
-    load, create, remove, rename, open, close, setIcon, clearIcon,
+    load, create, remove, rename, open, ensureOpen, close, setIcon, clearIcon,
     createWorktree, removeWorktree,
   };
 });

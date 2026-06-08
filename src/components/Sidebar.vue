@@ -137,7 +137,7 @@
               class="ws-term ws-worktree"
               :class="{ active: store.active?.id === wt.id }"
               :title="wt.path"
-              @click.stop="openWs(wt)"
+              @click.stop="selectWorktree(wt)"
               @contextmenu.prevent.stop="openWtCtxMenu(wt, $event)"
             >
               <PhGitBranch :size="11" class="ws-term-icon" />
@@ -356,14 +356,27 @@ function toggleCollapse(id: number) {
   const next = !isCollapsed(id);
   setCollapsed(id, next);
   // Expanding a never-opened workspace shows no tabs until its Terminal mounts.
-  if (!next) { const w = store.workspaces.find((x) => x.id === id); if (w) store.open(w); }
+  // Worktrees need the same eager mount, else their nested rows list no terminals.
+  if (!next) { const w = store.workspaces.find((x) => x.id === id); if (w) store.open(w); mountWorktrees(id); }
 }
 
 // Item click: toggle collapse. Expanding also opens the workspace.
 function openWs(item: Workspace) {
   const next = !isCollapsed(item.id);
   setCollapsed(item.id, next);
-  if (!next) store.open(item);
+  if (!next) { store.open(item); mountWorktrees(item.id); }
+}
+
+// Worktree row click: just open/activate it (its terminals are already mounted
+// via mountWorktrees; no per-worktree collapse state to toggle).
+function selectWorktree(wt: Workspace) {
+  store.open(wt);
+}
+
+// Mount every worktree of an expanded parent so each one's Terminal restores its
+// saved/daemon sessions into tabsByWs — otherwise the nested rows show no tabs.
+function mountWorktrees(parentId: number) {
+  for (const wt of store.worktreesByParent[parentId] || []) store.ensureOpen(wt);
 }
 
 // Aggregate status of a workspace's tabs (highest-priority wins). Drives the
@@ -464,12 +477,15 @@ onMounted(() => {
     // Persisted-expanded workspaces must reopen so their Terminal mounts and
     // tabsByWs populates — otherwise the row looks expanded but lists no tabs
     // until a manual collapse+expand fires store.open().
-    if (!isCollapsed(ws.id)) store.open(ws);
+    if (!isCollapsed(ws.id)) { store.open(ws); mountWorktrees(ws.id); }
   });
   document.addEventListener("click", () => { showBranchPicker.value = null; ctxMenu.value = null; wtCtxMenu.value = null; });
 });
 watch(() => store.workspaces, (wss) => wss.forEach(ws => {
   if (!(ws.id in wsBranch.value)) fetchBranch(ws);
+  // Reopen persisted-expanded parents (and mount their worktrees) once the
+  // async load() populates the list — Sidebar onMounted may have run while empty.
+  if (!ws.parent_id && !isCollapsed(ws.id)) { store.ensureOpen(ws); mountWorktrees(ws.id); }
 }), { deep: true });
 
 // ── drag-to-reorder ──────────────────────────────────────────────────────────

@@ -43,6 +43,8 @@
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { attachRenderer } from "@/lib/termRenderer";
+import type { ITerminalAddon } from "@xterm/xterm";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit, type UnlistenFn } from "@tauri-apps/api/event";
 import { PhArrowSquareOut, PhMinus, PhRobot, PhTerminal, PhX, PhSpinner, PhFolder } from "@phosphor-icons/vue";
@@ -68,6 +70,7 @@ try {
 } catch { /* no icons */ }
 
 let term: Terminal | null = null;
+let renderAddon: ITerminalAddon | null = null;
 let unlistenData: UnlistenFn | null = null;
 let unlistenSnap: UnlistenFn | null = null;
 let unlistenGrid: UnlistenFn | null = null;
@@ -111,6 +114,8 @@ function collapse() {
   // the detached old element → blank pane after re-expand).
   resizeObserver?.disconnect();
   resizeObserver = null;
+  renderAddon?.dispose();
+  renderAddon = null;
   term?.dispose();
   term = null;
   termMounted = false;
@@ -197,6 +202,7 @@ function mountTerm() {
   });
   term.loadAddon(new WebLinksAddon());
   term.open(hostEl.value);
+  renderAddon = attachRenderer(term);
   fitFont();
   term.focus();
 
@@ -309,6 +315,7 @@ onBeforeUnmount(() => {
   if (snapTimer) clearTimeout(snapTimer);
   if (moveTimer) clearTimeout(moveTimer);
   if (resizeWinTimer) clearTimeout(resizeWinTimer);
+  renderAddon?.dispose();
   term?.dispose();
 });
 

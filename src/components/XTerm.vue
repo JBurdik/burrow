@@ -12,6 +12,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SerializeAddon } from "@xterm/addon-serialize";
+import { attachRenderer } from "@/lib/termRenderer";
+import type { ITerminalAddon } from "@xterm/xterm";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -106,6 +108,7 @@ function applyCounterZoom() {
 let term: Terminal;
 let fitAddon: FitAddon;
 let serializeAddon: SerializeAddon;
+let renderAddon: ITerminalAddon | null = null;
 let unlisten: UnlistenFn | null = null;
 let unlistenSnapReq: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver;
@@ -172,6 +175,14 @@ async function onPaste(e: ClipboardEvent) {
     const file = it.getAsFile();
     if (!file) continue;
     e.preventDefault();
+    // Claude Code reads the macOS clipboard itself on Ctrl+V (\x16) and inserts
+    // an `[Image #N]` reference — far better than typing a temp path. The image
+    // is still on the OS clipboard, so just forward \x16 and let Claude grab it.
+    // Other agents (Copilot/Aider) lack clipboard-image support → temp-path path.
+    if (CLAUDE_RE.test(foreground)) {
+      invoke("write_pty", { id: props.ptyId, data: [0x16] });
+      return;
+    }
     const buf = new Uint8Array(await file.arrayBuffer());
     let bin = "";
     for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
@@ -240,6 +251,9 @@ onMounted(async () => {
   serializeAddon = new SerializeAddon();
   term.loadAddon(serializeAddon);
   term.open(hostEl.value!);
+  // GPU renderer (WebGL → Canvas → DOM). Must follow open(). Default DOM
+  // renderer is the slowest; this is the big win for agent output floods.
+  renderAddon = attachRenderer(term);
 
   applyCounterZoom();
   safeFit();
@@ -533,6 +547,7 @@ onBeforeUnmount(async () => {
   // detach_pty closes the data stream but leaves the PTY alive in the daemon,
   // so it can be reattached after app restart.
   await invoke("detach_pty", { id: props.ptyId });
+  renderAddon?.dispose();
   term?.dispose();
 });
 
