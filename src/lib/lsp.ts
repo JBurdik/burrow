@@ -16,6 +16,42 @@ import {
   type Transport,
 } from "@codemirror/lsp-client";
 import type { Extension } from "@codemirror/state";
+import type { Language } from "@codemirror/language";
+import { javascript } from "@codemirror/lang-javascript";
+import { rust } from "@codemirror/lang-rust";
+import { json } from "@codemirror/lang-json";
+import { html } from "@codemirror/lang-html";
+import { css } from "@codemirror/lang-css";
+import { python } from "@codemirror/lang-python";
+
+// Syntax-highlight fenced code inside hover/signature tooltips (the VS Code-style
+// colored signatures). Maps a markdown code-fence language name → a CM Language.
+function highlightLanguage(name: string): Language | null {
+  switch (name.toLowerCase()) {
+    case "typescript":
+    case "ts":
+    case "tsx":
+      return javascript({ typescript: true, jsx: true }).language;
+    case "javascript":
+    case "js":
+    case "jsx":
+      return javascript({ jsx: true }).language;
+    case "rust":
+    case "rs":
+      return rust().language;
+    case "json":
+      return json().language;
+    case "html":
+      return html().language;
+    case "css":
+      return css().language;
+    case "python":
+    case "py":
+      return python().language;
+    default:
+      return null;
+  }
+}
 
 // LSP languageId for a file (https://microsoft.github.io/language-server-protocol).
 export function lspLanguageId(path: string): string | null {
@@ -80,6 +116,7 @@ async function makeClient(root: string, server: ServerDef): Promise<ClientEntry 
   };
   const client = new LSPClient({
     rootUri: fileUri(root),
+    highlightLanguage,
     extensions: languageServerExtensions(),
   }).connect(transport);
   return { client, id };

@@ -93,6 +93,43 @@ function editorTheme() {
     "&": { height: "100%", fontSize: `${ui.terminalFontSize}px` },
     ".cm-scroller": { fontFamily: ui.terminalFont, overflow: "auto" },
     ".cm-content": { fontFamily: ui.terminalFont },
+    // ── LSP hover / signature tooltips (VS Code-style rich docs) ──
+    ".cm-tooltip": {
+      border: "1px solid #2a2a2a",
+      borderRadius: "6px",
+      background: "#1b1b1f",
+      boxShadow: "0 8px 28px rgba(0,0,0,0.5)",
+    },
+    ".cm-tooltip.cm-tooltip-hover, .cm-tooltip-section": {
+      maxWidth: "560px",
+    },
+    ".cm-lsp-documentation": {
+      padding: "8px 12px",
+      fontFamily: "var(--font-ui)",
+      fontSize: "12px",
+      lineHeight: "1.5",
+      maxHeight: "360px",
+      overflow: "auto",
+    },
+    ".cm-lsp-documentation pre, .cm-lsp-documentation code": {
+      fontFamily: ui.terminalFont,
+      fontSize: "12px",
+    },
+    ".cm-lsp-documentation pre": {
+      margin: "6px 0",
+      padding: "8px 10px",
+      background: "#0d0d10",
+      borderRadius: "5px",
+      overflow: "auto",
+      whiteSpace: "pre-wrap",
+    },
+    ".cm-lsp-documentation p": { margin: "4px 0" },
+    ".cm-lsp-documentation a": { color: "var(--accent)" },
+    ".cm-lsp-documentation hr": {
+      border: "none",
+      borderTop: "1px solid #2a2a2a",
+      margin: "8px 0",
+    },
   });
 }
 
