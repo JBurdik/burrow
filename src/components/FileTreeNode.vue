@@ -47,8 +47,12 @@ const store = useFileTreeStore();
 const activeTerm = inject<() => any>("activeTerm", () => undefined);
 
 function handleClick() {
-  if (props.node.type === "folder") store.toggle(props.node.id);
-  else store.select(props.node.id);
+  if (props.node.type === "folder") {
+    store.toggle(props.node.id);
+  } else {
+    store.select(props.node.id);
+    activeTerm()?.openFileInTab(props.node.id, props.node.name);
+  }
 }
 
 function addToContext() {

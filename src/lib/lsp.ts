@@ -1,0 +1,109 @@
+// LSP bridge for the CodeMirror editor.
+//
+// The webview can't spawn processes, so the Rust side (`lsp_start`/`lsp_send`/
+// `lsp_stop` in lib.rs) runs each language server as a child process and bridges
+// its stdio JSON-RPC: server→app via `lsp-msg-{id}` events, app→server via
+// `lsp_send`. Here we wrap that as a CodeMirror lsp-client Transport and hand out
+// per-file editor extensions. One server is shared per (workspace root, server
+// kind) and kept alive for the session.
+
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import {
+  LSPClient,
+  languageServerSupport,
+  languageServerExtensions,
+  type Transport,
+} from "@codemirror/lsp-client";
+import type { Extension } from "@codemirror/state";
+
+// LSP languageId for a file (https://microsoft.github.io/language-server-protocol).
+export function lspLanguageId(path: string): string | null {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  switch (ext) {
+    case "ts": return "typescript";
+    case "tsx": return "typescriptreact";
+    case "mts": case "cts": return "typescript";
+    case "js": case "mjs": case "cjs": return "javascript";
+    case "jsx": return "javascriptreact";
+    case "rs": return "rust";
+    default: return null;
+  }
+}
+
+interface ServerDef { key: string; name: string; args: string[]; }
+
+// Which server handles a languageId, and how to launch it. Binary is resolved on
+// the Rust side (PATH + node_modules/.bin + brew/cargo dirs).
+function serverFor(langId: string): ServerDef | null {
+  switch (langId) {
+    case "typescript":
+    case "typescriptreact":
+    case "javascript":
+    case "javascriptreact":
+      return { key: "typescript", name: "typescript-language-server", args: ["--stdio"] };
+    case "rust":
+      return { key: "rust", name: "rust-analyzer", args: [] };
+    default:
+      return null;
+  }
+}
+
+// Absolute path → file:// URI. encodeURI keeps "/" so the path structure stays.
+export function fileUri(path: string): string {
+  return "file://" + encodeURI(path);
+}
+
+let serverIdCounter = 9000; // distinct id space from PTYs
+
+interface ClientEntry { client: LSPClient; id: number; }
+const clients = new Map<string, Promise<ClientEntry | null>>();
+
+async function makeClient(root: string, server: ServerDef): Promise<ClientEntry | null> {
+  const id = ++serverIdCounter;
+  const handlers = new Set<(v: string) => void>();
+  // Attach the message listener BEFORE starting the server so the initialize
+  // response can't slip through before we're listening.
+  await listen<string>(`lsp-msg-${id}`, (ev) => {
+    for (const h of handlers) h(ev.payload);
+  });
+  try {
+    await invoke("lsp_start", { id, name: server.name, args: server.args, rootPath: root });
+  } catch (e) {
+    console.warn(`[lsp] ${server.name} failed to start:`, e);
+    return null;
+  }
+  const transport: Transport = {
+    send(message) { invoke("lsp_send", { id, message }).catch(() => {}); },
+    subscribe(handler) { handlers.add(handler); },
+    unsubscribe(handler) { handlers.delete(handler); },
+  };
+  const client = new LSPClient({
+    rootUri: fileUri(root),
+    extensions: languageServerExtensions(),
+  }).connect(transport);
+  return { client, id };
+}
+
+// CodeMirror editor extension giving a file LSP features (completion, hover,
+// diagnostics, go-to-def). Returns [] when the language is unsupported or the
+// server can't start — the editor still works as a plain highlighter.
+export async function lspExtension(path: string, root: string): Promise<Extension> {
+  const langId = lspLanguageId(path);
+  if (!langId) return [];
+  const server = serverFor(langId);
+  if (!server) return [];
+
+  const cacheKey = `${root}::${server.key}`;
+  let entryP = clients.get(cacheKey);
+  if (!entryP) {
+    entryP = makeClient(root, server);
+    clients.set(cacheKey, entryP);
+  }
+  const entry = await entryP;
+  if (!entry) {
+    clients.delete(cacheKey); // allow a later retry
+    return [];
+  }
+  return languageServerSupport(entry.client, fileUri(path), langId);
+}
