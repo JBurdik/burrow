@@ -9,7 +9,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from "vue";
+import { ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { PhFileX } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { EditorState, Compartment, Prec } from "@codemirror/state";
@@ -42,6 +42,7 @@ const placeholder = ref<string>("");
 // CM owns its own DOM + state. NEVER wrap in ref/reactive — Vue's proxy corrupts
 // CM internals. Bare module-local handle.
 let view: EditorView | null = null;
+let resizeObserver: ResizeObserver | undefined;
 let savedDoc = "";
 let lastDirty = false;
 let saving = false;
@@ -90,7 +91,9 @@ function detectLanguage(p: string) {
 
 function editorTheme() {
   return EditorView.theme({
-    "&": { height: "100%", fontSize: `${ui.terminalFontSize}px` },
+    // Font is scaled by effectiveScale because the host counter-zooms to net-1
+    // (see applyCounterZoom) — the visual size must come from the font, like XTerm.
+    "&": { height: "100%", fontSize: `${ui.terminalFontSize * ui.effectiveScale}px` },
     ".cm-scroller": { fontFamily: ui.terminalFont, overflow: "auto" },
     ".cm-content": { fontFamily: ui.terminalFont },
     // ── LSP hover / signature tooltips (VS Code-style rich docs) ──
@@ -131,6 +134,39 @@ function editorTheme() {
       margin: "8px 0",
     },
   });
+}
+
+// The whole UI is magnified by CSS `zoom: s` on #app (ui.ts). That desyncs mouse
+// coordinates from CodeMirror's getBoundingClientRect metrics, so mouse-driven
+// features (hover tooltips, click-to-position) land off or fail entirely while
+// keyboard-driven ones (completion) work. Same root cause + fix as XTerm: counter-
+// zoom the host to net-zoom-1 (zoom: 1/s) so rects and mouse share one space, and
+// re-grow the box in PX (not %, which compounds against the zoomed containing
+// block) so it still fills the pane. Visual size then comes from the scaled font.
+function applyCounterZoom() {
+  const el = host.value;
+  const parent = el?.parentElement;
+  if (!el || !parent) return;
+  const s = ui.effectiveScale;
+  if (s === 1) {
+    el.style.zoom = "";
+    el.style.width = "";
+    el.style.height = "";
+    el.style.flex = "";
+    view?.requestMeasure();
+    return;
+  }
+  el.style.flex = "";
+  el.style.zoom = "";
+  el.style.width = "";
+  el.style.height = "";
+  const w = el.clientWidth;
+  const h = el.clientHeight;
+  el.style.flex = "none";
+  el.style.zoom = String(1 / s);
+  el.style.width = `${w * s}px`;
+  el.style.height = `${h * s}px`;
+  view?.requestMeasure();
 }
 
 function recomputeDirty() {
@@ -215,15 +251,27 @@ onMounted(async () => {
     ],
   });
   view = new EditorView({ state, parent: host.value });
+
+  // Counter-zoom now and whenever the pane resizes (incl. when this tab becomes
+  // visible again after being display:none, which fires a 0→real size change).
+  await nextTick();
+  applyCounterZoom();
+  resizeObserver = new ResizeObserver(() => applyCounterZoom());
+  if (host.value.parentElement) resizeObserver.observe(host.value.parentElement);
 });
 
-// Live font/size changes — reconfigure the theme compartment, mirroring XTerm.
+// Live font/UI-scale changes — reconfigure the theme (scaled font) and re-grow
+// the counter-zoom box, mirroring XTerm.
 watch(
-  () => [ui.terminalFont, ui.terminalFontSize],
-  () => view?.dispatch({ effects: themeCompartment.reconfigure(editorTheme()) }),
+  () => [ui.terminalFont, ui.terminalFontSize, ui.effectiveScale],
+  () => {
+    view?.dispatch({ effects: themeCompartment.reconfigure(editorTheme()) });
+    applyCounterZoom();
+  },
 );
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
   view?.destroy();
   view = null;
 });
