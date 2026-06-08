@@ -132,18 +132,53 @@
               <PhPlus :size="11" />
             </button>
           </div>
-          <div
-            v-for="wt in store.worktreesByParent[item.id] || []"
-            :key="wt.id"
-            class="ws-term ws-worktree"
-            :class="{ active: store.active?.id === wt.id }"
-            :title="wt.path"
-            @click.stop="openWs(wt)"
-            @contextmenu.prevent.stop="openWtCtxMenu(wt, $event)"
-          >
-            <PhGitBranch :size="11" class="ws-term-icon" />
-            <span class="ws-term-label">{{ wt.worktree_branch || wt.name }}</span>
-          </div>
+          <template v-for="wt in store.worktreesByParent[item.id] || []" :key="wt.id">
+            <div
+              class="ws-term ws-worktree"
+              :class="{ active: store.active?.id === wt.id }"
+              :title="wt.path"
+              @click.stop="openWs(wt)"
+              @contextmenu.prevent.stop="openWtCtxMenu(wt, $event)"
+            >
+              <PhGitBranch :size="11" class="ws-term-icon" />
+              <span class="ws-term-label">{{ wt.worktree_branch || wt.name }}</span>
+              <span
+                v-if="aggStatus(wt.id)"
+                class="status-dot"
+                :class="`status-${aggStatus(wt.id)}`"
+              >{{ aggStatus(wt.id) === 'running' ? spinnerFrame : '' }}</span>
+            </div>
+
+            <!-- worktree's own terminal tabs -->
+            <div v-if="termTabs.tabsByWs[wt.id]?.length" class="ws-terminals ws-wt-terminals">
+              <div
+                v-for="tab in termTabs.tabsByWs[wt.id]"
+                :key="tab.id"
+                class="ws-term"
+                :class="{
+                  active:
+                    store.active?.id === wt.id && termTabs.activeByWs[wt.id] === tab.id,
+                }"
+                @click.stop="selectTab(wt, tab.id)"
+              >
+                <PhRobot v-if="tab.isAgent" :size="11" class="ws-term-icon agent" />
+                <PhTerminal v-else :size="11" class="ws-term-icon" />
+                <span class="ws-term-label">{{ tab.title }}</span>
+                <span
+                  v-if="tab.status && tab.status !== 'idle'"
+                  class="status-dot"
+                  :class="`status-${tab.status}`"
+                >{{ tab.status === 'running' ? spinnerFrame : '' }}</span>
+                <PhX
+                  :size="9"
+                  weight="bold"
+                  class="ws-term-close"
+                  title="Close"
+                  @click.stop="termTabs.close(wt.id, tab.id)"
+                />
+              </div>
+            </div>
+          </template>
         </div>
       </div>
 
@@ -329,6 +364,16 @@ function openWs(item: Workspace) {
   const next = !isCollapsed(item.id);
   setCollapsed(item.id, next);
   if (!next) store.open(item);
+}
+
+// Aggregate status of a workspace's tabs (highest-priority wins). Drives the
+// worktree row dot so a finished/working agent is visible without expanding.
+function aggStatus(id: number): string | null {
+  const tabs = termTabs.tabsByWs[id] || [];
+  for (const s of ["waiting", "running", "review", "done"]) {
+    if (tabs.some((t) => t.status === s)) return s;
+  }
+  return null;
 }
 
 // ── branch switcher ──────────────────────────────────────────────────────────
@@ -804,6 +849,12 @@ async function confirmCreate() {
 }
 .ws-worktree .ws-term-icon { color: #a78bfa; }
 .ws-worktree.active .ws-term-icon { color: var(--accent); }
+
+/* Terminal tabs nested under a worktree row — indented inside the worktree group */
+.ws-wt-terminals {
+  margin: 1px 0 3px 12px;
+  border-left-color: color-mix(in srgb, #a78bfa 40%, transparent);
+}
 
 .wt-label {
   font-size: 11px;
