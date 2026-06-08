@@ -1286,10 +1286,178 @@ fn read_text_file(path: String) -> String {
     std::fs::read_to_string(&path).unwrap_or_default()
 }
 
+// Editor-grade read: distinguishes missing/empty/binary/too-large (unlike
+// read_text_file which collapses every error to ""). Rejects binary (NUL byte or
+// invalid UTF-8) and oversized files so the editor shows a placeholder instead of
+// mounting garbage or freezing the renderer.
+#[tauri::command]
+fn read_text_file_checked(path: String) -> Result<String, String> {
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if bytes.len() > 5_000_000 {
+        return Err("too-large".into());
+    }
+    if bytes.contains(&0) {
+        return Err("binary".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "binary".into())
+}
+
 #[tauri::command]
 fn read_file_base64(path: String) -> Result<String, String> {
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     Ok(general_purpose::STANDARD.encode(&bytes))
+}
+
+// ── LSP bridge ────────────────────────────────────────────────────────────────
+// The webview can't spawn processes, so a language server runs here as a child
+// process and we bridge its stdio JSON-RPC to the frontend: stdout frames →
+// `lsp-msg-{id}` events; `lsp_send` writes Content-Length-framed messages to
+// stdin. The CodeMirror lsp-client drives the protocol (initialize/didOpen/etc).
+struct LspProc {
+    stdin: std::process::ChildStdin,
+    child: std::process::Child,
+}
+
+#[derive(Default)]
+struct LspState {
+    procs: Mutex<std::collections::HashMap<u32, LspProc>>,
+}
+
+// A GUI app launched from Finder inherits a minimal PATH, so language servers
+// (node CLIs in the project, rust-analyzer in ~/.cargo/bin, brew binaries) often
+// aren't found via PATH alone. Search the usual locations explicitly.
+fn resolve_lsp_bin(name: &str, root: &str) -> Option<PathBuf> {
+    let p = Path::new(name);
+    if p.is_absolute() {
+        return if p.exists() { Some(p.to_path_buf()) } else { None };
+    }
+    let mut dirs: Vec<PathBuf> = vec![Path::new(root).join("node_modules/.bin")];
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        dirs.push(home.join(".cargo/bin"));
+        dirs.push(home.join(".npm-global/bin"));
+        dirs.push(home.join(".local/bin"));
+        dirs.push(home.join(".volta/bin"));
+    }
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.push(PathBuf::from("/usr/bin"));
+    if let Ok(path) = std::env::var("PATH") {
+        dirs.extend(path.split(':').map(PathBuf::from));
+    }
+    dirs.into_iter().map(|d| d.join(name)).find(|c| c.exists())
+}
+
+// A Finder-launched GUI app has a bare PATH, so a node-based server's
+// `#!/usr/bin/env node` shebang (and rust-analyzer's tool lookups) can fail to
+// find their runtime. Prepend the usual toolchain dirs to the child's PATH.
+fn augmented_path(root: &str) -> String {
+    let mut parts: Vec<String> = vec![format!("{root}/node_modules/.bin")];
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for d in [".cargo/bin", ".volta/bin", ".local/bin", ".npm-global/bin"] {
+            parts.push(home.join(d).to_string_lossy().into_owned());
+        }
+    }
+    parts.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].map(String::from));
+    if let Ok(existing) = std::env::var("PATH") {
+        parts.push(existing);
+    }
+    parts.join(":")
+}
+
+#[tauri::command]
+fn lsp_start(
+    app: AppHandle,
+    state: State<LspState>,
+    id: u32,
+    name: String,
+    args: Vec<String>,
+    root_path: String,
+) -> Result<(), String> {
+    if state.procs.lock().unwrap().contains_key(&id) {
+        return Ok(()); // already running for this id
+    }
+    let bin = resolve_lsp_bin(&name, &root_path)
+        .ok_or_else(|| format!("language server '{name}' not found on PATH"))?;
+    let mut child = std::process::Command::new(&bin)
+        .args(&args)
+        .current_dir(&root_path)
+        .env("PATH", augmented_path(&root_path))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+
+    // Reader: parse Content-Length framed JSON-RPC, emit one event per message.
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Read};
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut content_len: usize = 0;
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => return, // EOF or error
+                    Ok(_) => {}
+                }
+                let t = line.trim_end();
+                if t.is_empty() {
+                    break; // blank line ends the header block
+                }
+                if let Some(v) = t.strip_prefix("Content-Length:") {
+                    content_len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            if content_len == 0 {
+                continue;
+            }
+            let mut buf = vec![0u8; content_len];
+            if reader.read_exact(&mut buf).is_err() {
+                return;
+            }
+            if let Ok(s) = String::from_utf8(buf) {
+                let _ = app2.emit(&format!("lsp-msg-{id}"), s);
+            }
+        }
+    });
+    // Drain stderr so the server doesn't block on a full pipe.
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut s = stderr;
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = s.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+        }
+    });
+
+    state.procs.lock().unwrap().insert(id, LspProc { stdin, child });
+    Ok(())
+}
+
+#[tauri::command]
+fn lsp_send(state: State<LspState>, id: u32, message: String) -> Result<(), String> {
+    use std::io::Write;
+    let mut guard = state.procs.lock().unwrap();
+    let proc = guard.get_mut(&id).ok_or("lsp server not running")?;
+    let header = format!("Content-Length: {}\r\n\r\n", message.len());
+    proc.stdin
+        .write_all(header.as_bytes())
+        .and_then(|_| proc.stdin.write_all(message.as_bytes()))
+        .and_then(|_| proc.stdin.flush())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn lsp_stop(state: State<LspState>, id: u32) {
+    if let Some(mut proc) = state.procs.lock().unwrap().remove(&id) {
+        let _ = proc.child.kill();
+    }
 }
 
 // ── Skills manager ────────────────────────────────────────────────────────────
@@ -1816,6 +1984,7 @@ pub fn run() {
                 })
                 .ok();
             app.manage(DaemonState { client: Mutex::new(client) });
+            app.manage(LspState::default());
 
             start_hook_server(app.handle().clone());
             install_agent_docs(app.handle());
@@ -1857,6 +2026,10 @@ pub fn run() {
             get_app_version,
             write_text_file,
             read_text_file,
+            read_text_file_checked,
+            lsp_start,
+            lsp_send,
+            lsp_stop,
             read_file_base64,
             save_temp_image,
             get_hook_server_port,
