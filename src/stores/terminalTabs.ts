@@ -11,6 +11,7 @@ export interface TabSummary {
   isAgent: boolean;
   busy: boolean;
   status: "idle" | "running" | "waiting" | "done" | "review";
+  leafCount?: number;
 }
 
 type TabRequest = {

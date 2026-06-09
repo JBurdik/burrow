@@ -499,6 +499,7 @@ You are running inside Burrow, which gives you a `burrow` CLI to delegate work t
 - `burrow spawn <command...>` — open a new tab in this project running <command> (fire-and-forget, returns immediately). Example: `burrow spawn claude \"write tests for src/foo\"`.\n\
 - `burrow spawn --token t1 claude \"...\"` then later `burrow collect t1` — delegate with a tracking token, keep working, and pull the sub-agent's final message whenever you want (non-blocking). `burrow collect` with no token returns every finished sub-agent.\n\
 - `burrow sessions` — list the live sub-agent tabs (or `--count`).\n\
+- `burrow worktree <branch> [--base-ref REF] [--path DIR]` — create a git worktree off this repo on a new/existing branch; it appears in the Sidebar nested under the repo.\n\
 - `burrow spawn --cwd /path claude \"...\"` — run the new tab in a different directory.\n\n\
 Do NOT block waiting on sub-agents. Fan out the work, continue your own, then `burrow collect` for a recap. Respect the soft per-workspace concurrency limit `burrow spawn` reports. Sub-agents run interactively on the subscription (never use `claude -p`).";
 
@@ -525,6 +526,14 @@ burrow collect          # or: collect every finished sub-agent, no token list\n\
 `burrow collect` never blocks: it prints the final message of each finished token and **consumes** it, so a later `collect` returns only newly-finished ones. Tokens still running are reported as pending. Loop back and `collect` again later to pick them up — do useful work between calls, don't poll in a tight loop.\n\n\
 ## Recap pattern\n\
 Spawn N agents up front → continue your task → near the end, `burrow collect` (optionally a few times as stragglers finish) → summarize what each returned for the user. You drive the recap; the sub-agents just drop their results for you.\n\n\
+## Worktrees\n\
+Create a git worktree off this repo on a new or existing branch — it shows up in the Sidebar nested under the repo, ready to open and run agents in.\n\
+```\n\
+burrow worktree feat/login                 # new branch off HEAD (or check out existing)\n\
+burrow worktree hotfix --base-ref main      # new branch based on main\n\
+burrow worktree feat/x --path ~/wt/x        # override the on-disk location\n\
+```\n\
+Use this to isolate a sub-task on its own branch/checkout instead of sharing the working tree. The worktree's disk path defaults to Burrow's configured worktrees dir.\n\n\
 ## Inspect / other dir\n\
 ```\n\
 burrow sessions            # list live sub-agent tabs (--count for just the number)\n\
@@ -905,9 +914,14 @@ fn restart_daemon(daemon: State<DaemonState>, app: AppHandle) -> Result<u32, Str
 
 #[derive(Debug, Serialize)]
 pub struct SpawnRequest {
+    /// "spawn" (open a tab running `cmd`) or "worktree" (create a git worktree workspace).
+    pub kind: String,
     pub cmd: String,
     pub token: String,
     pub cwd: String,
+    /// worktree only: branch name + optional base ref for a new branch.
+    pub branch: String,
+    pub base: String,
 }
 
 #[tauri::command]
@@ -923,12 +937,22 @@ fn take_spawn_requests(cwd: String, app: AppHandle) -> Vec<SpawnRequest> {
         let read = |name: &str| std::fs::read_to_string(d.join(name)).unwrap_or_default();
         let ws = read("ws");
         if ws != cwd { continue; }
+        // `kind` is absent on legacy `spawn` requests → default to "spawn".
+        let kind = { let k = read("kind"); if k.is_empty() { "spawn".to_string() } else { k } };
         let cmd = read("cmd");
         let token = read("token");
         let newcwd = read("cwd");
+        let branch = read("branch");
+        let base = read("base");
         let _ = std::fs::remove_dir_all(&d);
-        if !cmd.is_empty() {
-            out.push(SpawnRequest { cmd, token, cwd: newcwd });
+        match kind.as_str() {
+            "worktree" if !branch.is_empty() => {
+                out.push(SpawnRequest { kind, cmd: String::new(), token: String::new(), cwd: newcwd, branch, base });
+            }
+            _ if !cmd.is_empty() => {
+                out.push(SpawnRequest { kind: "spawn".to_string(), cmd, token, cwd: newcwd, branch: String::new(), base: String::new() });
+            }
+            _ => {}
         }
     }
     out

@@ -11,11 +11,23 @@
     </div>
 
     <div class="ws-list">
-      <div v-for="item in store.topLevel" :key="item.id" class="ws-group">
+      <TransitionGroup name="ws-move" tag="div" class="ws-list-inner">
+      <div
+        v-for="(item, wsIdx) in store.topLevel"
+        :key="item.id"
+        class="ws-group"
+        :data-reorder-idx="wsIdx"
+        data-reorder-group="ws"
+      >
         <div
           class="ws-item"
-          :class="{ active: store.active?.id === item.id }"
+          :class="{
+            active: store.active?.id === item.id,
+            'drag-over': wsOverIdx === wsIdx && wsDragIdx !== wsIdx,
+            dragging: wsDragIdx === wsIdx,
+          }"
           @click="openWs(item)"
+          @pointerdown="(e: PointerEvent) => wsDragDown(wsIdx, e, 'ws')"
           @contextmenu.prevent.stop="openCtxMenu(item, $event)"
         >
           <button class="ws-caret" :title="isCollapsed(item.id) ? 'Expand' : 'Collapse'" @click.stop="toggleCollapse(item.id)">
@@ -89,7 +101,12 @@
           </div>
         </div>
 
-        <div v-if="!isCollapsed(item.id) && termTabs.tabsByWs[item.id]?.length" class="ws-terminals">
+        <TransitionGroup
+          v-if="!isCollapsed(item.id) && termTabs.tabsByWs[item.id]?.length"
+          name="ws-move"
+          tag="div"
+          class="ws-terminals"
+        >
           <div
             v-for="(tab, tabIdx) in termTabs.tabsByWs[item.id]"
             :key="tab.id"
@@ -110,6 +127,11 @@
             <PhTerminal v-else :size="11" class="ws-term-icon" />
             <span class="ws-term-label">{{ tab.title }}</span>
             <span
+              v-if="(tab.leafCount ?? 1) > 1"
+              class="ws-term-split-count"
+              :title="`${tab.leafCount} panes`"
+            >{{ tab.leafCount }}</span>
+            <span
               v-if="tab.status && tab.status !== 'idle'"
               class="status-dot"
               :class="`status-${tab.status}`"
@@ -122,7 +144,7 @@
               @click.stop="termTabs.close(item.id, tab.id)"
             />
           </div>
-        </div>
+        </TransitionGroup>
 
         <!-- Worktrees subsection -->
         <div v-if="!isCollapsed(item.id)" class="ws-worktrees">
@@ -165,6 +187,11 @@
                 <PhTerminal v-else :size="11" class="ws-term-icon" />
                 <span class="ws-term-label">{{ tab.title }}</span>
                 <span
+                  v-if="(tab.leafCount ?? 1) > 1"
+                  class="ws-term-split-count"
+                  :title="`${tab.leafCount} panes`"
+                >{{ tab.leafCount }}</span>
+                <span
                   v-if="tab.status && tab.status !== 'idle'"
                   class="status-dot"
                   :class="`status-${tab.status}`"
@@ -181,6 +208,7 @@
           </template>
         </div>
       </div>
+      </TransitionGroup>
 
       <div v-if="store.workspaces.length === 0" class="ws-empty">
         No workspaces.<br />Click + to open a folder.
@@ -500,6 +528,15 @@ const {
 } = usePointerReorder((from, to, group) => {
   if (group != null) termTabs.reorder(Number(group), from, to);
 });
+
+// Top-level workspace reorder. Distinct group "ws" so a workspace drag can only
+// target other workspace rows — never a nested terminal row (which carries a
+// numeric workspace-id group).
+const {
+  dragIdx: wsDragIdx,
+  overIdx: wsOverIdx,
+  down: wsDragDown,
+} = usePointerReorder((from, to) => store.reorderTopLevel(from, to));
 
 function mimeForPath(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
@@ -926,6 +963,22 @@ async function confirmCreate() {
   white-space: nowrap;
 }
 
+.ws-term-split-count {
+  flex-shrink: 0;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+}
+
 .status-dot {
   width: 6px;
   height: 6px;
@@ -977,6 +1030,24 @@ async function confirmCreate() {
 .ws-term.drag-over { background: var(--bg-hover); outline: 1px solid var(--accent); outline-offset: -1px; }
 .ws-term.dragging { opacity: 0.4; }
 .ws-term { touch-action: none; }
+
+/* workspace row drag feedback */
+.ws-item { touch-action: none; }
+.ws-item.drag-over { outline: 1px solid var(--accent); outline-offset: -1px; }
+.ws-item.drag-over::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: -2px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.ws-item.dragging { opacity: 0.45; }
+
+/* FLIP move animation for reordering (workspaces + nested tabs) */
+.ws-move-move { transition: transform .22s cubic-bezier(.2, .8, .2, 1); }
 
 .ws-empty {
   font-size: 11.5px;

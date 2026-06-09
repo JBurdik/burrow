@@ -22,7 +22,7 @@
 # Sub-agents run INTERACTIVELY on your subscription (plain `claude`, never -p).
 
 sub="$1"
-[ -n "$sub" ] || { echo "usage: burrow spawn|collect|wait|sessions|status|hook|notify <args>" >&2; exit 1; }
+[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|collect|wait|sessions|status|hook|notify <args>" >&2; exit 1; }
 shift
 
 case "$sub" in
@@ -75,6 +75,44 @@ case "$sub" in
     else
       echo "burrow: spawned a new tab (soft limit ${limit} sub-agents/ws)" >&2
     fi
+    exit 0
+    ;;
+
+  worktree)
+    # burrow worktree <branch> [--base-ref REF] [--path DIR]
+    #   Create a git worktree off THIS workspace's repo on a new/existing branch and
+    #   open it as a workspace in the Sidebar (nested under the parent repo).
+    #   --base-ref REF   base for a NEW branch (defaults to HEAD). Ignored if the
+    #                    branch already exists.
+    #   --path DIR       where to put the worktree on disk. Defaults to Burrow's
+    #                    configured worktrees dir (<dir>/<repo>/<branch>).
+    # File-based like `spawn`: drops a request dir Burrow polls. Routed to the
+    # workspace whose repo this PTY belongs to (BURROW_CWD).
+    base=""; path=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --base-ref) base="$2"; shift 2 ;;
+        --path)     path="$2"; shift 2 ;;
+        --)         shift; break ;;
+        -*)         echo "burrow worktree: unknown flag $1" >&2; exit 1 ;;
+        *)          break ;;
+      esac
+    done
+    branch="$1"
+    [ -n "$branch" ] || { echo "burrow worktree: no branch given" >&2; exit 1; }
+
+    reqdir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}/requests"
+    mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"          # workspace (repo) this request routes to
+
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "worktree" > "$d/kind"
+    printf '%s' "$branch"  > "$d/branch"
+    printf '%s' "$base"    > "$d/base"
+    printf '%s' "$path"    > "$d/path"
+    printf '%s' "$ws"      > "$d/ws"
+    : > "$d/ready"
+    echo "burrow: requested worktree on branch '$branch' (appears in the Sidebar shortly)" >&2
     exit 0
     ;;
 
@@ -286,7 +324,7 @@ PY
     ;;
 
   *)
-    echo "burrow: unknown command '$sub' (use spawn|collect|wait|sessions|status|hook|notify)" >&2
+    echo "burrow: unknown command '$sub' (use spawn|worktree|collect|wait|sessions|status|hook|notify)" >&2
     exit 1
     ;;
 esac

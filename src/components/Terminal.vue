@@ -2,13 +2,20 @@
   <div class="terminal-pane" @click="focusActive">
     <AgentToolbar @launch="spawnAgent" />
 
-    <div v-if="tabs.length > 0" class="terminal-tabs">
+    <TransitionGroup v-if="tabs.length > 0" name="tab-move" tag="div" class="terminal-tabs">
       <button
-        v-for="tab in tabs"
+        v-for="(tab, tabIdx) in tabs"
         :key="tab.id"
         class="tab"
-        :class="{ active: activeTabId === tab.id }"
+        :class="{
+          active: activeTabId === tab.id,
+          'drag-over': tabOverIdx === tabIdx && tabDragIdx !== tabIdx,
+          dragging: tabDragIdx === tabIdx,
+        }"
+        :data-reorder-idx="tabIdx"
+        data-reorder-group="tab"
         @click.stop="activateTab(tab.id)"
+        @pointerdown="(e: PointerEvent) => tabDragDown(tabIdx, e, 'tab')"
       >
         <PhFileCode v-if="tabIsEditor(tab)" :size="12" class="tab-term-icon" />
         <PhRobot v-else-if="tabIsAgent(tab)" :size="12" class="tab-agent-icon" />
@@ -20,6 +27,11 @@
           :class="`status-${tabStatus(tab)}`"
         >{{ tabStatus(tab) === 'running' ? spinnerFrame : '' }}</span>
         <span class="tab-label">{{ tabTitle(tab) }}</span>
+        <span
+          v-if="tabLeafCount(tab) > 1"
+          class="tab-split-count"
+          :title="`${tabLeafCount(tab)} panes`"
+        >{{ tabLeafCount(tab) }}</span>
         <PhArrowSquareOut
           :size="10"
           class="tab-float"
@@ -33,10 +45,10 @@
           @click.stop="closeTab(tab.id)"
         />
       </button>
-      <button class="tab tab-add" @click="addTab()" title="New terminal">
+      <button key="__add" class="tab tab-add" @click="addTab()" title="New terminal">
         <PhPlus :size="12" />
       </button>
-    </div>
+    </TransitionGroup>
 
     <div v-if="tabs.length > 0" class="terminal-body">
       <div
@@ -147,13 +159,16 @@ import { nextPtyId, initPtyCounter } from "@/lib/ptyId";
 import { spinnerFrame } from "@/lib/spinner";
 import { playSound } from "@/lib/sounds";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { useUIStore } from "@/stores/ui";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useGitStore } from "@/stores/git";
+import { usePointerReorder } from "@/composables/usePointerReorder";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 
 const props = defineProps<{ cwd: string; workspaceId: number }>();
 const wsStore = useWorkspaceStore();
+const uiStore = useUIStore();
 const tabsStore = useTerminalTabsStore();
 const notifStore = useNotificationsStore();
 const gitStore = useGitStore();
@@ -634,6 +649,24 @@ function spawnAgent(cmd: string) {
   addTab(cmd);
 }
 
+// Move a tab from one position to another (shared by the top tab-bar drag and the
+// reorder request coming back from the Sidebar). syncStore (deep watch on tabs)
+// mirrors the new order to the store, so the Sidebar list follows automatically.
+function reorderTabs(from: number, to: number) {
+  if (from < 0 || from >= tabs.value.length || to < 0 || to >= tabs.value.length) return;
+  const moved = tabs.value.splice(from, 1)[0];
+  if (moved) tabs.value.splice(to, 0, moved);
+}
+
+// Pointer-based drag reorder for the top tab bar (HTML5 DnD is swallowed by
+// Tauri's native handler — see usePointerReorder). Group "tab" so a drag can only
+// land on another tab button.
+const {
+  dragIdx: tabDragIdx,
+  overIdx: tabOverIdx,
+  down: tabDragDown,
+} = usePointerReorder((from, to) => reorderTabs(from, to));
+
 // Inject a file/folder path from the explorer into the focused leaf's PTY as an
 // "@path " context reference (relative to the workspace cwd when possible) so the
 // active agent picks it up. User reviews + hits Enter.
@@ -776,6 +809,10 @@ function isTabSplit(tab: Tab): boolean {
   return tab.root.type === 'split';
 }
 
+function tabLeafCount(tab: Tab): number {
+  return getAllLeaves(tab.root).length;
+}
+
 async function closePane(leafId: number) {
   const tab = tabs.value.find((t) => findLeaf(t.root, leafId));
   if (!tab) return;
@@ -870,6 +907,7 @@ function syncStore() {
       isAgent: tabIsAgent(t),
       busy: getAllLeaves(t.root).some((l) => l.busy),
       status: tabStatus(t),
+      leafCount: getAllLeaves(t.root).length,
     })),
   );
   tabsStore.setActive(props.workspaceId, activeTabId.value);
@@ -896,8 +934,7 @@ watch(
     else if (req.action === "add") addTab();
     else if (req.action === "close" && req.tabId != null) closeTab(req.tabId);
     else if (req.action === "reorder" && req.fromIdx != null && req.toIdx != null) {
-      const moved = tabs.value.splice(req.fromIdx, 1)[0];
-      if (moved) tabs.value.splice(req.toIdx, 0, moved);
+      reorderTabs(req.fromIdx, req.toIdx);
     }
   },
 );
@@ -935,18 +972,40 @@ onMounted(async () => {
   syncStore();
 });
 
+// Handle a `burrow worktree` request: create a git worktree off this workspace's
+// repo and let the store's reload surface it in the Sidebar (nested under the repo).
+// The parent must be a top-level repo — if this PTY runs inside a worktree, climb to
+// its parent so we never try to make a worktree of a worktree (the Rust command
+// rejects that anyway). Path matches the New-worktree dialog: <worktreesDir>/<repo>/<branch>.
+async function handleWorktreeRequest(branch: string, base: string) {
+  const self = wsStore.workspaces.find((w) => w.id === props.workspaceId);
+  const parentId = self?.parent_id ?? props.workspaceId;
+  const parent = wsStore.workspaces.find((w) => w.id === parentId) ?? self;
+  const repo = (parent?.path.split("/").filter(Boolean).pop()) || "repo";
+  const path = `${uiStore.worktreesDir}/${repo}/${branch}`;
+  try {
+    const ws = await wsStore.createWorktree(parentId, branch, base.trim() || null, path);
+    wsStore.open(ws);
+  } catch (err) {
+    console.error("burrow worktree request failed:", err);
+  }
+}
+
 // Poll for `burrow spawn` requests routed to this workspace (file-based, since
 // agents' Bash/hooks have no controlling tty for the OSC channel).
 let spawnPoll: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   spawnPoll = setInterval(async () => {
     try {
-      const reqs = await invoke<{ cmd: string; token: string; cwd: string }[]>(
-        "take_spawn_requests",
-        { cwd: props.cwd },
-      );
+      const reqs = await invoke<
+        { kind: string; cmd: string; token: string; cwd: string; branch: string; base: string }[]
+      >("take_spawn_requests", { cwd: props.cwd });
       for (const r of reqs) {
-        addTab(r.cmd, { cwd: r.cwd || undefined, resultToken: r.token || undefined });
+        if (r.kind === "worktree") {
+          await handleWorktreeRequest(r.branch, r.base);
+        } else {
+          addTab(r.cmd, { cwd: r.cwd || undefined, resultToken: r.token || undefined });
+        }
       }
     } catch { /* ignore poll errors */ }
   }, 1000);
@@ -1033,6 +1092,23 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
 .tab-add { color: var(--text-muted); font-size: 14px; max-width: none; }
 .tab-add:hover { color: var(--text-secondary); }
 
+/* drag-to-reorder feedback */
+.tab { touch-action: none; }
+.tab.dragging { opacity: 0.4; }
+.tab.drag-over { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tab.drag-over::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.tab { position: relative; }
+.tab-move-move { transition: transform .22s cubic-bezier(.2, .8, .2, 1); }
+
 .tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1041,6 +1117,22 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
 
 .tab-agent-icon { color: var(--accent); flex-shrink: 0; }
 .tab-term-icon  { color: var(--text-muted); flex-shrink: 0; }
+
+.tab-split-count {
+  flex-shrink: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+}
 
 .status-dot {
   width: 6px;

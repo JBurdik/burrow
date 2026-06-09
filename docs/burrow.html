@@ -106,6 +106,25 @@ burrow collect       # or: every finished sub-agent, no token list</code></pre>
     <code>daemon.sock</code> + <code>daemon.token</code> from <code>BURROW_HOME_DIR</code>.
   </p>
 
+  <h3><code>burrow worktree &lt;branch&gt; [--base-ref REF] [--path DIR]</code></h3>
+  <p>
+    Create a git worktree off <strong>this workspace's repo</strong> on a new or existing branch, and surface it in the
+    Sidebar nested under the parent repo — ready to open and run agents in. Same file-based transport + per-workspace
+    routing as <code>spawn</code>: drops a request dir with <code>kind=worktree</code> plus raw <code>branch</code>/<code>base</code>/<code>path</code>/<code>ws</code>
+    files and a <code>ready</code> marker. <code>Terminal.vue</code>'s poll branches on <code>kind</code>: it resolves the parent repo
+    (climbing <code>parent_id</code> if this PTY is itself inside a worktree — no worktree-of-a-worktree), computes the disk path
+    <code>&lt;worktreesDir&gt;/&lt;repo&gt;/&lt;branch&gt;</code> (same convention as the New-worktree dialog), and calls the store's
+    <code>createWorktree</code>. That runs <code>git worktree add</code> in Rust <em>and</em> reloads the workspace list, so the Sidebar
+    updates with no manual refresh.
+  </p>
+  <ul>
+    <li><code>--base-ref REF</code> — base for a <strong>new</strong> branch (default <code>HEAD</code>; ignored if the branch already exists).</li>
+    <li><code>--path DIR</code> — override the on-disk location of the worktree.</li>
+  </ul>
+  <pre><code>burrow worktree feat/login                # new branch off HEAD (or check out existing)
+burrow worktree hotfix --base-ref main     # new branch based on main
+burrow worktree feat/x --path ~/wt/x       # custom on-disk location</code></pre>
+
   <h3><code>burrow wait &lt;token&gt; [--timeout SECONDS]</code> <span style="color:var(--muted);font-weight:400;font-size:12px">(legacy)</span></h3>
   <p>Block until the sub-agent launched with that token finishes its turn, then print its final message to stdout. Exits 1 on timeout. Still available, but prefer <code>collect</code> so you stay productive instead of blocked.</p>
   <pre><code>burrow spawn --token t1 claude "summarize what changed in this PR"

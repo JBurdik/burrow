@@ -22,8 +22,43 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   // Custom icons stored as data URLs in localStorage
   const icons = ref<Record<number, string>>({});
 
-  // Top-level repo workspaces (no parent). Worktrees are nested under their parent.
-  const topLevel = computed(() => workspaces.value.filter((w) => !w.parent_id));
+  // Persisted manual order of top-level workspaces (array of ids). The DB has no
+  // sort column, so the user's drag order lives in localStorage and is applied as
+  // a sort over the raw list. Unknown ids (newly created) sort to the end.
+  const ORDER_KEY = "burrow.ws.order";
+  const order = ref<number[]>(_loadOrder());
+
+  function _loadOrder(): number[] {
+    try { return JSON.parse(localStorage.getItem(ORDER_KEY) || "[]"); }
+    catch { return []; }
+  }
+  function _saveOrder() {
+    localStorage.setItem(ORDER_KEY, JSON.stringify(order.value));
+  }
+
+  // Top-level repo workspaces (no parent), in the user's manual order. Worktrees
+  // are nested under their parent.
+  const topLevel = computed(() => {
+    const tops = workspaces.value.filter((w) => !w.parent_id);
+    const pos = new Map(order.value.map((id, i) => [id, i]));
+    return [...tops].sort((a, b) => {
+      const pa = pos.has(a.id) ? pos.get(a.id)! : Infinity;
+      const pb = pos.has(b.id) ? pos.get(b.id)! : Infinity;
+      if (pa !== pb) return pa - pb;
+      return a.id - b.id; // stable fallback for ids not yet in the order list
+    });
+  });
+
+  // Move a top-level workspace from one visible position to another, persisting
+  // the new order. Indices are into `topLevel`.
+  function reorderTopLevel(from: number, to: number) {
+    const ids = topLevel.value.map((w) => w.id);
+    if (from < 0 || from >= ids.length || to < 0 || to >= ids.length) return;
+    const [moved] = ids.splice(from, 1);
+    ids.splice(to, 0, moved);
+    order.value = ids;
+    _saveOrder();
+  }
   // Worktree rows grouped by their parent repo id.
   const worktreesByParent = computed(() => {
     const m: Record<number, Workspace[]> = {};
@@ -134,6 +169,6 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   return {
     workspaces, active, opened, icons, topLevel, worktreesByParent,
     load, create, remove, rename, open, ensureOpen, close, setIcon, clearIcon,
-    createWorktree, removeWorktree,
+    createWorktree, removeWorktree, reorderTopLevel,
   };
 });
