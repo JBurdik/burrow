@@ -925,7 +925,7 @@ pub struct SpawnRequest {
 }
 
 #[tauri::command]
-fn take_spawn_requests(cwd: String, app: AppHandle) -> Vec<SpawnRequest> {
+fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<SpawnRequest> {
     let mut out = Vec::new();
     let Some(reqdir) = burrow_session_dir(&app).map(|d| d.join("requests")) else {
         return out;
@@ -935,13 +935,29 @@ fn take_spawn_requests(cwd: String, app: AppHandle) -> Vec<SpawnRequest> {
         let d = e.path();
         if !d.is_dir() || !d.join("ready").exists() { continue; }
         let read = |name: &str| std::fs::read_to_string(d.join(name)).unwrap_or_default();
-        let ws = read("ws");
-        if ws != cwd { continue; }
+        let ws = read("ws");          // spawning workspace (request origin)
+        let newcwd = read("cwd");     // dir the new tab should run in (may be a worktree)
+        // Route the tab to the workspace it will actually run in: prefer the target
+        // dir `newcwd` when that dir is itself a workspace (e.g. a worktree), so the
+        // tab nests under it; otherwise fall back to the spawning workspace `ws`
+        // (covers `spawn --cwd <arbitrary dir>` where the dir is not its own
+        // workspace, and `worktree` requests where newcwd is empty). The DB is the
+        // arbiter so a single Terminal claims each request — no double-claim race.
+        let target = if newcwd.is_empty() { ws.clone() } else { newcwd.clone() };
+        let target_is_ws = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT 1 FROM workspaces WHERE path = ?1",
+                rusqlite::params![target],
+                |_| Ok(()),
+            ).is_ok()
+        };
+        let claimant = if target_is_ws { &target } else { &ws };
+        if *claimant != cwd { continue; }
         // `kind` is absent on legacy `spawn` requests → default to "spawn".
         let kind = { let k = read("kind"); if k.is_empty() { "spawn".to_string() } else { k } };
         let cmd = read("cmd");
         let token = read("token");
-        let newcwd = read("cwd");
         let branch = read("branch");
         let base = read("base");
         let _ = std::fs::remove_dir_all(&d);
