@@ -74,7 +74,7 @@ export interface Leaf {
   defaultTitle: string;
   isAgent: boolean;
   busy: boolean;
-  status: "idle" | "running" | "waiting" | "done" | "review";
+  status: import("@/lib/terminalStatus").TermStatus;
   initialCmd?: string;
   cwd?: string;          // per-tab cwd override (else workspace cwd)
   resultToken?: string;  // set on tabs spawned via `burrow spawn --token`

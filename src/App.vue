@@ -273,6 +273,8 @@ function onKeydown(e: KeyboardEvent) {
 </script>
 
 <style>
+@import "@/styles/status-dots.css";
+
 * {
   box-sizing: border-box;
   margin: 0;

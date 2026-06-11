@@ -20,7 +20,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useUIStore } from "@/stores/ui";
 import "@xterm/xterm/css/xterm.css";
 
-const props = defineProps<{ ptyId: number; cwd: string; initialCmd?: string; resultToken?: string }>();
+const props = defineProps<{ ptyId: number; cwd: string; initialCmd?: string; resultToken?: string; initiallyTitled?: boolean }>();
 const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string]; agent: [b: boolean]; interrupt: [] }>();
 
 const ui = useUIStore();
@@ -131,9 +131,10 @@ const b64decode = (s: string) =>
 let foreground = "";
 // True once the foreground agent has set its OWN title via OSC. After that the
 // poll stops seeding "Claude" over it, so Claude Code's descriptive title sticks
-// (and the tab tells you what that session was doing). Reset when the shell
-// returns (agent gone).
-let agentTitled = false;
+// (and the tab tells you what that session was doing).
+// Seeded from `initiallyTitled` on mount so a restored meaningful title is never
+// overwritten by the initial "Claude" seed on reattach.
+let agentTitled = false; // set in onMounted after props are available
 
 // Strip control/non-printable chars (mid-OSC replay garbage), trim, cap length.
 function sanitizeTitle(s: string): string {
@@ -228,6 +229,10 @@ function deferredFit() {
 }
 
 onMounted(async () => {
+  // Seed from prop: if the restored leaf already has a non-default title, treat
+  // the agent as "already titled" so the poll doesn't re-seed "Claude" over it.
+  agentTitled = props.initiallyTitled ?? false;
+
   term = new Terminal({
     theme: ui.activeTheme.xterm,
     fontFamily: ui.terminalFont,
@@ -487,7 +492,8 @@ onMounted(async () => {
       if (!isAgentSession && lastProcess && !SHELL_RE.test(lastProcess)) {
         lastProcess = "";
         emit("busy", false);
-        emit("title", "");
+        // No title reset — names are fully sticky. A transient empty-foreground
+        // read between commands must not wipe the last meaningful title.
       }
       return;
     }
@@ -501,12 +507,12 @@ onMounted(async () => {
     if (SHELL_RE.test(proc)) {
       // Back at the shell prompt → whatever ran (agent or command) has exited.
       // Clear running state (rescues a stuck dot if an agent was interrupted with
-      // no done hook) and reset the tab name.
+      // no done hook). Names are fully sticky — do NOT reset the title here, so
+      // a tab keeps its last meaningful name across turn boundaries and on restart.
       isAgentSession = false;
-      agentTitled = false;
+      // Keep agentTitled as-is: if an agent set a meaningful title, it persists.
       emit("agent", false);
       emit("busy", false);
-      emit("title", "");          // reset → Terminal N
     } else if (isAgent) {
       // An agent is the foreground process — but it stays foreground whether it's
       // THINKING or sitting idle at its own prompt. Presence is NOT "busy": the
