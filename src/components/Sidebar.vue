@@ -30,7 +30,7 @@
           @pointerdown="(e: PointerEvent) => wsDragDown(wsIdx, e, 'ws')"
           @contextmenu.prevent.stop="openCtxMenu(item, $event)"
         >
-          <button class="ws-caret" :title="isCollapsed(item.id) ? 'Expand' : 'Collapse'" @click.stop="toggleCollapse(item.id)">
+          <button class="ws-caret" :title="isCollapsed(item.id) ? 'Expand' : 'Collapse'" data-no-drag @click.stop="toggleCollapse(item.id)">
             <PhCaretRight v-if="isCollapsed(item.id)" :size="11" weight="bold" />
             <PhCaretDown v-else :size="11" weight="bold" />
           </button>
@@ -45,13 +45,14 @@
               v-if="wsBranch[item.id]"
               class="ws-branch-pill"
               :title="`Branch: ${wsBranch[item.id]} — click to switch`"
+              data-no-drag
               @click.stop="openBranchPicker(item, $event)"
             >
               <PhGitBranch :size="9" />
               <span>{{ wsBranch[item.id] }}</span>
             </button>
           </div>
-          <button class="ws-delete" title="Remove" @click.stop="store.remove(item.id)">
+          <button class="ws-delete" title="Remove" data-no-drag @click.stop="store.remove(item.id)">
             <PhX :size="10" />
           </button>
         </div>
@@ -141,6 +142,7 @@
               weight="bold"
               class="ws-term-close"
               title="Close"
+              data-no-drag
               @click.stop="termTabs.close(item.id, tab.id)"
             />
           </div>
@@ -201,6 +203,7 @@
                   weight="bold"
                   class="ws-term-close"
                   title="Close"
+                  data-no-drag
                   @click.stop="termTabs.close(wt.id, tab.id)"
                 />
               </div>

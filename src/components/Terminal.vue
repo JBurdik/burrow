@@ -36,12 +36,14 @@
           :size="10"
           class="tab-float"
           title="Pop out as floating window"
+          data-no-drag
           @click.stop="popOutTab(tab)"
         />
         <PhX
           :size="10"
           weight="bold"
           class="tab-close"
+          data-no-drag
           @click.stop="closeTab(tab.id)"
         />
       </button>

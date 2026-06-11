@@ -125,6 +125,9 @@ export function usePointerReorder(
   // Attach to a row's @pointerdown. `group` scopes the drop (optional).
   function down(idx: number, e: PointerEvent, group: string | null = null) {
     if (e.button !== 0) return; // left button only
+    // Don't hijack clicks on child elements that have their own actions (close
+    // buttons, branch pills, etc.). They must carry data-no-drag to opt out.
+    if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
     pendingIdx = idx;
     pendingGroup = group;
     srcEl = e.currentTarget as HTMLElement;
