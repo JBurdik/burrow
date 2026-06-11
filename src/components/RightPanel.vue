@@ -35,6 +35,17 @@
         </div>
         <div class="header-actions">
           <button
+            v-if="!git.error && git.hasUpstream && git.behind > 0"
+            class="push-btn"
+            :disabled="git.pulling || git.pushing || git.loading"
+            @click="git.pull()"
+            title="git pull --ff-only"
+          >
+            <PhArrowDown :size="11" :class="{ spin: git.pulling }" />
+            Pull
+            <span>({{ git.behind }})</span>
+          </button>
+          <button
             v-if="!git.error"
             class="push-btn"
             :disabled="git.pushing || git.loading || (git.hasUpstream && git.ahead === 0)"
@@ -49,6 +60,12 @@
             <PhArrowClockwise :size="13" :class="{ spin: git.loading }" />
           </button>
         </div>
+      </div>
+
+      <!-- Push/pull loader -->
+      <div v-if="git.pushing || git.pulling" class="git-progress">
+        <div class="git-progress-bar"></div>
+        <span class="git-progress-label">{{ git.pushing ? "Pushing…" : "Pulling…" }}</span>
       </div>
 
       <div class="git-body">
@@ -172,13 +189,15 @@
             <template v-if="showHistory">
               <div v-if="git.log.length === 0" class="empty-hint">No commits</div>
               <div
-                v-for="c in git.log"
+                v-for="(c, i) in git.log"
                 :key="c.hash"
                 class="log-row"
-                :title="c.subject + '\n' + c.author"
+                :class="{ unpushed: i < git.ahead }"
+                :title="c.subject + '\n' + c.author + (i < git.ahead ? '\n↑ Not pushed' : '')"
                 @click="openCommitDiff(c)"
               >
                 <span class="log-hash">{{ c.shortHash }}</span>
+                <span v-if="i < git.ahead" class="log-unpushed-dot" title="Not pushed">↑</span>
                 <span class="log-subject">{{ c.subject }}</span>
                 <span class="log-meta">{{ c.relTime }}</span>
               </div>
@@ -196,7 +215,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   PhFiles, PhGitBranch, PhGitCommit,
   PhArrowClockwise, PhWarning, PhX, PhArrowUpRight,
-  PhArrowUp, PhCaretRight,
+  PhArrowUp, PhArrowDown, PhCaretRight,
 } from "@phosphor-icons/vue";
 import { useGitStore, type GitCommit } from "@/stores/git";
 import { useFileTreeStore } from "@/stores/fileTree";
@@ -395,6 +414,38 @@ onBeforeUnmount(() => {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 1s linear infinite; }
+
+.git-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.git-progress-bar {
+  position: relative;
+  flex: 1;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.git-progress-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 40%;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: git-indeterminate 1.1s ease-in-out infinite;
+}
+.git-progress-label { font-size: 10px; color: var(--text-secondary); font-weight: 600; }
+@keyframes git-indeterminate {
+  0% { left: -40%; }
+  100% { left: 100%; }
+}
 
 .git-body {
   flex: 1;
@@ -638,6 +689,17 @@ onBeforeUnmount(() => {
   border-radius: 3px;
 }
 .log-row:hover { background: var(--bg-hover); }
+.log-row.unpushed { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.log-row.unpushed:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.log-row.unpushed .log-hash { color: var(--accent); }
+
+.log-unpushed-dot {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  flex-shrink: 0;
+  line-height: 1;
+}
 
 .log-hash {
   font-family: var(--font-mono);

@@ -68,6 +68,7 @@ export const useGitStore = defineStore("git", () => {
   const behind = ref(0);
   const hasUpstream = ref(false);
   const pushing = ref(false);
+  const pulling = ref(false);
   const log = ref<GitCommit[]>([]);
   const logLoading = ref(false);
 
@@ -154,6 +155,20 @@ export const useGitStore = defineStore("git", () => {
     }
   }
 
+  async function pull() {
+    if (!cwd.value || !hasUpstream.value) return;
+    pulling.value = true;
+    error.value = null;
+    try {
+      await runGit(cwd.value, ["pull", "--ff-only"]);
+      await refresh();
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : "git pull failed";
+    } finally {
+      pulling.value = false;
+    }
+  }
+
   function setCwd(path: string) {
     if (path === cwd.value) return;
     cwd.value = path;
@@ -232,8 +247,8 @@ export const useGitStore = defineStore("git", () => {
     cwd, branch, staged, unstaged, untracked,
     diff, diffFile, diffStaged,
     loading, error, commitMsg,
-    ahead, behind, hasUpstream, pushing, log, logLoading,
+    ahead, behind, hasUpstream, pushing, pulling, log, logLoading,
     setCwd, refresh, stageFile, unstageFile, stageAll, commit, showDiff, clearDiff, fetchAllDiff, gitInit,
-    push, refreshLog,
+    push, pull, refreshLog,
   };
 });
