@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
+import type { TermStatus } from "@/lib/terminalStatus";
 
 // Lightweight mirror of each workspace's terminal tabs so the Sidebar can render
 // them nested under its project. The Terminal component remains the source of
@@ -10,7 +11,7 @@ export interface TabSummary {
   title: string;
   isAgent: boolean;
   busy: boolean;
-  status: "idle" | "running" | "waiting" | "done" | "review";
+  status: TermStatus;
   leafCount?: number;
 }
 

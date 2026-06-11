@@ -362,6 +362,7 @@ import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { useUIStore } from "@/stores/ui";
 import { spinnerFrame } from "@/lib/spinner";
 import { usePointerReorder } from "@/composables/usePointerReorder";
+import { aggregateStatus, type TermStatus } from "@/lib/terminalStatus";
 
 const store = useWorkspaceStore();
 const termTabs = useTerminalTabsStore();
@@ -412,12 +413,11 @@ function mountWorktrees(parentId: number) {
 
 // Aggregate status of a workspace's tabs (highest-priority wins). Drives the
 // worktree row dot so a finished/working agent is visible without expanding.
-function aggStatus(id: number): string | null {
+// Returns null for idle (no dot to show).
+function aggStatus(id: number): TermStatus | null {
   const tabs = termTabs.tabsByWs[id] || [];
-  for (const s of ["waiting", "running", "review", "done"]) {
-    if (tabs.some((t) => t.status === s)) return s;
-  }
-  return null;
+  const s = aggregateStatus(tabs, (t) => t.status);
+  return s === "idle" ? null : s;
 }
 
 // ── branch switcher ──────────────────────────────────────────────────────────
@@ -982,43 +982,8 @@ async function confirmCreate() {
   color: var(--text-muted);
 }
 
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  position: relative;
-}
-.status-dot.status-running {
-  background: transparent;
-  border-radius: 0;
-  width: auto;
-  height: auto;
-  color: #fb923c;
-  font-size: 14px;
-  line-height: 1;
-  font-family: monospace;
-  font-weight: 700;
-  text-shadow: 0 0 6px rgba(249, 115, 22, 0.9), 0 0 12px rgba(249, 115, 22, 0.5);
-  animation: running-glow 1.4s ease-in-out infinite;
-}
-@keyframes running-glow {
-  0%, 100% { opacity: 0.7; text-shadow: 0 0 4px rgba(249, 115, 22, 0.7); }
-  50%      { opacity: 1;   text-shadow: 0 0 8px rgba(249, 115, 22, 1), 0 0 14px rgba(249, 115, 22, 0.6); }
-}
-.status-dot.status-waiting { background: #3b82f6; }
-.status-dot.status-done    { background: #84cc16; }
-/* review = agent finished while you weren't watching; persists until seen */
-.status-dot.status-review {
-  background: #22c55e;
-  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
-  animation: review-pulse 1.8s ease-out infinite;
-}
-@keyframes review-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
-  70%  { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
-}
+/* Status dot styles are in src/styles/status-dots.css (shared with Terminal.vue).
+   No local overrides needed here. */
 
 .ws-term-close {
   opacity: 0;

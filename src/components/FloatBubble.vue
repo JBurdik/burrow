@@ -49,6 +49,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, emit, type UnlistenFn } from "@tauri-apps/api/event";
 import { PhArrowSquareOut, PhMinus, PhRobot, PhTerminal, PhX, PhSpinner, PhFolder } from "@phosphor-icons/vue";
 import { useUIStore } from "@/stores/ui";
+import { applyAgentEvent, type TermStatus, type StatusLeaf, type ReducerCtx } from "@/lib/terminalStatus";
+import { playSound } from "@/lib/sounds";
 import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{ ptyId: number; wsId: number; initTitle: string }>();
@@ -56,8 +58,10 @@ const props = defineProps<{ ptyId: number; wsId: number; initTitle: string }>();
 const ui = useUIStore();
 const hostEl = ref<HTMLElement>();
 const displayTitle = ref(props.initTitle || `PTY ${props.ptyId}`);
-const status = ref<"idle" | "running" | "waiting" | "done">("idle");
+const status = ref<TermStatus>("idle");
 const isAgentSession = ref(false);
+// Local leaf-like object fed to the shared reducer.
+const _leaf: StatusLeaf = { id: props.ptyId, status: "idle", busy: false, isAgent: false };
 const expanded = ref(false);
 
 // Project (workspace) icon — read from the shared localStorage the workspace
@@ -265,14 +269,30 @@ onMounted(async () => {
     },
   );
 
+  // Reducer context for the float: floats are always "not watching" (detached
+  // mirror) so done settles to review, matching main-window away-case semantics.
+  const bubbleCtx: ReducerCtx = {
+    watching: false,
+    setDoneTimer(_id: number) {
+      if (doneTimer) clearTimeout(doneTimer);
+      doneTimer = setTimeout(() => {
+        if (_leaf.status === "done") { _leaf.status = "idle"; status.value = "idle"; }
+      }, 4000);
+    },
+    clearDoneTimer(_id: number) {
+      if (doneTimer) { clearTimeout(doneTimer); doneTimer = null; }
+    },
+    playSound(kind) { playSound(kind); },
+    onSettled(_leaf) { /* floats don't fire desktop notifications or git refresh */ },
+  };
+
   unlistenHook = await listen<string>(`pty-hook-${props.ptyId}`, (event) => {
     const s = event.payload;
-    if (s === "running") { status.value = "running"; isAgentSession.value = true; }
-    else if (s === "waiting") status.value = "waiting";
-    else if (s === "done") {
-      status.value = "done";
-      if (doneTimer) clearTimeout(doneTimer);
-      doneTimer = setTimeout(() => { if (status.value === "done") status.value = "idle"; }, 4000);
+    if (s === "running" || s === "waiting" || s === "done") {
+      if (s === "running") isAgentSession.value = true;
+      _leaf.isAgent = true;
+      applyAgentEvent(_leaf, s as "running" | "waiting" | "done", bubbleCtx);
+      status.value = _leaf.status;
     }
   });
 
@@ -488,21 +508,33 @@ html, body, #app {
 .bubble-term :deep(.xterm-viewport) { background: transparent !important; }
 
 /* Status indicator — shared by bar + header.
-   running → orange loader (same PhSpinner + spin the app uses elsewhere),
-   waiting → blue dot, done → green dot. */
+   running → orange loader (PhSpinner + spin),
+   waiting → blue dot, done → lime dot,
+   review → pulsing green dot (agent finished while away). */
 .status-spin {
   flex-shrink: 0;
-  color: #fb923c;
+  color: var(--status-running, #fb923c);
 }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .status-dot {
   flex-shrink: 0;
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
+  position: relative;
 }
-.status-waiting { background: #3b82f6; }
-.status-done    { background: #84cc16; }
+.status-dot.status-waiting { background: var(--status-waiting, #3b82f6); }
+.status-dot.status-done    { background: var(--status-done, #84cc16); }
+.status-dot.status-review {
+  background: var(--status-review, #22c55e);
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
+  animation: review-pulse 1.8s ease-out infinite;
+}
+@keyframes review-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
+  70%  { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+}
 </style>

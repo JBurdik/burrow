@@ -105,6 +105,7 @@
             :cwd="pane.leaf.cwd ?? cwd"
             :initial-cmd="pane.leaf.initialCmd"
             :result-token="pane.leaf.resultToken"
+            :initially-titled="!isDefaultTitle(pane.leaf.title)"
             :ref="(el) => registerLeaf(pane.leaf.id, el)"
             @title="(t) => onLeafTitle(pane.leaf.id, t)"
             @busy="(b) => onLeafBusy(pane.leaf.id, b)"
@@ -160,6 +161,18 @@ import { type Leaf, type TreeNode, type SplitNode } from "./TerminalSplitView.vu
 import { nextPtyId, initPtyCounter } from "@/lib/ptyId";
 import { spinnerFrame } from "@/lib/spinner";
 import { playSound } from "@/lib/sounds";
+import {
+  aggregateStatus,
+  applyAgentEvent,
+  applyBusy,
+  applyNeedsInput,
+  applyInterrupt,
+  markSeen as markLeafSeen,
+  deriveTabTitle,
+  isDefaultTitle,
+  type TermStatus,
+  type ReducerCtx,
+} from "@/lib/terminalStatus";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
@@ -181,7 +194,10 @@ interface Tab {
 }
 
 interface PersistedTab {
+  /** The live (meaningful) display title — agent-set or last command name. */
   title: string | null;
+  /** The "Terminal N" base fallback, separate from the live title. */
+  default_title: string | null;
   initial_cmd: string | null;
   pty_id: number | null;
   cwd: string | null;
@@ -370,19 +386,19 @@ function insertSplit(
 // ── tab helpers ─────────────────────────────────────────────────────────────
 
 function tabTitle(tab: Tab): string {
-  const leaf =
-    activeTabId.value === tab.id
-      ? findLeaf(tab.root, focusedLeafId.value) ?? getFirstLeaf(tab.root)
-      : getFirstLeaf(tab.root);
-  return leaf.title;
+  const leaves = getAllLeaves(tab.root);
+  const focused = activeTabId.value === tab.id
+    ? findLeaf(tab.root, focusedLeafId.value) ?? undefined
+    : undefined;
+  return deriveTabTitle(leaves, focused);
 }
 
 function tabIsAgent(tab: Tab): boolean {
-  const leaf =
-    activeTabId.value === tab.id
-      ? findLeaf(tab.root, focusedLeafId.value) ?? getFirstLeaf(tab.root)
-      : getFirstLeaf(tab.root);
-  return leaf.isAgent;
+  const leaves = getAllLeaves(tab.root);
+  const focused = activeTabId.value === tab.id
+    ? findLeaf(tab.root, focusedLeafId.value) ?? undefined
+    : undefined;
+  return (focused ?? leaves[0])?.isAgent ?? false;
 }
 
 // A single-leaf editor tab shows a file icon + dirty dot instead of a status dot.
@@ -395,6 +411,40 @@ function tabDirty(tab: Tab): boolean {
 }
 
 const doneTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+/** Build a ReducerCtx for a given tab (provides watching + side-effect hooks). */
+function makeCtx(tab: Tab): ReducerCtx {
+  return {
+    get watching() { return isWatching(tab); },
+    setDoneTimer(id: number) {
+      clearTimeout(doneTimers.get(id));
+      const t = setTimeout(() => {
+        // Find the leaf to reset it
+        for (const t2 of tabs.value) {
+          const l = findLeaf(t2.root, id);
+          if (l) { l.status = "idle"; break; }
+        }
+        doneTimers.delete(id);
+      }, 4000);
+      doneTimers.set(id, t);
+    },
+    clearDoneTimer(id: number) {
+      clearTimeout(doneTimers.get(id));
+      doneTimers.delete(id);
+    },
+    playSound(kind: "waiting" | "done") { playSound(kind); },
+    onSettled(statusLeaf) {
+      // Look up the full Leaf to get its display title for the notification.
+      let title = "";
+      for (const t of tabs.value) {
+        const l = findLeaf(t.root, statusLeaf.id);
+        if (l) { title = l.title; break; }
+      }
+      notifyDone(title);
+      if (gitStore.cwd === props.cwd) gitStore.refresh(true);
+    },
+  };
+}
 
 function makeLeaf(initialCmd?: string, extra?: { cwd?: string; resultToken?: string; id?: number }): Leaf {
   terminalCounter++;
@@ -423,11 +473,11 @@ function onLeafTitle(id: number, title: string) {
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
-    // Title is purely the display name now. Empty → back to "Terminal N". A
-    // stray leading robot emoji (older seeds) is stripped. isAgent is NOT derived
-    // from the title — it comes from the foreground poll via onLeafAgent, so the
-    // robot icon survives even when Claude sets a title that doesn't say "Claude".
-    leaf.title = title ? title.replace(/^🤖\s*/, "") : leaf.defaultTitle;
+    // Empty string → no-op (sticky names: a transient shell-foreground poll
+    // must not wipe a meaningful title). Only a real non-empty title updates the
+    // leaf. A stray leading robot emoji (older seeds) is stripped.
+    if (!title) break;
+    leaf.title = title.replace(/^🤖\s*/, "");
     break;
   }
 }
@@ -445,19 +495,13 @@ function onLeafAgent(id: number, isAgent: boolean) {
 
 // busy comes from the foreground-process poll only — NOT from OSC titles
 // (the shell sets the title to the cwd, which must not count as "running").
+// applyBusy is a no-op for agent leaves: hooks are the sole status authority.
 function onLeafBusy(id: number, busy: boolean) {
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
     const wasBusy = leaf.busy;
-    leaf.busy = busy;
-    if (busy) {
-      clearTimeout(doneTimers.get(id));
-      doneTimers.delete(id);
-      if (leaf.status !== "waiting") leaf.status = "running";
-    } else if (wasBusy) {
-      settleDone(leaf, tab);
-    }
+    applyBusy(leaf, busy, wasBusy, makeCtx(tab));
     break;
   }
 }
@@ -472,44 +516,11 @@ function isWatching(tab: Tab): boolean {
   );
 }
 
-// An agent turn finished. If the user is watching → transient "done" badge that
-// auto-clears after 4s. If they're on another tab/workspace/window → persistent
-// "review" badge (Superset-style) that survives until the tab is actually seen,
-// so cross-workspace completions aren't missed.
-function settleDone(leaf: Leaf, tab: Tab) {
-  // A single finished turn can emit two "done" signals back-to-back: a spawned
-  // sub-agent's per-launch `capture` Stop hook AND the global `burrow hook` Stop
-  // (both map to done), or the idle Notification ping that follows the Stop.
-  // Settle only once — if the leaf is already settled (not busy, already
-  // done/review) and no new turn has resurrected it via "running", ignore the
-  // duplicate so the sound + notification don't fire twice.
-  if (!leaf.busy && (leaf.status === "done" || leaf.status === "review")) return;
-  leaf.busy = false;
-  clearTimeout(doneTimers.get(leaf.id));
-  if (isWatching(tab)) {
-    leaf.status = "done";
-    const t = setTimeout(() => { leaf.status = "idle"; doneTimers.delete(leaf.id); }, 4000);
-    doneTimers.set(leaf.id, t);
-  } else {
-    leaf.status = "review";
-    doneTimers.delete(leaf.id);
-    // Audible cue only when the user is away (the review case) — not while watching.
-    playSound("done");
-  }
-  notifyDone(leaf.title);
-  // Agent turn finished → likely touched files. Refresh git panel silently if
-  // it's showing this workspace's repo.
-  if (gitStore.cwd === props.cwd) gitStore.refresh(true);
-}
-
 // Mark every finished leaf in a tab as seen (user opened/returned to it).
 function markTabSeen(tab: Tab) {
+  const ctx = makeCtx(tab);
   for (const leaf of getAllLeaves(tab.root)) {
-    if (leaf.status === "done" || leaf.status === "review") {
-      clearTimeout(doneTimers.get(leaf.id));
-      doneTimers.delete(leaf.id);
-      leaf.status = "idle";
-    }
+    markLeafSeen(leaf, ctx);
   }
 }
 
@@ -521,17 +532,8 @@ function onAgentState(id: number, s: string) {
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
-    if (s === "running") {
-      clearTimeout(doneTimers.get(id));
-      doneTimers.delete(id);
-      leaf.busy = true;
-      leaf.status = "running";
-    } else if (s === "waiting") {
-      leaf.busy = true;
-      if (leaf.status !== "waiting") playSound("waiting"); // once per transition
-      leaf.status = "waiting";
-    } else if (s === "done") {
-      settleDone(leaf, tab); // sets busy=false, done (watching) or review (away)
+    if (s === "running" || s === "waiting" || s === "done") {
+      applyAgentEvent(leaf, s as "running" | "waiting" | "done", makeCtx(tab));
     }
     break;
   }
@@ -565,12 +567,7 @@ function onLeafInterrupt(id: number) {
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
-    if (leaf.status === "running" || leaf.status === "waiting") {
-      clearTimeout(doneTimers.get(id));
-      doneTimers.delete(id);
-      leaf.busy = false;
-      leaf.status = "idle";
-    }
+    applyInterrupt(leaf, makeCtx(tab));
     break;
   }
 }
@@ -579,22 +576,13 @@ function onLeafNeedsInput(id: number, needs: boolean) {
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
-    if (leaf.busy) {
-      const enteringWait = needs && leaf.status !== "waiting";
-      leaf.status = needs ? "waiting" : "running";
-      if (enteringWait) playSound("waiting"); // once per transition into waiting
-    }
+    applyNeedsInput(leaf, needs, makeCtx(tab));
     break;
   }
 }
 
-function tabStatus(tab: Tab): "idle" | "running" | "waiting" | "done" | "review" {
-  const leaves = getAllLeaves(tab.root);
-  if (leaves.some((l) => l.status === "waiting")) return "waiting";
-  if (leaves.some((l) => l.status === "running")) return "running";
-  if (leaves.some((l) => l.status === "review")) return "review";
-  if (leaves.some((l) => l.status === "done")) return "done";
-  return "idle";
+function tabStatus(tab: Tab): TermStatus {
+  return aggregateStatus(getAllLeaves(tab.root), (l) => l.status);
 }
 
 // ── in-app close confirmation ───────────────────────────────────────────────
@@ -883,7 +871,8 @@ function persist() {
   const payload: PersistedTab[] = allLeaves()
     .filter((l) => l.leafType !== "editor")
     .map((l) => ({
-    title: l.defaultTitle,
+    title: l.title,           // live meaningful title (agent-set, command name, …)
+    default_title: l.defaultTitle,  // "Terminal N" fallback
     initial_cmd: l.initialCmd ?? null,
     pty_id: l.id,
     cwd: l.cwd ?? null,
@@ -891,8 +880,10 @@ function persist() {
   invoke("save_terminal_tabs", { workspaceId: props.workspaceId, tabs: payload });
 }
 
+// Include both title and defaultTitle in the watcher key so a live-title change
+// (agent sets a descriptive name mid-session) actually triggers a save.
 watch(
-  () => allLeaves().map((l) => `${l.id}|${l.defaultTitle}`).join(","),
+  () => allLeaves().map((l) => `${l.id}|${l.title}|${l.defaultTitle}`).join(","),
   persist,
 );
 
@@ -964,8 +955,12 @@ onMounted(async () => {
         cwd: s.cwd ?? undefined,
         id: useSavedId ? s.pty_id! : undefined,
       });
-      leaf.defaultTitle = s.title || leaf.defaultTitle;
-      leaf.title = leaf.defaultTitle;
+      // Restore the "Terminal N" base title (defaultTitle), then the live title.
+      // Old rows with no default_title fall back to the auto-generated counter name.
+      leaf.defaultTitle = s.default_title || leaf.defaultTitle;
+      // Restore the live meaningful title (agent-set, command name, …).
+      // Falls back to defaultTitle if not saved (old rows / first-run).
+      leaf.title = s.title || leaf.defaultTitle;
       const tab: Tab = { id: leaf.id, root: leaf };
       tabs.value.push(tab);
     });
@@ -1136,49 +1131,14 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
   color: var(--text-muted);
 }
 
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  position: relative;
-}
-.status-dot.status-running {
-  background: transparent;
-  border-radius: 0;
-  width: auto;
-  height: auto;
-  color: #fb923c;
-  font-size: 14px;
-  line-height: 1;
-  font-family: monospace;
-  font-weight: 700;
-  text-shadow: 0 0 6px rgba(249, 115, 22, 0.9), 0 0 12px rgba(249, 115, 22, 0.5);
-  animation: running-glow 1.4s ease-in-out infinite;
-}
-@keyframes running-glow {
-  0%, 100% { opacity: 0.7; text-shadow: 0 0 4px rgba(249, 115, 22, 0.7); }
-  50%      { opacity: 1;   text-shadow: 0 0 8px rgba(249, 115, 22, 1), 0 0 14px rgba(249, 115, 22, 0.6); }
-}
+/* Status dot styles are in src/styles/status-dots.css (shared with Sidebar.vue).
+   Only component-specific overrides go here. */
 .dirty-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
   background: var(--text-secondary);
-}
-.status-dot.status-waiting { background: #3b82f6; }
-.status-dot.status-done    { background: #84cc16; }
-/* review = agent finished while you weren't watching; persists until seen */
-.status-dot.status-review {
-  background: #22c55e;
-  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
-  animation: review-pulse 1.8s ease-out infinite;
-}
-@keyframes review-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
-  70%  { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
 }
 
 .tab-close,

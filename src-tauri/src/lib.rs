@@ -1261,13 +1261,16 @@ pub struct TerminalTab {
     pub initial_cmd: Option<String>,
     pub pty_id: Option<u32>,
     pub cwd: Option<String>,
+    /// The "Terminal N" fallback / user-renamed base title, separate from the
+    /// live agent-set title stored in `title`. Added via idempotent migration.
+    pub default_title: Option<String>,
 }
 
 #[tauri::command]
 fn list_terminal_tabs(workspace_id: i64, db: State<DbState>) -> Result<Vec<TerminalTab>, String> {
     let conn = db.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT title, initial_cmd, pty_id, cwd FROM terminal_tabs WHERE workspace_id = ?1 ORDER BY ord ASC")
+        .prepare("SELECT title, initial_cmd, pty_id, cwd, default_title FROM terminal_tabs WHERE workspace_id = ?1 ORDER BY ord ASC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(rusqlite::params![workspace_id], |row| Ok(TerminalTab {
@@ -1275,6 +1278,7 @@ fn list_terminal_tabs(workspace_id: i64, db: State<DbState>) -> Result<Vec<Termi
             initial_cmd: row.get(1)?,
             pty_id: row.get(2)?,
             cwd: row.get(3)?,
+            default_title: row.get(4)?,
         }))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -1294,8 +1298,8 @@ fn save_terminal_tabs(
         .map_err(|e| e.to_string())?;
     for (ord, tab) in tabs.iter().enumerate() {
         tx.execute(
-            "INSERT INTO terminal_tabs (workspace_id, ord, title, initial_cmd, pty_id, cwd) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![workspace_id, ord as i64, tab.title, tab.initial_cmd, tab.pty_id, tab.cwd],
+            "INSERT INTO terminal_tabs (workspace_id, ord, title, initial_cmd, pty_id, cwd, default_title) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![workspace_id, ord as i64, tab.title, tab.initial_cmd, tab.pty_id, tab.cwd, tab.default_title],
         ).map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
@@ -1722,6 +1726,7 @@ fn init_db(app: &AppHandle) -> Result<Connection, rusqlite::Error> {
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN cwd TEXT");
     let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN parent_id INTEGER");
     let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN worktree_branch TEXT");
+    let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN default_title TEXT");
     Ok(conn)
 }
 
