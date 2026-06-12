@@ -49,6 +49,7 @@ interface Prefs {
   debugOverlay: boolean; // show the per-terminal diagnostic overlay (XTerm.vue)
   floatCorner: string; // which screen corner floating windows snap+stack to
   worktreesDir: string; // parent dir for git worktrees: <dir>/<repo>/<branch>
+  mode: "terminal" | "claude"; // active main-pane mode, switched via activity bar
 }
 
 // The px sizes in the stylesheets are authored at this baseline. `zoom` scales
@@ -77,6 +78,7 @@ const DEFAULT_PREFS: Prefs = {
   debugOverlay: false,
   floatCorner: "top-right",
   worktreesDir: "~/burrow-worktrees",
+  mode: "terminal",
 };
 
 function loadPrefs(): Prefs {
@@ -118,6 +120,7 @@ export const useUIStore = defineStore("ui", () => {
   const debugOverlay = ref(loaded.debugOverlay);
   const floatCorner = ref(loaded.floatCorner);
   const worktreesDir = ref(loaded.worktreesDir);
+  const mode = ref<"terminal" | "claude">(loaded.mode);
 
   // Push the float-window corner to Rust whenever it changes (and on load), so
   // every floating window snaps + stacks at the chosen corner.
@@ -168,7 +171,7 @@ export const useUIStore = defineStore("ui", () => {
   watch(
     [uiFont, uiFontSize, uiScale, terminalFont, terminalFontSize, swapPanels, theme,
      soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
-     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir],
+     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir, mode],
     () => {
       localStorage.setItem(
         PREFS_KEY,
@@ -193,6 +196,7 @@ export const useUIStore = defineStore("ui", () => {
           debugOverlay: debugOverlay.value,
           floatCorner: floatCorner.value,
           worktreesDir: worktreesDir.value,
+          mode: mode.value,
         } satisfies Prefs),
       );
       applyTheme();
@@ -241,6 +245,10 @@ export const useUIStore = defineStore("ui", () => {
     theme.value = key;
   }
 
+  function setMode(m: "terminal" | "claude") {
+    mode.value = m;
+  }
+
   function resetFonts() {
     uiFont.value = DEFAULT_PREFS.uiFont;
     uiFontSize.value = DEFAULT_PREFS.uiFontSize;
@@ -276,6 +284,8 @@ export const useUIStore = defineStore("ui", () => {
     debugOverlay,
     floatCorner,
     worktreesDir,
+    mode,
+    setMode,
     openSettings,
     closeSettings,
     toggleSettings,

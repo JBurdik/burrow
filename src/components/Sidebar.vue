@@ -102,8 +102,9 @@
           </div>
         </div>
 
+        <!-- Terminal tabs (shown in terminal mode) -->
         <TransitionGroup
-          v-if="!isCollapsed(item.id) && termTabs.tabsByWs[item.id]?.length"
+          v-if="!isCollapsed(item.id) && ui.mode === 'terminal' && termTabs.tabsByWs[item.id]?.length"
           name="ws-move"
           tag="div"
           class="ws-terminals"
@@ -147,6 +148,38 @@
             />
           </div>
         </TransitionGroup>
+
+        <!-- Claude chat sessions (shown in claude mode) -->
+        <div
+          v-if="!isCollapsed(item.id) && ui.mode === 'claude'"
+          class="ws-terminals"
+        >
+          <div class="ws-worktree-head">
+            <span>Chats</span>
+            <button class="icon-btn" title="New chat" @click.stop="newChatSession(item.id)">
+              <PhPlus :size="11" />
+            </button>
+          </div>
+          <div
+            v-for="session in chats.sessionsForWs(item.id)"
+            :key="session.id"
+            class="ws-term"
+            :class="{ active: store.active?.id === item.id && chats.activeByWs[item.id] === session.id }"
+            @click.stop="selectChatSession(item, session.id)"
+          >
+            <ClaudeIcon :size="11" class="ws-term-icon claude-session-icon" />
+            <span class="ws-term-label">{{ session.title }}</span>
+            <span v-if="session.busy" class="status-dot status-running">{{ spinnerFrame }}</span>
+            <PhX
+              v-if="chats.sessionsForWs(item.id).length > 1"
+              :size="9"
+              weight="bold"
+              class="ws-term-close"
+              title="Close"
+              @click.stop="chats.remove(session.id)"
+            />
+          </div>
+        </div>
 
         <!-- Worktrees subsection -->
         <div v-if="!isCollapsed(item.id)" class="ws-worktrees">
@@ -360,6 +393,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore, type Workspace } from "@/stores/workspace";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { useUIStore } from "@/stores/ui";
+import { useClaudeChatsStore } from "@/stores/claudeChats";
+import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { spinnerFrame } from "@/lib/spinner";
 import { usePointerReorder } from "@/composables/usePointerReorder";
 import { aggregateStatus, type TermStatus } from "@/lib/terminalStatus";
@@ -367,6 +402,7 @@ import { aggregateStatus, type TermStatus } from "@/lib/terminalStatus";
 const store = useWorkspaceStore();
 const termTabs = useTerminalTabsStore();
 const ui = useUIStore();
+const chats = useClaudeChatsStore();
 
 // ── collapse / expand per workspace ──────────────────────────────────────────
 const COLLAPSE_KEY = "burrow.ws.collapsed";
@@ -518,6 +554,20 @@ watch(() => store.workspaces, (wss) => wss.forEach(ws => {
   // async load() populates the list — Sidebar onMounted may have run while empty.
   if (!ws.parent_id && !isCollapsed(ws.id)) { store.ensureOpen(ws); mountWorktrees(ws.id); }
 }), { deep: true });
+
+// ── Claude chat sessions ─────────────────────────────────────────────────────
+function newChatSession(workspaceId: number) {
+  if (store.active?.id !== workspaceId) {
+    const w = store.workspaces.find((x) => x.id === workspaceId);
+    if (w) store.open(w);
+  }
+  chats.create(workspaceId);
+}
+
+function selectChatSession(ws: Workspace, sessionId: number) {
+  if (store.active?.id !== ws.id) store.open(ws);
+  chats.setActive(ws.id, sessionId);
+}
 
 // ── drag-to-reorder ──────────────────────────────────────────────────────────
 // Pointer-based (not HTML5 DnD): Tauri's native drag-drop handler swallows the
@@ -904,6 +954,8 @@ async function confirmCreate() {
   color: var(--text-muted);
 }
 .ws-worktree .ws-term-icon { color: #a78bfa; }
+.claude-session-icon { color: #d97706; }
+.ws-term.active .claude-session-icon { color: var(--accent); }
 .ws-worktree.active .ws-term-icon { color: var(--accent); }
 
 /* Terminal tabs nested under a worktree row — indented inside the worktree group */
