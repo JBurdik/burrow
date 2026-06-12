@@ -92,6 +92,7 @@ pub struct Workspace {
 // ── burrow CLI ────────────────────────────────────────────────────────────────
 
 const BURROW_SCRIPT: &str = include_str!("../bin/burrow");
+const TMUX_SHIM: &str = include_str!("../bin/tmux");
 
 // Must stay identical to DAEMON_PROTO_VERSION in daemon_main.rs. Bumped only when
 // daemon-side PTY behavior changes, so app-only updates don't needlessly restart
@@ -102,12 +103,19 @@ const DAEMON_PROTO_VERSION: &str = "2";
 fn ensure_burrow_bin(app: &AppHandle) -> Option<std::path::PathBuf> {
     let dir = app.path().app_data_dir().ok()?.join("bin");
     std::fs::create_dir_all(&dir).ok()?;
+
     let script = dir.join("burrow");
     std::fs::write(&script, BURROW_SCRIPT).ok()?;
+
+    let tmux = dir.join("tmux");
+    std::fs::write(&tmux, TMUX_SHIM).ok()?;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
+        let perms = std::fs::Permissions::from_mode(0o755);
+        let _ = std::fs::set_permissions(&script, perms.clone());
+        let _ = std::fs::set_permissions(&tmux, perms);
     }
     Some(dir)
 }
@@ -500,7 +508,11 @@ You are running inside Burrow, which gives you a `burrow` CLI to delegate work t
 - `burrow spawn --token t1 claude \"...\"` then later `burrow collect t1` — delegate with a tracking token, keep working, and pull the sub-agent's final message whenever you want (non-blocking). `burrow collect` with no token returns every finished sub-agent.\n\
 - `burrow sessions` — list the live sub-agent tabs (or `--count`).\n\
 - `burrow worktree <branch> [--base-ref REF] [--path DIR]` — create a git worktree off this repo on a new/existing branch; it appears in the Sidebar nested under the repo.\n\
-- `burrow spawn --cwd /path claude \"...\"` — run the new tab in a different directory.\n\n\
+- `burrow spawn --cwd /path claude \"...\"` — run the new tab in a different directory.\n\
+- `burrow set-status \"text\"` / `burrow set-status` — show/clear a status label in this tab's header.\n\
+- `burrow trigger-flash` — briefly flash this tab as a visual ping to the user.\n\
+- `burrow diff --last-turn` — git diff from HEAD at the start of the current agent turn.\n\
+- `burrow top` — table of all live Burrow PTY sessions.\n\n\
 Do NOT block waiting on sub-agents. Fan out the work, continue your own, then `burrow collect` for a recap. Respect the soft per-workspace concurrency limit `burrow spawn` reports. Sub-agents run interactively on the subscription (never use `claude -p`).";
 
 const BURROW_SKILL_MD: &str = "---\n\
@@ -534,6 +546,22 @@ burrow worktree hotfix --base-ref main      # new branch based on main\n\
 burrow worktree feat/x --path ~/wt/x        # override the on-disk location\n\
 ```\n\
 Use this to isolate a sub-task on its own branch/checkout instead of sharing the working tree. The worktree's disk path defaults to Burrow's configured worktrees dir.\n\n\
+## Status labels & visual signals\n\
+```\n\
+burrow set-status \"running tests...\"   # show a label next to this tab's status dot\n\
+burrow set-status                        # clear the label\n\
+burrow trigger-flash                     # briefly flash this tab (visual ping)\n\
+```\n\
+Use these to communicate progress to the user without printing to the terminal.\n\n\
+## Inspect what changed this turn\n\
+```\n\
+burrow diff --last-turn                  # git diff from HEAD at start of this turn\n\
+```\n\
+Shows exactly what files changed since the user submitted the prompt. Good for a quick sanity-check before reporting done.\n\n\
+## Monitor all terminals\n\
+```\n\
+burrow top                               # table of all live Burrow PTY sessions\n\
+```\n\n\
 ## Inspect / other dir\n\
 ```\n\
 burrow sessions            # list live sub-agent tabs (--count for just the number)\n\
@@ -543,7 +571,33 @@ burrow spawn --cwd /path/to/other/project claude \"...\"\n\
 - **Soft concurrency limit** (per workspace, default 3, set in Burrow Settings): `burrow spawn` prints the current cap. Respect it — don't exceed it. It is advisory, not enforced, so it's on you.\n\
 - Sub-agents run **interactively on the subscription**. Never pass `-p`/`--print`; never use the Agent SDK.\n\
 - Result capture works for `claude` sub-agents (via its Stop hook). Other agents spawn fine but only return a collectable result once they emit a done signal.\n\
-- `burrow wait <token>` still exists (blocks until one finishes) but prefer `collect` so you stay productive instead of blocked.";
+- `burrow wait <token>` still exists (blocks until one finishes) but prefer `collect` so you stay productive instead of blocked.\n\n\
+## Rules — when to use sidebar feedback\n\n\
+These rules apply to every task you run inside Burrow. Follow them unless the user explicitly says otherwise.\n\n\
+**Status label (`burrow set-status`):**\n\
+- Call `burrow set-status \"<phase>\"` at the start of any meaningful work phase (e.g. `\"analyzing\"`, `\"running tests\"`, `\"applying fixes\"`).\n\
+- Update the label when the phase changes (e.g. switch from `\"analyzing\"` to `\"running tests\"`).\n\
+- Clear it with `burrow set-status` (no arg) when your turn ends so the tab header returns to the agent status dot.\n\
+- Keep labels short — one or two words. The user reads them at a glance.\n\n\
+**Visual flash (`burrow trigger-flash`):**\n\
+- Call `burrow trigger-flash` once, at the very end of a turn, when you have finished a significant task and want to draw the user's attention to this tab (e.g. tests passed, a long refactor completed).\n\
+- Do NOT flash mid-turn or on trivial steps — it is a \"done\" signal, not a progress ping.\n\
+- Do NOT flash if the turn ended in an error or requires immediate user action (the status dot already signals that).\n\n\
+**Diff check (`burrow diff --last-turn`):**\n\
+- Before reporting a multi-file change as complete, run `burrow diff --last-turn` internally as a sanity check to confirm the expected files changed.\n\
+- You may skip this for single-file edits or when the user's request was purely read-only.\n\n\
+**Example turn lifecycle:**\n\
+```\n\
+burrow set-status \"analyzing\"\n\
+# ...read files, understand the problem...\n\
+burrow set-status \"fixing\"\n\
+# ...make edits...\n\
+burrow set-status \"testing\"\n\
+# ...run tests...\n\
+burrow diff --last-turn     # quick sanity check\n\
+burrow set-status           # clear — turn done\n\
+burrow trigger-flash        # ping user: \"this tab finished\"\n\
+```";
 
 // ── Hook HTTP server ──────────────────────────────────────────────────────────
 
@@ -562,13 +616,61 @@ fn start_hook_server(app: AppHandle) {
 
     std::thread::spawn(move || {
         for mut req in server.incoming_requests() {
+            let url = req.url().to_string();
             let mut body = String::new();
             let _ = req.as_reader().read_to_string(&mut body);
+
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
-                if let (Some(pty_id), Some(state)) =
-                    (val["ptyId"].as_u64(), val["state"].as_str())
-                {
-                    let _ = app.emit(&format!("pty-hook-{pty_id}"), state.to_string());
+                match url.as_str() {
+                    "/hook" | "/" => {
+                        // Agent lifecycle hook → status dot update.
+                        if let (Some(pty_id), Some(state)) =
+                            (val["ptyId"].as_u64(), val["state"].as_str())
+                        {
+                            let _ = app.emit(&format!("pty-hook-{pty_id}"), state.to_string());
+                        }
+                    }
+                    "/write" => {
+                        // tmux send-keys path: write raw bytes into a PTY.
+                        // Frontend (XTerm.vue) listens to `pty-write-{id}` and
+                        // forwards to the daemon via write_pty.
+                        if let (Some(pty_id), Some(data)) =
+                            (val["ptyId"].as_u64(), val["data"].as_str())
+                        {
+                            let _ = app.emit(
+                                &format!("pty-write-{pty_id}"),
+                                data.to_string(),
+                            );
+                        }
+                    }
+                    "/set-status" => {
+                        // burrow set-status: custom label shown in the tab header.
+                        if let Some(pty_id) = val["ptyId"].as_u64() {
+                            let text = val["text"].as_str().unwrap_or("").to_string();
+                            let _ = app.emit(
+                                &format!("pty-status-text-{pty_id}"),
+                                text,
+                            );
+                        }
+                    }
+                    "/flash" => {
+                        // burrow trigger-flash: briefly highlight the tab.
+                        if let Some(pty_id) = val["ptyId"].as_u64() {
+                            let _ = app.emit(&format!("pty-flash-{pty_id}"), ());
+                        }
+                    }
+                    "/open-diff" => {
+                        // burrow diff --last-turn: open a diff tab in the terminal UI.
+                        if let Some(pty_id) = val["ptyId"].as_u64() {
+                            let diff = val["diff"].as_str().unwrap_or("").to_string();
+                            let title = val["title"].as_str().unwrap_or("diff: last turn").to_string();
+                            let _ = app.emit(
+                                &format!("pty-open-diff-{pty_id}"),
+                                serde_json::json!({ "diff": diff, "title": title }),
+                            );
+                        }
+                    }
+                    _ => {}
                 }
             }
             let _ = req.respond(tiny_http::Response::empty(200));
@@ -579,6 +681,17 @@ fn start_hook_server(app: AppHandle) {
 #[tauri::command]
 fn get_hook_server_port() -> u16 {
     *HOOK_SERVER_PORT.get().unwrap_or(&0)
+}
+
+// Record the ptyId assigned to a tmux shim window ID (@N) so that subsequent
+// `tmux send-keys -t @N` calls can look up the right PTY to write to. Called by
+// Terminal.vue immediately after creating a tab that was spawned via the tmux shim.
+#[tauri::command]
+fn register_tmux_win(win_id: String, pty_id: u32, app: AppHandle) {
+    let Ok(data) = app.path().app_data_dir() else { return };
+    let wins_dir = data.join("tmux_wins");
+    let _ = std::fs::create_dir_all(&wins_dir);
+    let _ = std::fs::write(wins_dir.join(&win_id), pty_id.to_string());
 }
 
 // Publish the user's configured max-concurrent-sub-agents to a file the `burrow`
@@ -720,6 +833,8 @@ fn create_pty(
     // BURROW_PTY_ID identifies this tab; the port is read live (env first, then the
     // hook.port file under BURROW_HOME_DIR) so it survives an app restart.
     env.insert("BURROW_PTY_ID".into(), json!(id.to_string()));
+    // Enable Claude Code agent teams; the tmux shim in bin/ makes it functional.
+    env.insert("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".into(), json!("1"));
     if let Some(port) = HOOK_SERVER_PORT.get() {
         env.insert("BURROW_HOOK_PORT".into(), json!(port.to_string()));
     }
@@ -922,6 +1037,9 @@ pub struct SpawnRequest {
     /// worktree only: branch name + optional base ref for a new branch.
     pub branch: String,
     pub base: String,
+    /// tmux shim: window ID (@N) assigned by the shim's new-window/split-window command.
+    /// Frontend registers ptyId→winId via register_tmux_win so send-keys can find the PTY.
+    pub tmux_win: String,
 }
 
 #[tauri::command]
@@ -960,13 +1078,14 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
         let token = read("token");
         let branch = read("branch");
         let base = read("base");
+        let tmux_win = read("tmux_win");
         let _ = std::fs::remove_dir_all(&d);
         match kind.as_str() {
             "worktree" if !branch.is_empty() => {
-                out.push(SpawnRequest { kind, cmd: String::new(), token: String::new(), cwd: newcwd, branch, base });
+                out.push(SpawnRequest { kind, cmd: String::new(), token: String::new(), cwd: newcwd, branch, base, tmux_win: String::new() });
             }
             _ if !cmd.is_empty() => {
-                out.push(SpawnRequest { kind: "spawn".to_string(), cmd, token, cwd: newcwd, branch: String::new(), base: String::new() });
+                out.push(SpawnRequest { kind: "spawn".to_string(), cmd, token, cwd: newcwd, branch: String::new(), base: String::new(), tmux_win });
             }
             _ => {}
         }
@@ -2345,6 +2464,7 @@ pub fn run() {
             save_temp_image,
             get_hook_server_port,
             set_max_agents,
+            register_tmux_win,
             list_skills,
             set_skill_enabled,
             delete_skill,

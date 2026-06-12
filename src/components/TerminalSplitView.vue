@@ -79,6 +79,7 @@ export interface Leaf {
   cwd?: string;          // per-tab cwd override (else workspace cwd)
   resultToken?: string;  // set on tabs spawned via `burrow spawn --token`
   leafType?: "terminal" | "diff" | "editor";  // default "terminal"
+  statusText?: string;  // set by `burrow set-status`; shown next to status dot
   diffFile?: string;
   diffStaged?: boolean;
   diff?: string;

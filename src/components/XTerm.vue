@@ -111,6 +111,7 @@ let serializeAddon: SerializeAddon;
 let renderAddon: ITerminalAddon | null = null;
 let unlisten: UnlistenFn | null = null;
 let unlistenSnapReq: UnlistenFn | null = null;
+let unlistenWrite: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver;
 let pollTimer: ReturnType<typeof setInterval>;
 let dbgTimer: ReturnType<typeof setInterval>;
@@ -316,6 +317,13 @@ onMounted(async () => {
     const state = event.payload;
     if (state === "running" || state === "waiting" || state === "done")
       emit("agentState", state);
+  });
+
+  // tmux send-keys path: the shim POSTs /write → hook server emits this event →
+  // we forward to the daemon as regular PTY input.
+  unlistenWrite = await listen<string>(`pty-write-${props.ptyId}`, (event) => {
+    const bytes = Array.from(new TextEncoder().encode(event.payload));
+    invoke("write_pty", { id: props.ptyId, data: bytes });
   });
 
   // Float-bubble snapshot responder: a floating window mirroring THIS pty asks
@@ -548,6 +556,7 @@ onBeforeUnmount(async () => {
   unlisten?.();
   unlistenHook?.();
   unlistenSnapReq?.();
+  unlistenWrite?.();
   unlistenDrop?.();
   term?.textarea?.removeEventListener("paste", onPaste);
   // detach_pty closes the data stream but leaves the PTY alive in the daemon,

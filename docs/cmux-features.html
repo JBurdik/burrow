@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cmux-inspired features — Burrow docs</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --bg2: #161b22;
+      --bg3: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --accent2: #79c0ff;
+      --green: #3fb950;
+      --orange: #d29922;
+      --purple: #bc8cff;
+      --red: #f85149;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      font-size: 15px;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .layout { display: flex; min-height: 100vh; }
+
+    nav {
+      width: 260px;
+      flex-shrink: 0;
+      background: var(--bg2);
+      border-right: 1px solid var(--border);
+      padding: 24px 0;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+    }
+
+    nav .logo {
+      padding: 0 20px 20px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 16px;
+    }
+
+    nav .logo h1 { font-size: 18px; font-weight: 700; color: var(--text); }
+    nav .logo .version { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    nav ul { list-style: none; padding: 0 8px; }
+    nav ul li { margin: 1px 0; }
+
+    nav ul li a {
+      display: block;
+      padding: 6px 12px;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 13.5px;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    nav ul li a:hover, nav ul li a.active {
+      background: var(--bg3);
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    nav .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      padding: 12px 20px 4px;
+    }
+
+    main { flex: 1; padding: 48px 56px; max-width: 900px; }
+
+    h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.8px; margin-bottom: 8px; }
+    h2 { font-size: 22px; font-weight: 600; margin: 48px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 16px; font-weight: 600; margin: 28px 0 12px; color: var(--accent2); }
+    p { margin-bottom: 12px; }
+
+    .subtitle { font-size: 16px; color: var(--muted); margin-bottom: 32px; line-height: 1.5; }
+
+    .badges { display: flex; gap: 8px; margin-bottom: 32px; flex-wrap: wrap; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+    code {
+      font-family: "SF Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--accent2);
+    }
+
+    pre {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+      overflow-x: auto;
+      margin: 12px 0 20px;
+    }
+
+    pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .comment { color: #8b949e; font-style: italic; }
+    .cmd { color: #79c0ff; }
+    .str { color: #a5d6ff; }
+    .flag { color: #d2a8ff; }
+
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 24px; font-size: 14px; }
+    thead tr { background: var(--bg3); }
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      font-weight: 600;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--bg3); }
+
+    ul.content-list { margin: 8px 0 16px 20px; }
+    ul.content-list li { margin: 5px 0; }
+
+    .info-box {
+      background: rgba(88, 166, 255, 0.08);
+      border: 1px solid rgba(88, 166, 255, 0.3);
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin: 16px 0;
+      font-size: 14px;
+    }
+    .info-box strong { color: var(--accent); }
+
+    .warn-box {
+      background: rgba(210, 153, 34, 0.08);
+      border: 1px solid rgba(210, 153, 34, 0.3);
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin: 16px 0;
+      font-size: 14px;
+    }
+    .warn-box strong { color: var(--orange); }
+
+    .arch {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 13px;
+      line-height: 2;
+      color: var(--muted);
+      margin: 12px 0 20px;
+    }
+    .arch .node {
+      display: inline-block;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 12px;
+      color: var(--text);
+      font-weight: 600;
+    }
+    .arch .arrow { color: var(--accent); }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 16px 0 24px;
+    }
+    .feature-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .feature-card .name {
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 13px;
+      color: var(--accent2);
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .feature-card .desc { font-size: 13px; color: var(--muted); }
+
+    section { scroll-margin-top: 24px; }
+
+    @media (max-width: 768px) {
+      nav { display: none; }
+      main { padding: 24px 20px; }
+      .feature-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <nav>
+    <div class="logo">
+      <h1>cmux features</h1>
+      <div class="version">Burrow · inspirováno cmux</div>
+    </div>
+    <ul>
+      <li class="section-label">Přehled</li>
+      <li><a href="#intro">Co jsme přidali</a></li>
+      <li><a href="#wrapper">Wrapper vs. bundling</a></li>
+
+      <li class="section-label">Tmux shim</li>
+      <li><a href="#tmux">Jak funguje shim</a></li>
+      <li><a href="#agent-teams">Agent Teams</a></li>
+      <li><a href="#send-keys">send-keys flow</a></li>
+
+      <li class="section-label">Nové burrow příkazy</li>
+      <li><a href="#diff">burrow diff</a></li>
+      <li><a href="#set-status">burrow set-status</a></li>
+      <li><a href="#flash">burrow trigger-flash</a></li>
+      <li><a href="#top">burrow top</a></li>
+
+      <li class="section-label">Architektura</li>
+      <li><a href="#hook-server">Hook server endpointy</a></li>
+      <li><a href="#frontend">Frontend změny</a></li>
+      <li><a href="#skill-docs">Skill docs</a></li>
+      <li><a href="#auto">Co je automatické</a></li>
+    </ul>
+  </nav>
+
+  <main>
+    <section id="intro">
+      <h1>cmux-inspired features</h1>
+      <div class="badges">
+        <span class="badge"><span class="dot"></span> implementováno</span>
+        <span class="badge">tmux shim</span>
+        <span class="badge">agent teams</span>
+        <span class="badge">diff UI</span>
+        <span class="badge">status labels</span>
+      </div>
+      <p class="subtitle">
+        Funkce inspirované <strong>cmux</strong> (manaflow-ai/cmux) — macOS terminál s AI integrací.
+        Přidáno do Burrow bez bundlování binárky, s nativním PTY modelem.
+      </p>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="name">src-tauri/bin/tmux</div>
+          <div class="desc">Tmux shim — překládá tmux příkazy na Burrow operace. Nový soubor.</div>
+        </div>
+        <div class="feature-card">
+          <div class="name">CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</div>
+          <div class="desc">Automaticky v každém PTY. Spolu se shimem zapíná multi-agent teams.</div>
+        </div>
+        <div class="feature-card">
+          <div class="name">burrow diff --last-turn</div>
+          <div class="desc">Git diff od HEAD na začátku tahu. Otevře diff tab v UI.</div>
+        </div>
+        <div class="feature-card">
+          <div class="name">burrow set-status / trigger-flash</div>
+          <div class="desc">Agenti pushují vlastní text do tab headeru nebo vizuálně flashnou tab.</div>
+        </div>
+        <div class="feature-card">
+          <div class="name">burrow top</div>
+          <div class="desc">Přehled všech živých Burrow PTY sessions s CWD a titulem procesu.</div>
+        </div>
+        <div class="feature-card">
+          <div class="name">Skill docs aktualizovány</div>
+          <div class="desc">BURROW_SKILL_MD + BURROW_AGENT_DOC dokumentují nové příkazy. Automaticky instalováno.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="wrapper">
+      <h2>Wrapper vs. bundling</h2>
+      <p>
+        cmux bundluje kopii Claude Code CLI do app bundle a injektuje shell funkci:
+      </p>
+      <pre><code><span class="comment"># cmux přístup</span>
+claude () { "${_CMUX_CLAUDE_WRAPPER}" "$@" }</code></pre>
+
+      <p>
+        Burrow <strong>nebundluje binarku</strong> — místo toho injektuje env vars do každého PTY při jeho vytvoření (<code>create_pty</code> v lib.rs). Stejný efekt, nulový maintenance overhead.
+      </p>
+      <pre><code><span class="comment"># lib.rs — create_pty, nastaveno automaticky</span>
+env.insert("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
+env.insert("BURROW_PTY_ID",      id.to_string());
+env.insert("BURROW_HOOK_PORT",   port.to_string());
+env.insert("BURROW_HOME_DIR",    data_dir);
+env.insert("BURROW_SESSION_DIR", session_dir);
+// PATH prepend: &lt;app-data&gt;/bin/ (obsahuje burrow + tmux shim)</code></pre>
+
+      <div class="info-box">
+        <strong>Výsledek:</strong> Každý claude spuštěný v Burrow terminálu automaticky vidí tmux shim, má agent teams zapnuté a má přístup ke všem burrow příkazům — bez jakékoliv konfigurace.
+      </div>
+    </section>
+
+    <section id="tmux">
+      <h2>Tmux shim (<code>src-tauri/bin/tmux</code>)</h2>
+      <p>
+        Shell skript nainstalovaný vedle <code>burrow</code> v <code>&lt;app-data&gt;/bin/</code>.
+        Přepsán při každém spuštění apky a každém <code>create_pty</code>.
+        Adresář je prepend do PATH → <code>tmux</code> uvnitř Burrow PTY = shim.
+      </p>
+
+      <table>
+        <thead><tr><th>tmux příkaz</th><th>Burrow ekvivalent</th></tr></thead>
+        <tbody>
+          <tr><td><code>new-window [-n name] [-c cwd] [cmd]</code></td><td><code>burrow spawn --tmux-win @N [cmd]</code>, tiskne <code>@N</code></td></tr>
+          <tr><td><code>split-window [-c cwd] [cmd]</code></td><td>totéž jako new-window</td></tr>
+          <tr><td><code>send-keys -t @N keys [Enter]</code></td><td>POST <code>/write</code> na hook server → zapíše do PTY</td></tr>
+          <tr><td><code>has-session</code></td><td><code>exit 0</code></td></tr>
+          <tr><td><code>list-sessions / list-windows / list-panes</code></td><td>minimální fake výstup</td></tr>
+          <tr><td><code>new-session, select-*, set-*, kill-*, source-file, ...</code></td><td>no-op (<code>exit 0</code>, permissive)</td></tr>
+          <tr><td><code>-V / --version</code></td><td><code>tmux 3.3a</code></td></tr>
+          <tr><td>neznámý příkaz</td><td><code>exit 0</code> (skripty agentů nekrachují)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="agent-teams">
+      <h3>Agent Teams</h3>
+      <p>
+        Claude Code zapíná multi-agent koordinaci přes <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code>.
+        Interně používá tmux pro správu oken. Se shimem v PATH agent teams fungují nativně v Burrow:
+      </p>
+      <ul class="content-list">
+        <li>Každé <code>tmux new-window</code> otevře nový Burrow tab (přes <code>burrow spawn</code>)</li>
+        <li>Mapping <code>@N → ptyId</code> zapsán do <code>$BURROW_HOME_DIR/tmux_wins/@N</code></li>
+        <li>Frontend zavolá <code>register_tmux_win(winId, ptyId)</code> ihned po vytvoření tabu</li>
+      </ul>
+    </section>
+
+    <section id="send-keys">
+      <h3>send-keys flow</h3>
+      <div class="arch">
+        <div style="text-align:center; line-height:2.5;">
+          <span class="node">tmux shim: send-keys -t @1 "hello" Enter</span><br>
+          <span class="arrow">│ čte $BURROW_HOME_DIR/tmux_wins/@1 → ptyId=5</span><br>
+          <span class="node">curl POST /write {ptyId:5, data:"hello\n"}</span><br>
+          <span class="arrow">│ hook server</span><br>
+          <span class="node">app.emit("pty-write-5", "hello\n")</span><br>
+          <span class="arrow">│ Tauri event</span><br>
+          <span class="node">XTerm.vue: invoke("write_pty", {id:5, data:[...]})</span><br>
+          <span class="arrow">│ daemon socket</span><br>
+          <span class="node">burrow-daemon: WritePty → PTY stdin</span>
+        </div>
+      </div>
+
+      <div class="warn-box">
+        <strong>Timing:</strong> Mapping <code>@N → ptyId</code> je zapsán asynchronně přes
+        <code>register_tmux_win</code>. Pokud <code>send-keys</code> přijde dříve než frontend
+        zpracuje spawn request, soubor ještě neexistuje → shim tiše projde (<code>exit 0</code>).
+        Agent teams obvykle čeká na inicializaci tabu, takže v praxi to nevadí.
+      </div>
+    </section>
+
+    <section id="diff">
+      <h2>burrow diff --last-turn</h2>
+      <p>
+        Zobrazí co se změnilo od začátku aktuálního agent tahu. Kombinuje CLI output + UI diff tab.
+      </p>
+
+      <h3>Jak funguje zachytávání HEAD</h3>
+      <p>
+        Globálně nainstalovaný Claude hook <code>UserPromptSubmit</code> volá <code>burrow hook</code>,
+        který při tomto eventu:
+      </p>
+      <pre><code><span class="comment"># v burrow hook subcommand (spouští se jako Claude hook)</span>
+git_head=$(git rev-parse HEAD 2>/dev/null)
+printf '%s\n%s' "$git_head" "$PWD" \
+  > "$BURROW_SESSION_DIR/last_head_${BURROW_PTY_ID}"</code></pre>
+
+      <h3>burrow diff --last-turn flow</h3>
+      <div class="arch">
+        <div style="text-align:center; line-height:2.5;">
+          <span class="node">burrow diff --last-turn</span><br>
+          <span class="arrow">│ čte last_head_{ptyId} → old HEAD + CWD</span><br>
+          <span class="node">git diff {old_head}</span><br>
+          <span class="arrow">│ diff content (string)</span><br>
+          <span class="node">curl POST /open-diff {ptyId, diff, title}</span><br>
+          <span class="arrow">│ hook server emituje pty-open-diff-{id}</span><br>
+          <span class="node">Terminal.vue: openDiffInTab(title, false, diff)</span><br>
+          <span class="arrow">+ tiskne diff na stdout (pipeable)</span>
+        </div>
+      </div>
+
+      <pre><code><span class="comment"># Použití v agentovi</span>
+burrow diff --last-turn              <span class="comment"># otevře diff tab + tiskne na stdout</span>
+burrow diff --last-turn | wc -l      <span class="comment"># počet změněných řádků</span>
+burrow diff                          <span class="comment"># prostý git diff (jen stdout)</span></code></pre>
+
+      <div class="info-box">
+        <strong>UI tab:</strong> Diff tab se otevře jako nový leaf v aktivním workspace terminálu,
+        stejně jako git diff taby spouštěné z pravého panelu. Funguje pouze uvnitř Burrow PTY
+        (kde <code>BURROW_PTY_ID</code> je nastaven).
+      </div>
+    </section>
+
+    <section id="set-status">
+      <h2>burrow set-status</h2>
+      <p>
+        Agenti mohou pushovat vlastní textový label do tab headeru vedle status dotu.
+      </p>
+
+      <pre><code>burrow set-status <span class="str">"running tests..."</span>    <span class="comment"># zobrazí label v tab headeru</span>
+burrow set-status <span class="str">"deploying to staging"</span>
+burrow set-status                          <span class="comment"># smaže label (žádné args)</span></code></pre>
+
+      <h3>Flow</h3>
+      <pre><code><span class="comment"># burrow script</span>
+curl POST /set-status {ptyId, text: "running tests..."}
+
+<span class="comment"># hook server</span>
+app.emit("pty-status-text-{id}", "running tests...")
+
+<span class="comment"># Terminal.vue listener</span>
+leaf.statusText = ev.payload  <span class="comment">// nebo undefined při prázdném textu</span></code></pre>
+
+      <p>
+        Label se zobrazuje v tab baru za názvem tabu jako malý muted text.
+        Vymaže se při dalším volání <code>burrow set-status</code> bez argumentů.
+        Přetrvává přes status přechody (running/waiting/done) — agent ho musí sám smazat.
+      </p>
+    </section>
+
+    <section id="flash">
+      <h2>burrow trigger-flash</h2>
+      <p>
+        Krátká (600ms) CSS animace na tab labelu — vizuální signál "stalo se něco důležitého".
+        Vhodné jako ping po skončení dlouhé operace, když agent nechce generovat notifikaci.
+      </p>
+
+      <pre><code>burrow trigger-flash    <span class="comment"># flashne aktivní tab na 600ms</span></code></pre>
+
+      <pre><code><span class="comment">/* Terminal.vue — CSS animace */</span>
+@keyframes tab-flash-anim {
+  0%   { color: var(--accent); }
+  50%  { color: var(--accent); opacity: 0.4; }
+  100% { color: inherit; }
+}
+.tab-flash { animation: tab-flash-anim 0.6s ease-out; }</code></pre>
+
+      <div class="info-box">
+        <strong>Implementace:</strong> <code>flashingLeafs</code> je reaktivní <code>ref&lt;Set&lt;number&gt;&gt;</code>.
+        Flash přidá leafId do setu (new Set → trigger reaktivity), po 600ms ho odebere.
+        Class <code>tab-flash</code> se aplikuje na tab label pokud je leafId v setu.
+      </div>
+    </section>
+
+    <section id="top">
+      <h2>burrow top</h2>
+      <p>
+        Přehled všech živých Burrow PTY sessions — ptyId, CWD, titul foreground procesu.
+        Čte data ze stejného daemon socketu jako <code>burrow sessions</code>.
+      </p>
+
+      <pre><code>$ burrow top
+PTY    CWD                                 TITLE
+──────────────────────────────────────────────
+1      /Users/me/project                   claude
+2      /Users/me/project                   npm test
+3      /Users/me/other-repo                zsh</code></pre>
+
+      <p>Implementováno jako inline Python3 skript (stejný přístup jako <code>burrow sessions</code>, bez nových závislostí).</p>
+    </section>
+
+    <section id="hook-server">
+      <h2>Hook server endpointy</h2>
+      <p>
+        Hook server (<code>start_hook_server</code> v lib.rs) nyní routuje podle URL.
+        Přidané endpointy:
+      </p>
+
+      <table>
+        <thead><tr><th>Endpoint</th><th>Body</th><th>Akce</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>POST /hook</code></td>
+            <td><code>{ptyId, state}</code></td>
+            <td>Existující — emituje <code>pty-hook-{id}</code> se stavem</td>
+          </tr>
+          <tr>
+            <td><code>POST /write</code></td>
+            <td><code>{ptyId, data: string}</code></td>
+            <td>Emituje <code>pty-write-{id}</code> → XTerm.vue zapíše do PTY</td>
+          </tr>
+          <tr>
+            <td><code>POST /set-status</code></td>
+            <td><code>{ptyId, text: string}</code></td>
+            <td>Emituje <code>pty-status-text-{id}</code> → leaf.statusText</td>
+          </tr>
+          <tr>
+            <td><code>POST /flash</code></td>
+            <td><code>{ptyId}</code></td>
+            <td>Emituje <code>pty-flash-{id}</code> → 600ms CSS animace</td>
+          </tr>
+          <tr>
+            <td><code>POST /open-diff</code></td>
+            <td><code>{ptyId, diff, title}</code></td>
+            <td>Emituje <code>pty-open-diff-{id}</code> → otevře diff tab</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="info-box">
+        <strong>Port discovery:</strong> Hook server port je náhodný při každém startu.
+        Zapsán do <code>$BURROW_HOME_DIR/hook.port</code>.
+        Burrow skripty zkouší <code>$BURROW_HOOK_PORT</code> (baked do PTY env) i
+        <code>hook.port</code> soubor — oba porty, první který odpoví vyhraje.
+      </div>
+    </section>
+
+    <section id="frontend">
+      <h2>Frontend změny</h2>
+
+      <h3>TerminalSplitView.vue — Leaf interface</h3>
+      <pre><code>interface Leaf {
+  // ... existující pole ...
+  statusText?: string;  <span class="comment">// set by `burrow set-status`</span>
+}</code></pre>
+
+      <h3>XTerm.vue — pty-write listener</h3>
+      <pre><code>unlistenWrite = await listen&lt;string&gt;(`pty-write-${props.ptyId}`, (ev) => {
+  const bytes = Array.from(new TextEncoder().encode(ev.payload));
+  invoke("write_pty", { id: props.ptyId, data: bytes });
+});</code></pre>
+
+      <h3>Terminal.vue — per-leaf listenery</h3>
+      <p>
+        Každý leaf má sadu Tauri event listenerů registrovaných při vzniku, odstraněných při zániku.
+        Tracked v <code>leafUnlisteners: Map&lt;number, UnlistenFn[]&gt;</code>.
+      </p>
+      <pre><code><span class="comment">// Registrace při addTab / splitFocused / onMounted restore</span>
+registerLeafListeners(leaf.id)
+
+<span class="comment">// Odregistrace při closeTab / closePane / onBeforeUnmount</span>
+unregisterLeafListeners(leaf.id)
+
+<span class="comment">// Listenery na leaf (3 eventy)</span>
+pty-status-text-{id}  → leaf.statusText = payload
+pty-flash-{id}        → flashingLeafs set + 600ms timeout
+pty-open-diff-{id}    → openDiffInTab(title, false, diff)</code></pre>
+
+      <h3>SpawnRequest — tmux_win pole</h3>
+      <pre><code><span class="comment">// lib.rs</span>
+pub struct SpawnRequest {
+  // ... existující ...
+  pub tmux_win: String,  <span class="comment">// @N, prázdný pokud ne tmux spawn</span>
+}
+
+<span class="comment">// Terminal.vue — po addTab</span>
+if (r.tmuxWin) {
+  invoke("register_tmux_win", { winId: r.tmuxWin, ptyId: leaf.id });
+}</code></pre>
+    </section>
+
+    <section id="skill-docs">
+      <h2>Skill docs — co Claude vidí automaticky</h2>
+      <p>
+        <code>install_agent_docs()</code> se volá při každém startu apky.
+        Přepisuje <code>~/.claude/skills/burrow/SKILL.md</code> aktuální verzí.
+        Claude v Burrow vidí nové příkazy bez jakékoliv manuální instalace.
+      </p>
+
+      <h3>Nové sekce v SKILL.md</h3>
+      <pre><code><span class="comment">## Status labels & visual signals</span>
+burrow set-status "running tests..."   <span class="comment"># label v tab headeru</span>
+burrow set-status                       <span class="comment"># smazání labelu</span>
+burrow trigger-flash                    <span class="comment"># flashne tab</span>
+
+<span class="comment">## Inspect what changed this turn</span>
+burrow diff --last-turn                 <span class="comment"># git diff od začátku tahu</span>
+
+<span class="comment">## Monitor all terminals</span>
+burrow top                              <span class="comment"># tabulka živých PTY sessions</span></code></pre>
+    </section>
+
+    <section id="auto">
+      <h2>Co je automatické (žádná manuální konfigurace)</h2>
+
+      <table>
+        <thead><tr><th>Kdy</th><th>Co se stane</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Spuštění apky</td>
+            <td><code>ensure_burrow_bin()</code> zapíše <code>burrow</code> + <code>tmux</code> shim. <code>install_agent_docs()</code> přepíše skill docs. Hook server nastartuje s novými endpointy.</td>
+          </tr>
+          <tr>
+            <td>Nový PTY (<code>create_pty</code>)</td>
+            <td><code>ensure_burrow_bin()</code> znovu (= vždy aktuální binárky). <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code> v env. <code>PATH</code> prepend s <code>bin/</code>.</td>
+          </tr>
+          <tr>
+            <td>Nový tab (addTab)</td>
+            <td><code>registerLeafListeners()</code> — status-text, flash, open-diff listenery ready.</td>
+          </tr>
+          <tr>
+            <td>Spawn přes tmux shim</td>
+            <td><code>burrow spawn --tmux-win @N</code> zapíše <code>tmux_win</code> do request dir. Po claim Terminal.vue volá <code>register_tmux_win(@N, ptyId)</code>.</td>
+          </tr>
+          <tr>
+            <td>UserPromptSubmit hook</td>
+            <td><code>burrow hook</code> uloží git HEAD do session dir → <code>burrow diff --last-turn</code> má referenci.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="info-box">
+        <strong>TL;DR:</strong> Rebuild + restart apky → vše funguje. Žádné <code>claude settings</code>,
+        žádný manuální PATH, žádná instalace. Stačí otevřít terminál v Burrow.
+      </div>
+    </section>
+  </main>
+</div>
+
+</body>
+</html>

@@ -26,7 +26,8 @@
           class="status-dot"
           :class="`status-${tabStatus(tab)}`"
         >{{ tabStatus(tab) === 'running' ? spinnerFrame : '' }}</span>
-        <span class="tab-label">{{ tabTitle(tab) }}</span>
+        <span class="tab-label" :class="{ 'tab-flash': getAllLeaves(tab.root).some(l => flashingLeafs.has(l.id)) }">{{ tabTitle(tab) }}</span>
+        <span v-if="tabStatusText(tab)" class="tab-status-text">{{ tabStatusText(tab) }}</span>
         <span
           v-if="tabLeafCount(tab) > 1"
           class="tab-split-count"
@@ -153,6 +154,7 @@
 import { ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut, PhFileCode } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import XTerm from "./XTerm.vue";
 import DiffTab from "./DiffTab.vue";
 import CodeEditor from "./CodeEditor.vue";
@@ -412,6 +414,48 @@ function tabDirty(tab: Tab): boolean {
 
 const doneTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
+// ── Per-leaf hook-server event listeners (status-text + flash) ────────────────
+// Keyed by ptyId. Registered when a leaf is created, cleaned up when closed.
+const leafUnlisteners = new Map<number, UnlistenFn[]>();
+const flashingLeafs = ref(new Set<number>());
+
+function registerLeafListeners(leafId: number) {
+  const unlisteners: UnlistenFn[] = [];
+  Promise.all([
+    listen<string>(`pty-status-text-${leafId}`, (ev) => {
+      for (const tab of tabs.value) {
+        const leaf = findLeaf(tab.root, leafId);
+        if (leaf) { leaf.statusText = ev.payload || undefined; break; }
+      }
+    }),
+    listen(`pty-flash-${leafId}`, () => {
+      flashingLeafs.value = new Set(flashingLeafs.value).add(leafId);
+      setTimeout(() => {
+        const next = new Set(flashingLeafs.value);
+        next.delete(leafId);
+        flashingLeafs.value = next;
+      }, 600);
+    }),
+    listen<{ diff: string; title: string }>(`pty-open-diff-${leafId}`, (ev) => {
+      const { diff, title } = ev.payload;
+      if (diff) openDiffInTab(title, false, diff);
+    }),
+  ]).then((fns) => {
+    // Only store if the leaf wasn't already removed before promises resolved.
+    if (leafUnlisteners.has(leafId)) {
+      fns.forEach((fn) => leafUnlisteners.get(leafId)!.push(fn));
+    } else {
+      fns.forEach((fn) => fn());
+    }
+  });
+  leafUnlisteners.set(leafId, unlisteners);
+}
+
+function unregisterLeafListeners(leafId: number) {
+  leafUnlisteners.get(leafId)?.forEach((fn) => fn());
+  leafUnlisteners.delete(leafId);
+}
+
 /** Build a ReducerCtx for a given tab (provides watching + side-effect hooks). */
 function makeCtx(tab: Tab): ReducerCtx {
   return {
@@ -585,6 +629,13 @@ function tabStatus(tab: Tab): TermStatus {
   return aggregateStatus(getAllLeaves(tab.root), (l) => l.status);
 }
 
+function tabStatusText(tab: Tab): string {
+  for (const l of getAllLeaves(tab.root)) {
+    if (l.statusText) return l.statusText;
+  }
+  return "";
+}
+
 // ── in-app close confirmation ───────────────────────────────────────────────
 
 const confirm = ref<{ name: string; reason: "running" | "unsaved"; resolve: (ok: boolean) => void } | null>(null);
@@ -626,13 +677,15 @@ function activateTab(id: number) {
   nextTick(() => xtermRefs.get(leaf.id)?.focus());
 }
 
-function addTab(initialCmd?: string, extra?: { cwd?: string; resultToken?: string }) {
+function addTab(initialCmd?: string, extra?: { cwd?: string; resultToken?: string }): Leaf {
   const leaf = makeLeaf(initialCmd, extra);
   const tab: Tab = { id: leaf.id, root: leaf };
   tabs.value.push(tab);
   activeTabId.value = tab.id;
   focusedLeafId.value = leaf.id;
+  registerLeafListeners(leaf.id);
   nextTick(() => xtermRefs.get(leaf.id)?.focus());
+  return leaf;
 }
 
 function spawnAgent(cmd: string) {
@@ -760,6 +813,7 @@ function splitFocused(direction: "h" | "v") {
   const newLeaf = makeLeaf();
   tab.root = insertSplit(tab.root, focusedLeafId.value, direction, newLeaf);
   focusedLeafId.value = newLeaf.id;
+  registerLeafListeners(newLeaf.id);
   nextTick(() => xtermRefs.get(newLeaf.id)?.focus());
 }
 
@@ -784,6 +838,7 @@ async function closeTab(tabId: number) {
   for (const leaf of leaves) {
     if (leaf.leafType === "editor" || leaf.leafType === "diff") continue;
     invoke("kill_pty", { id: leaf.id }).catch(() => {});
+    unregisterLeafListeners(leaf.id);
   }
 
   const idx = tabs.value.findIndex((t) => t.id === tabId);
@@ -822,6 +877,7 @@ async function closePane(leafId: number) {
   }
   if (leaf && leaf.leafType !== "editor" && leaf.leafType !== "diff") {
     invoke("kill_pty", { id: leafId }).catch(() => {});
+    unregisterLeafListeners(leafId);
   }
   const newRoot = removeLeaf(tab.root, leafId)!;
   tab.root = newRoot;
@@ -963,6 +1019,7 @@ onMounted(async () => {
       leaf.title = s.title || leaf.defaultTitle;
       const tab: Tab = { id: leaf.id, root: leaf };
       tabs.value.push(tab);
+      registerLeafListeners(leaf.id);
     });
     activateTab(tabs.value[0].id);
   }
@@ -995,13 +1052,16 @@ onMounted(() => {
   spawnPoll = setInterval(async () => {
     try {
       const reqs = await invoke<
-        { kind: string; cmd: string; token: string; cwd: string; branch: string; base: string }[]
+        { kind: string; cmd: string; token: string; cwd: string; branch: string; base: string; tmuxWin: string }[]
       >("take_spawn_requests", { cwd: props.cwd });
       for (const r of reqs) {
         if (r.kind === "worktree") {
           await handleWorktreeRequest(r.branch, r.base);
         } else {
-          addTab(r.cmd, { cwd: r.cwd || undefined, resultToken: r.token || undefined });
+          const leaf = addTab(r.cmd, { cwd: r.cwd || undefined, resultToken: r.token || undefined });
+          if (r.tmuxWin) {
+            invoke("register_tmux_win", { winId: r.tmuxWin, ptyId: leaf.id });
+          }
         }
       }
     } catch { /* ignore poll errors */ }
@@ -1011,6 +1071,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
   if (spawnPoll) clearInterval(spawnPoll);
+  leafUnlisteners.forEach((fns) => fns.forEach((fn) => fn()));
+  leafUnlisteners.clear();
   tabsStore.clear(props.workspaceId);
 });
 
@@ -1114,6 +1176,26 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
 
 .tab-agent-icon { color: var(--accent); flex-shrink: 0; }
 .tab-term-icon  { color: var(--text-muted); flex-shrink: 0; }
+
+.tab-status-text {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.75;
+  flex-shrink: 0;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes tab-flash-anim {
+  0%   { color: var(--accent); }
+  50%  { color: var(--accent); opacity: 0.4; }
+  100% { color: inherit; }
+}
+.tab-flash {
+  animation: tab-flash-anim 0.6s ease-out;
+}
 
 .tab-split-count {
   flex-shrink: 0;

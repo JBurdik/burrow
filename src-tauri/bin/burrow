@@ -22,19 +22,20 @@
 # Sub-agents run INTERACTIVELY on your subscription (plain `claude`, never -p).
 
 sub="$1"
-[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|collect|wait|sessions|status|hook|notify <args>" >&2; exit 1; }
+[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|trigger-flash|diff|top|capture-pane <args>" >&2; exit 1; }
 shift
 
 case "$sub" in
   spawn)
-    token=""; cwd=""
+    token=""; cwd=""; tmux_win=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --token) token="$2"; shift 2 ;;
-        --cwd)   cwd="$2";   shift 2 ;;
-        --)      shift; break ;;
-        -*)      echo "burrow spawn: unknown flag $1" >&2; exit 1 ;;
-        *)       break ;;
+        --token)    token="$2";    shift 2 ;;
+        --cwd)      cwd="$2";      shift 2 ;;
+        --tmux-win) tmux_win="$2"; shift 2 ;;
+        --)         shift; break ;;
+        -*)         echo "burrow spawn: unknown flag $1" >&2; exit 1 ;;
+        *)          break ;;
       esac
     done
     [ -n "$1" ] || { echo "burrow spawn: no command given" >&2; exit 1; }
@@ -58,10 +59,11 @@ case "$sub" in
     # Each field is its own raw file (no escaping needed). The `ready` marker is
     # written LAST so Burrow never reads a half-written request.
     d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
-    printf '%s' "$fullcmd" > "$d/cmd"
-    printf '%s' "$token"  > "$d/token"
-    printf '%s' "$newcwd" > "$d/cwd"
-    printf '%s' "$ws"     > "$d/ws"
+    printf '%s' "$fullcmd"  > "$d/cmd"
+    printf '%s' "$token"    > "$d/token"
+    printf '%s' "$newcwd"   > "$d/cwd"
+    printf '%s' "$ws"       > "$d/ws"
+    printf '%s' "$tmux_win" > "$d/tmux_win"
     : > "$d/ready"
 
     # Soft concurrency limit (per workspace), surfaced for the agent's benefit.
@@ -182,7 +184,15 @@ case "$sub" in
     json=$(cat)
     ev=$(printf '%s' "$json" | sed -n 's/.*"hook_event_name"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
     case "$ev" in
-      UserPromptSubmit|PreToolUse|PostToolUse) state=running ;;
+      UserPromptSubmit)
+        state=running
+        # Save current git HEAD so `burrow diff --last-turn` can show what changed.
+        if [ -n "$BURROW_SESSION_DIR" ] && [ -n "$BURROW_PTY_ID" ]; then
+          git_head=$(git rev-parse HEAD 2>/dev/null)
+          [ -n "$git_head" ] && printf '%s\n%s' "$git_head" "$PWD" \
+            > "$BURROW_SESSION_DIR/last_head_${BURROW_PTY_ID}"
+        fi ;;
+      PreToolUse|PostToolUse) state=running ;;
       Notification)
         # `Notification` is ambiguous: Claude fires it BOTH for a permission
         # prompt (genuinely waiting on the user) AND ~60s after a turn ends, idle
@@ -323,8 +333,132 @@ PY
     exit $?
     ;;
 
+  set-status)
+    # burrow set-status [text]   — push a custom status label to this tab's header.
+    # burrow set-status           — with no args, clears the label.
+    # The label appears alongside the status dot (running/waiting/done).
+    text="$*"
+    [ -n "$BURROW_PTY_ID" ] || exit 0
+    escaped=$(printf '%s' "$text" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    file_port=""
+    [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
+      file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+    for port in "$BURROW_HOOK_PORT" "$file_port"; do
+      [ -n "$port" ] || continue
+      curl -sf -X POST "http://127.0.0.1:$port/set-status" \
+        -H 'Content-Type: application/json' \
+        -d "{\"ptyId\":$BURROW_PTY_ID,\"text\":\"$escaped\"}" >/dev/null 2>&1 && break
+    done
+    exit 0
+    ;;
+
+  trigger-flash)
+    # burrow trigger-flash   — briefly highlight this tab (visual attention signal).
+    [ -n "$BURROW_PTY_ID" ] || exit 0
+    file_port=""
+    [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
+      file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+    for port in "$BURROW_HOOK_PORT" "$file_port"; do
+      [ -n "$port" ] || continue
+      curl -sf -X POST "http://127.0.0.1:$port/flash" \
+        -H 'Content-Type: application/json' \
+        -d "{\"ptyId\":$BURROW_PTY_ID}" >/dev/null 2>&1 && break
+    done
+    exit 0
+    ;;
+
+  diff)
+    # burrow diff [--last-turn] [git-diff args...]
+    # --last-turn  diff from the HEAD at the start of the most recent agent turn.
+    #              Without it, behaves like plain `git diff`.
+    last_turn=0
+    extra_args=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --last-turn) last_turn=1; shift ;;
+        *)           extra_args="$extra_args $1"; shift ;;
+      esac
+    done
+    if [ "$last_turn" = "1" ]; then
+      head_f="${BURROW_SESSION_DIR}/${BURROW_PTY_ID}.last_head"
+      [ -f "$head_f" ] || head_f="${BURROW_SESSION_DIR}/last_head_${BURROW_PTY_ID}"
+      if [ ! -f "$head_f" ]; then
+        echo "burrow diff: no turn recorded yet — run an agent task first" >&2
+        exit 1
+      fi
+      old_head=$(head -1 "$head_f")
+      git_cwd=$(tail -1 "$head_f")
+      [ -d "$git_cwd" ] && cd "$git_cwd"
+      # shellcheck disable=SC2086
+      diff_content=$(git diff "$old_head"${extra_args:+ $extra_args} 2>/dev/null)
+
+      # Open as a diff tab in the Burrow UI (non-blocking, best-effort).
+      if [ -n "$BURROW_PTY_ID" ] && [ -n "$diff_content" ]; then
+        diff_json=$(printf '%s' "$diff_content" | \
+          python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null)
+        if [ -n "$diff_json" ]; then
+          file_port=""
+          [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
+            file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+          for port in "$BURROW_HOOK_PORT" "$file_port"; do
+            [ -n "$port" ] || continue
+            curl -sf -X POST "http://127.0.0.1:$port/open-diff" \
+              -H 'Content-Type: application/json' \
+              -d "{\"ptyId\":$BURROW_PTY_ID,\"diff\":$diff_json,\"title\":\"diff: last turn\"}" \
+              >/dev/null 2>&1 && break
+          done
+        fi
+      fi
+
+      # Always print to stdout too (readable in terminal, pipeable).
+      printf '%s\n' "$diff_content"
+    else
+      # shellcheck disable=SC2086
+      git diff${extra_args:+ $extra_args}
+    fi
+    exit $?
+    ;;
+
+  top)
+    # burrow top   — show all live Burrow PTY sessions with their foreground process.
+    home="${BURROW_HOME_DIR:?burrow top: BURROW_HOME_DIR unset — run inside Burrow}"
+    printf '%-6s %-35s %s\n' "PTY" "CWD" "TITLE"
+    printf '%0.s─' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; \
+    printf '%0.s─' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; \
+    printf '%0.s─' 1 2 3 4 5; echo
+    BURROW_HOME="$home" python3 - <<'PY'
+import socket, json, os, sys
+home = os.environ["BURROW_HOME"]
+try:
+    tok = open(os.path.join(home, "daemon.token")).read().strip()
+    s = socket.socket(socket.AF_UNIX); s.connect(os.path.join(home, "daemon.sock"))
+    f = s.makefile("rwb")
+    def send(o): f.write((json.dumps(o)+"\n").encode()); f.flush(); return json.loads(f.readline())
+    send({"id": 1, "cmd": "Auth", "token": tok})
+    sess = send({"id": 2, "cmd": "ListSessions"}).get("sessions", [])
+except Exception as e:
+    print(f"(cannot reach daemon: {e})", file=sys.stderr); sys.exit(1)
+for x in [s for s in sess if s.get("alive")]:
+    cwd = x.get("cwd", "")
+    if len(cwd) > 35:
+        cwd = "…" + cwd[-34:]
+    title = x.get("title", "")
+    print(f"{x.get('pty_id','?'):<6} {cwd:<35} {title}")
+PY
+    exit $?
+    ;;
+
+  capture-pane)
+    # burrow capture-pane [--scrollback] [--lines N]
+    # Prints recent PTY output for the current terminal.
+    # Note: capture requires the daemon scrollback buffer (available from v2.1+).
+    echo "burrow capture-pane: scrollback buffering not yet implemented" >&2
+    echo "(use the terminal's own scrollback or redirect agent output to a file)" >&2
+    exit 1
+    ;;
+
   *)
-    echo "burrow: unknown command '$sub' (use spawn|worktree|collect|wait|sessions|status|hook|notify)" >&2
+    echo "burrow: unknown command '$sub' (use spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|trigger-flash|diff|top|capture-pane)" >&2
     exit 1
     ;;
 esac
