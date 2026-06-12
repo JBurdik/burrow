@@ -44,6 +44,34 @@
       </div>
     </div>
 
+    <!-- Status line -->
+    <div v-if="turnStats || sessionId" class="status-line">
+      <span v-if="sessionId" class="status-item" :title="sessionId">
+        session {{ sessionId.slice(0, 8) }}…
+      </span>
+      <span v-if="turnStats" class="status-item">
+        {{ turnStats.inputTokens.toLocaleString() }} in · {{ turnStats.outputTokens.toLocaleString() }} out
+      </span>
+      <span v-if="sessionCost > 0" class="status-item status-cost">
+        ${{ sessionCost.toFixed(4) }}
+      </span>
+      <span v-if="busy" class="status-item status-busy">thinking…</span>
+    </div>
+
+    <!-- Command suggestions dropdown -->
+    <div v-if="suggestions.length > 0" class="cmd-suggestions">
+      <div
+        v-for="(s, i) in suggestions"
+        :key="s.name"
+        class="cmd-suggestion"
+        :class="{ selected: i === suggestionIdx }"
+        @mousedown.prevent="applySuggestion(s.name)"
+      >
+        <span class="cmd-name">/{{ s.name }}</span>
+        <span class="cmd-desc">{{ s.description }}</span>
+      </div>
+    </div>
+
     <div class="chat-input-area">
       <textarea
         ref="inputEl"
@@ -53,7 +81,7 @@
         rows="1"
         :disabled="busy"
         @keydown="onKeydown"
-        @input="autoResize"
+        @input="onInput"
       />
       <button class="chat-send-btn" :disabled="!inputText.trim() || busy" @click="sendMessage">
         <PhArrowUp :size="14" weight="bold" />
@@ -81,11 +109,37 @@ interface ChatMessage {
   partial?: boolean;
 }
 
+// Built-in claude slash commands
+interface Command { name: string; description: string }
+
+const BUILTIN_COMMANDS: Command[] = [
+  { name: "clear",        description: "Clear conversation history" },
+  { name: "compact",      description: "Compact conversation with summary" },
+  { name: "help",         description: "Show help and available commands" },
+  { name: "review",       description: "Review changes in current directory" },
+  { name: "init",         description: "Initialize project with CLAUDE.md" },
+  { name: "memory",       description: "Edit memory files" },
+  { name: "status",       description: "Show account and session status" },
+  { name: "doctor",       description: "Check Claude Code installation health" },
+  { name: "config",       description: "Open settings" },
+  { name: "permissions",  description: "Manage tool permissions" },
+  { name: "cost",         description: "Show token and cost usage for this session" },
+  { name: "model",        description: "Switch model" },
+];
+
+const allCommands = ref<Command[]>([...BUILTIN_COMMANDS]);
+const suggestions = ref<Command[]>([]);
+const suggestionIdx = ref(0);
+
+interface TurnStats { inputTokens: number; outputTokens: number; costUsd: number }
+
 let nextMsgId = 0;
 const messages = ref<ChatMessage[]>([]);
 const inputText = ref("");
 const busy = ref(false);
 const sessionId = ref("");
+const turnStats = ref<TurnStats | null>(null);
+const sessionCost = ref(0);
 const scrollEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 let unlisten: UnlistenFn | null = null;
@@ -155,6 +209,19 @@ function onLine(line: string) {
     busy.value = false;
     const last = messages.value[messages.value.length - 1];
     if (last?.partial) last.partial = false;
+    // Capture usage/cost from result event
+    if (type === "result") {
+      const usage = event.usage as Record<string, number> | undefined;
+      const cost = (event.cost_usd as number) ?? 0;
+      if (usage) {
+        turnStats.value = {
+          inputTokens: usage.input_tokens ?? 0,
+          outputTokens: usage.output_tokens ?? 0,
+          costUsd: cost,
+        };
+        sessionCost.value += cost;
+      }
+    }
     syncStore();
     scrollToBottom();
     return;
@@ -196,8 +263,40 @@ async function clearChat() {
   await invoke("claude_start", { id: props.chatId, cwd: props.cwd }).catch(() => {});
 }
 
+function updateSuggestions() {
+  const val = inputText.value;
+  const slashMatch = val.match(/^\/(\S*)$/);
+  if (!slashMatch) { suggestions.value = []; return; }
+  const q = slashMatch[1].toLowerCase();
+  suggestions.value = allCommands.value.filter(
+    (c) => c.name.toLowerCase().startsWith(q)
+  );
+  suggestionIdx.value = 0;
+}
+
+function applySuggestion(name: string) {
+  inputText.value = `/${name} `;
+  suggestions.value = [];
+  nextTick(() => { inputEl.value?.focus(); autoResize(); });
+}
+
 function onKeydown(e: KeyboardEvent) {
+  if (suggestions.value.length > 0) {
+    if (e.key === "ArrowDown") { e.preventDefault(); suggestionIdx.value = Math.min(suggestionIdx.value + 1, suggestions.value.length - 1); return; }
+    if (e.key === "ArrowUp")   { e.preventDefault(); suggestionIdx.value = Math.max(suggestionIdx.value - 1, 0); return; }
+    if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+      e.preventDefault();
+      applySuggestion(suggestions.value[suggestionIdx.value].name);
+      return;
+    }
+    if (e.key === "Escape") { suggestions.value = []; return; }
+  }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function onInput() {
+  autoResize();
+  updateSuggestions();
 }
 
 function autoResize() {
@@ -216,6 +315,20 @@ onMounted(async () => {
     resumeSessionId: stored || null,
   }).catch(() => {});
   unlisten = await listen<string>(`claude-data-${props.chatId}`, (ev) => onLine(ev.payload));
+
+  // Load installed skills and merge with built-ins for command suggestions.
+  try {
+    const skills = await invoke<{ name: string; description: string; enabled: boolean }[]>("list_skills");
+    const skillCmds: Command[] = skills
+      .filter((s) => s.enabled)
+      .map((s) => ({ name: s.name, description: s.description || `/${s.name} skill` }));
+    // Merge: skills override built-ins with same name.
+    const builtinNames = new Set(skillCmds.map((s) => s.name));
+    allCommands.value = [
+      ...BUILTIN_COMMANDS.filter((c) => !builtinNames.has(c.name)),
+      ...skillCmds,
+    ].sort((a, b) => a.name.localeCompare(b.name));
+  } catch { /* browser-only dev without Tauri */ }
 });
 
 onBeforeUnmount(() => {
@@ -376,6 +489,64 @@ watch(() => props.chatId, () => nextTick(() => inputEl.value?.focus()));
 .thinking-dot:nth-child(2) { animation-delay: 0.2s; }
 .thinking-dot:nth-child(3) { animation-delay: 0.4s; }
 @keyframes thinking { 0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1); } }
+
+/* Status line */
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.status-item {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.status-cost { color: #a78bfa; }
+.status-busy { color: var(--accent); animation: blink 1s step-end infinite; }
+
+/* Command suggestions */
+.cmd-suggestions {
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  max-height: 200px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.cmd-suggestion {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background .1s;
+}
+.cmd-suggestion:hover,
+.cmd-suggestion.selected { background: var(--bg-hover); }
+
+.cmd-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  flex-shrink: 0;
+  min-width: 100px;
+}
+
+.cmd-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .chat-input-area {
   display: flex;
