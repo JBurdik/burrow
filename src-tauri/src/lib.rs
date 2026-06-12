@@ -1688,6 +1688,50 @@ fn claude_abort(state: State<ClaudeState>, id: u32) {
     }
 }
 
+// ── Claude account info ───────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct ClaudeAccountInfo {
+    email: String,
+    display_name: String,
+    organization_type: String,   // e.g. "claude_max"
+    rate_limit_tier: String,     // e.g. "default_claude_max_5x"
+    status_text: String,         // raw stdout of `claude status` (for 5h window parsing)
+}
+
+#[tauri::command]
+fn claude_get_account(cwd: String) -> ClaudeAccountInfo {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = std::path::Path::new(&home).join(".claude.json");
+    let json: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(json!({}));
+    let acct = json.get("oauthAccount").cloned().unwrap_or(json!({}));
+    let email = acct.get("emailAddress").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let display_name = acct.get("displayName").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let organization_type = acct.get("organizationType").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let rate_limit_tier = acct.get("organizationRateLimitTier").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    // Run `claude status` to get 5h window info (plain text — no --json flag on status).
+    let status_text = resolve_lsp_bin("claude", &cwd).and_then(|bin| {
+        let mut env_map = std::collections::HashMap::new();
+        for key in &["HOME", "USER", "TMPDIR", "LANG"] {
+            if let Ok(v) = std::env::var(key) { env_map.insert(key.to_string(), v); }
+        }
+        env_map.insert("PATH".to_string(), augmented_path(&cwd));
+        env_map.insert("ANTHROPIC_API_KEY".to_string(), std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+        std::process::Command::new(bin)
+            .args(["status"])
+            .envs(&env_map)
+            .output()
+            .ok()
+    }).map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+    .unwrap_or_default();
+
+    ClaudeAccountInfo { email, display_name, organization_type, rate_limit_tier, status_text }
+}
+
 // ── Skills manager ────────────────────────────────────────────────────────────
 // Claude skills live as <claude-dir>/skills/<name>/SKILL.md (YAML frontmatter with
 // `name` + `description`). Disabling a skill renames its SKILL.md → SKILL.md.off so
@@ -2264,6 +2308,7 @@ pub fn run() {
             claude_send,
             claude_stop,
             claude_abort,
+            claude_get_account,
             read_file_base64,
             save_temp_image,
             get_hook_server_port,

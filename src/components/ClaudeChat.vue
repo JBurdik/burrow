@@ -45,22 +45,8 @@
       </div>
     </div>
 
-    <!-- Status line -->
-    <div v-if="turnStats || sessionId" class="status-line">
-      <span v-if="sessionId" class="status-item" :title="sessionId">
-        session {{ sessionId.slice(0, 8) }}…
-      </span>
-      <span v-if="turnStats" class="status-item">
-        {{ turnStats.inputTokens.toLocaleString() }} in · {{ turnStats.outputTokens.toLocaleString() }} out
-      </span>
-      <span v-if="sessionCost > 0" class="status-item status-cost">
-        ${{ sessionCost.toFixed(4) }}
-      </span>
-      <span v-if="busy" class="status-item status-busy">thinking…</span>
-    </div>
-
     <!-- Command suggestions dropdown -->
-    <div v-if="suggestions.length > 0" class="cmd-suggestions">
+    <div v-if="suggestions.length > 0" ref="suggestionsEl" class="cmd-suggestions">
       <div
         v-for="(s, i) in suggestions"
         :key="s.name"
@@ -90,6 +76,24 @@
       <button v-else class="chat-send-btn" :disabled="!inputText.trim()" @click="sendMessage">
         <PhArrowUp :size="14" weight="bold" />
       </button>
+    </div>
+
+    <!-- Status line below input -->
+    <div class="status-line">
+      <span v-if="model" class="status-item status-model">{{ model }}</span>
+      <span v-if="planLabel" class="status-item status-plan">{{ planLabel }}</span>
+      <span v-if="fiveHourWindow" class="status-item" :title="'5h usage window'">5h: {{ fiveHourWindow }}</span>
+      <span class="status-spacer" />
+      <span v-if="sessionId" class="status-item status-muted" :title="sessionId">
+        {{ sessionId.slice(0, 8) }}…
+      </span>
+      <span v-if="turnStats" class="status-item status-muted">
+        {{ turnStats.inputTokens.toLocaleString() }}↑ {{ turnStats.outputTokens.toLocaleString() }}↓
+      </span>
+      <span v-if="sessionCost > 0" class="status-item status-cost">
+        ${{ sessionCost.toFixed(4) }}
+      </span>
+      <span v-if="busy" class="status-item status-busy">thinking…</span>
     </div>
   </div>
 </template>
@@ -144,8 +148,33 @@ const suggestionIdx = ref(0);
 
 interface TurnStats { inputTokens: number; outputTokens: number; costUsd: number }
 
+interface AccountInfo {
+  email: string;
+  display_name: string;
+  organization_type: string;  // "claude_max" | "pro" | ...
+  rate_limit_tier: string;    // "default_claude_max_5x" | ...
+  status_text: string;        // raw `claude status` stdout
+}
+
+function msgKey(chatId: number) { return `burrow.claude.msgs.${chatId}`; }
+
+function loadMessages(chatId: number): ChatMessage[] {
+  try {
+    const raw = localStorage.getItem(msgKey(chatId));
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function saveMessages(chatId: number, msgs: ChatMessage[]) {
+  try {
+    // Only persist non-partial messages, cap at 200 to bound storage
+    const toSave = msgs.filter((m) => !m.partial).slice(-200);
+    localStorage.setItem(msgKey(chatId), JSON.stringify(toSave));
+  } catch {}
+}
+
 let nextMsgId = 0;
-const messages = ref<ChatMessage[]>([]);
+const messages = ref<ChatMessage[]>(loadMessages(props.chatId));
 const inputText = ref("");
 const busy = ref(false);
 const sessionId = ref("");
@@ -153,7 +182,35 @@ const turnStats = ref<TurnStats | null>(null);
 const sessionCost = ref(0);
 const scrollEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
+const suggestionsEl = ref<HTMLElement | null>(null);
 let unlisten: UnlistenFn | null = null;
+const model = ref("");
+const accountInfo = ref<AccountInfo | null>(null);
+
+// Parse plan label from organizationType / rateLimitTier
+const planLabel = computed(() => {
+  const ot = accountInfo.value?.organization_type ?? "";
+  const tier = accountInfo.value?.rate_limit_tier ?? "";
+  if (ot === "claude_max") {
+    // "default_claude_max_5x" → "Max 5×"
+    const m = tier.match(/(\d+)x$/i);
+    return m ? `Max ${m[1]}×` : "Max";
+  }
+  if (ot === "pro") return "Pro";
+  if (ot === "free") return "Free";
+  return ot;
+});
+
+// Parse 5h window from `claude status` plain text.
+// Expected line: "5h window: 23% (2h 14m remaining)" or similar.
+const fiveHourWindow = computed(() => {
+  const text = accountInfo.value?.status_text ?? "";
+  const m = text.match(/5[- ]h(?:our)?[^:]*:\s*([^\n]+)/i);
+  return m ? m[1].trim() : "";
+});
+
+// Seed nextMsgId from loaded messages
+nextMsgId = messages.value.reduce((max, m) => Math.max(max, m.id + 1), 0);
 
 const cwdDisplay = computed(() => {
   const parts = props.cwd.replace(/^\/Users\/[^/]+/, "~").split("/");
@@ -190,6 +247,7 @@ function onLine(line: string) {
       const sid = (event.session_id as string) ?? "";
       sessionId.value = sid;
       chats.sync(props.chatId, { claudeSessionId: sid });
+      if (event.model) model.value = event.model as string;
     }
     if (sub === "hook_started" || sub === "hook_response") return;
   }
@@ -233,6 +291,7 @@ function onLine(line: string) {
         sessionCost.value += cost;
       }
     }
+    saveMessages(props.chatId, messages.value);
     syncStore();
     scrollToBottom();
     return;
@@ -267,6 +326,7 @@ async function sendMessage() {
     chats.sync(props.chatId, { title: text.slice(0, 40) + (text.length > 40 ? "…" : "") });
   }
 
+  saveMessages(props.chatId, messages.value);
   syncStore();
   scrollToBottom();
   try {
@@ -293,6 +353,9 @@ async function clearChat() {
   messages.value = [];
   sessionId.value = "";
   busy.value = false;
+  turnStats.value = null;
+  sessionCost.value = 0;
+  localStorage.removeItem(msgKey(props.chatId));
   chats.sync(props.chatId, { claudeSessionId: "", busy: false, messageCount: 0, title: `Chat` });
   await invoke("claude_start", { id: props.chatId, cwd: props.cwd }).catch(() => {});
 }
@@ -314,10 +377,28 @@ function applySuggestion(name: string) {
   nextTick(() => { inputEl.value?.focus(); autoResize(); });
 }
 
+function scrollSuggestionIntoView(idx: number) {
+  nextTick(() => {
+    if (!suggestionsEl.value) return;
+    const items = suggestionsEl.value.querySelectorAll(".cmd-suggestion");
+    items[idx]?.scrollIntoView({ block: "nearest" });
+  });
+}
+
 function onKeydown(e: KeyboardEvent) {
   if (suggestions.value.length > 0) {
-    if (e.key === "ArrowDown") { e.preventDefault(); suggestionIdx.value = Math.min(suggestionIdx.value + 1, suggestions.value.length - 1); return; }
-    if (e.key === "ArrowUp")   { e.preventDefault(); suggestionIdx.value = Math.max(suggestionIdx.value - 1, 0); return; }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      suggestionIdx.value = Math.min(suggestionIdx.value + 1, suggestions.value.length - 1);
+      scrollSuggestionIntoView(suggestionIdx.value);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      suggestionIdx.value = Math.max(suggestionIdx.value - 1, 0);
+      scrollSuggestionIntoView(suggestionIdx.value);
+      return;
+    }
     if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
       e.preventDefault();
       applySuggestion(suggestions.value[suggestionIdx.value].name);
@@ -349,6 +430,11 @@ onMounted(async () => {
     resumeSessionId: stored || null,
   }).catch(() => {});
   unlisten = await listen<string>(`claude-data-${props.chatId}`, (ev) => onLine(ev.payload));
+
+  // Load account info (plan, 5h window) — non-blocking.
+  invoke<AccountInfo>("claude_get_account", { cwd: props.cwd })
+    .then((info) => { accountInfo.value = info; })
+    .catch(() => {});
 
   // Load installed skills and merge with built-ins for command suggestions.
   try {
@@ -528,20 +614,32 @@ watch(() => props.chatId, () => nextTick(() => inputEl.value?.focus()));
 .status-line {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 4px 12px;
+  gap: 8px;
+  padding: 3px 10px;
   background: var(--bg-panel);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+  min-height: 22px;
 }
+
+.status-spacer { flex: 1; }
 
 .status-item {
   font-size: 10px;
   font-family: var(--font-mono);
-  color: var(--text-muted);
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
+.status-muted { color: var(--text-muted); }
+.status-model { color: var(--text-primary); font-weight: 600; }
+.status-plan {
+  color: #f59e0b;
+  font-weight: 600;
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
 .status-cost { color: #a78bfa; }
 .status-busy { color: var(--accent); animation: blink 1s step-end infinite; }
 
