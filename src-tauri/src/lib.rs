@@ -1690,7 +1690,7 @@ fn claude_abort(state: State<ClaudeState>, id: u32) {
 
 // ── Claude account info ───────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct ClaudeAccountInfo {
     email: String,
     display_name: String,
@@ -1699,8 +1699,15 @@ struct ClaudeAccountInfo {
     status_text: String,         // raw stdout of `claude status` (for 5h window parsing)
 }
 
+#[derive(Default)]
+struct AccountInfoCache(Mutex<Option<ClaudeAccountInfo>>);
+
 #[tauri::command]
-fn claude_get_account(cwd: String) -> ClaudeAccountInfo {
+fn claude_get_account(state: State<AccountInfoCache>, cwd: String) -> ClaudeAccountInfo {
+    // Return cached value if already fetched — avoids N concurrent `claude status` spawns.
+    if let Some(cached) = state.0.lock().unwrap().clone() {
+        return cached;
+    }
     let home = std::env::var("HOME").unwrap_or_default();
     let path = std::path::Path::new(&home).join(".claude.json");
     let json: serde_json::Value = std::fs::read_to_string(&path)
@@ -1713,23 +1720,32 @@ fn claude_get_account(cwd: String) -> ClaudeAccountInfo {
     let organization_type = acct.get("organizationType").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let rate_limit_tier = acct.get("organizationRateLimitTier").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-    // Run `claude status` to get 5h window info (plain text — no --json flag on status).
-    let status_text = resolve_lsp_bin("claude", &cwd).and_then(|bin| {
+    // Run `claude status` with a 4s timeout — it can hang on network/TTY detection.
+    let status_text = if let Some(bin) = resolve_lsp_bin("claude", &cwd) {
         let mut env_map = std::collections::HashMap::new();
         for key in &["HOME", "USER", "TMPDIR", "LANG"] {
             if let Ok(v) = std::env::var(key) { env_map.insert(key.to_string(), v); }
         }
         env_map.insert("PATH".to_string(), augmented_path(&cwd));
         env_map.insert("ANTHROPIC_API_KEY".to_string(), std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
-        std::process::Command::new(bin)
-            .args(["status"])
-            .envs(&env_map)
-            .output()
-            .ok()
-    }).map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-    .unwrap_or_default();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let out = std::process::Command::new(bin)
+                .args(["status"])
+                .envs(&env_map)
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            let _ = tx.send(out);
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(4)).unwrap_or_default()
+    } else {
+        String::new()
+    };
 
-    ClaudeAccountInfo { email, display_name, organization_type, rate_limit_tier, status_text }
+    let info = ClaudeAccountInfo { email, display_name, organization_type, rate_limit_tier, status_text };
+    *state.0.lock().unwrap() = Some(info.clone());
+    info
 }
 
 // ── Skills manager ────────────────────────────────────────────────────────────
@@ -2259,6 +2275,7 @@ pub fn run() {
             app.manage(DaemonState { client: Mutex::new(client) });
             app.manage(LspState::default());
             app.manage(ClaudeState::default());
+            app.manage(AccountInfoCache::default());
 
             start_hook_server(app.handle().clone());
             install_agent_docs(app.handle());
