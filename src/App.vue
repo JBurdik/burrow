@@ -11,6 +11,7 @@
     />
     <Settings v-if="ui.settingsOpen" @close="ui.closeSettings()" />
     <div class="ide-body" :class="{ 'panels-swapped': ui.swapPanels }" :style="panelStyles">
+      <ActivityBar class="panel-activity" />
       <Sidebar class="panel-sidebar" />
       <div class="resize-handle panel-resize-left" @mousedown="startResize('left', $event)" />
       <div class="ide-main">
@@ -20,11 +21,19 @@
         </div>
         <Terminal
           v-for="w in ws.opened"
-          v-show="ws.active && w.id === ws.active.id"
+          v-show="ws.active && w.id === ws.active.id && ui.mode === 'terminal'"
           :key="w.id"
           :workspace-id="w.id"
           :cwd="w.path"
           :ref="(el) => setTermRef(w.id, el)"
+        />
+        <ClaudeChat
+          v-for="s in claudeSessions"
+          v-show="ws.active && s.workspaceId === ws.active.id && ui.mode === 'claude' && chats.activeByWs[s.workspaceId] === s.id"
+          :key="`cc-${s.id}`"
+          :chat-id="s.id"
+          :workspace-id="s.workspaceId"
+          :cwd="ws.workspaces.find((w) => w.id === s.workspaceId)?.path ?? ''"
         />
       </div>
       <div v-show="ui.rightPanelVisible" class="resize-handle panel-resize-right" @mousedown="startResize('right', $event)" />
@@ -67,11 +76,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, computed, provide } from "vue";
+import { ref, onMounted, onBeforeUnmount, computed, provide, watch } from "vue";
 import { PhFolderOpen, PhX } from "@phosphor-icons/vue";
 import TitleBar from "@/components/TitleBar.vue";
 import Sidebar from "@/components/Sidebar.vue";
+import ActivityBar from "@/components/ActivityBar.vue";
 import Terminal from "@/components/Terminal.vue";
+import ClaudeChat from "@/components/ClaudeChat.vue";
 import RightPanel from "@/components/RightPanel.vue";
 import Settings from "@/components/Settings.vue";
 import Spotlight from "@/components/Spotlight.vue";
@@ -79,6 +90,7 @@ import ToastStack from "@/components/ToastStack.vue";
 import UpdateBanner from "@/components/UpdateBanner.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
+import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { useGitStore } from "@/stores/git";
 import { useAgentsStore } from "@/stores/agents";
 import { useUpdateStore } from "@/stores/update";
@@ -133,6 +145,12 @@ function onResizeUp() {
 
 const ws = useWorkspaceStore();
 const ui = useUIStore();
+const chats = useClaudeChatsStore();
+
+// Sessions for opened workspaces — keep-alive mounting (same pattern as Terminal v-for ws.opened).
+const claudeSessions = computed(() =>
+  chats.allSessions.filter((s) => ws.opened.some((w) => w.id === s.workspaceId))
+);
 const git = useGitStore();
 const agents = useAgentsStore();
 const update = useUpdateStore();
@@ -190,6 +208,15 @@ function activeTerm() {
 }
 
 provide('activeTerm', activeTerm);
+
+// When switching to Claude mode for an active workspace, ensure a session exists.
+watch(
+  [() => ui.mode, () => ws.active],
+  ([mode, active]) => {
+    if (mode === 'claude' && active) chats.ensureSession(active.id);
+  },
+  { immediate: true },
+);
 
 async function openNewWorkspace() {
   const dir = await openDialog({ directory: true, multiple: false });
@@ -358,6 +385,7 @@ body {
   opacity: 0.4;
 }
 
+.panels-swapped .panel-activity { order: 0; }
 .panels-swapped .panel-sidebar { order: 5; }
 .panels-swapped .panel-resize-left { order: 4; }
 .panels-swapped .ide-main { order: 3; }

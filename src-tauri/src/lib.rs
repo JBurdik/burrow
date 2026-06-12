@@ -1504,6 +1504,171 @@ fn lsp_stop(state: State<LspState>, id: u32) {
     }
 }
 
+// ── Claude chat bridge ────────────────────────────────────────────────────────
+// Spawns `claude` in stream-json mode (the same mechanism as the VSCode extension,
+// subscription-legal after the 2026-06-15 headless restriction). Each workspace
+// gets its own persistent process (id = workspace_id); the session lives as long
+// as the workspace is mounted. Modeled on the LSP bridge above.
+
+// Read ~/.claude/settings.json and keep only stdio MCP servers.
+// Remote servers (type=sse/ws/http) cause 30s+ hangs when spawned without a TTY
+// because they try to connect to external endpoints that timeout. stdio servers
+// spawn a local subprocess and are safe. Servers with no explicit type default to stdio.
+fn build_mcp_config() -> String {
+    let empty = r#"{"mcpServers":{}}"#.to_string();
+    let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".claude")));
+    let settings_path = match config_dir {
+        Some(d) => d.join("settings.json"),
+        None => return empty,
+    };
+    let raw = match std::fs::read_to_string(&settings_path) {
+        Ok(s) => s,
+        Err(_) => return empty,
+    };
+    let v: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return empty,
+    };
+    let servers = match v.get("mcpServers").and_then(|s| s.as_object()) {
+        Some(m) => m,
+        None => return empty,
+    };
+    // Keep only stdio (or untyped) servers — remote ones hang without a TTY.
+    let local: serde_json::Map<String, serde_json::Value> = servers
+        .iter()
+        .filter(|(_, cfg)| {
+            let t = cfg.get("type").and_then(|t| t.as_str()).unwrap_or("stdio");
+            t == "stdio"
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    serde_json::to_string(&serde_json::json!({ "mcpServers": local }))
+        .unwrap_or(empty)
+}
+
+struct ClaudeProc {
+    stdin: std::process::ChildStdin,
+    child: std::process::Child,
+}
+
+#[derive(Default)]
+struct ClaudeState {
+    procs: Mutex<std::collections::HashMap<u32, ClaudeProc>>,
+}
+
+#[tauri::command]
+fn claude_start(
+    app: AppHandle,
+    state: State<ClaudeState>,
+    id: u32,
+    cwd: String,
+    resume_session_id: Option<String>,
+) -> Result<(), String> {
+    if state.procs.lock().unwrap().contains_key(&id) {
+        return Ok(());
+    }
+    let bin = resolve_lsp_bin("claude", &cwd)
+        .ok_or_else(|| "claude binary not found (checked ~/.local/bin, homebrew, PATH)".to_string())?;
+
+    let mcp_config = build_mcp_config();
+
+    let mut args = vec![
+        "--output-format".to_string(), "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--input-format".to_string(), "stream-json".to_string(),
+        "--include-partial-messages".to_string(),
+        "--permission-mode".to_string(), "acceptEdits".to_string(),
+        "--mcp-config".to_string(), mcp_config,
+        "--strict-mcp-config".to_string(),
+    ];
+    if let Some(sid) = resume_session_id {
+        args.push("--resume".to_string());
+        args.push(sid);
+    }
+
+    // Strip env to minimal set — bare GUI PATH + subscription auth via keychain.
+    // ANTHROPIC_API_KEY intentionally empty so subscription OAuth is used.
+    let mut env_map = std::collections::HashMap::new();
+    for key in ["HOME", "USER", "TMPDIR", "LANG", "CLAUDE_CONFIG_DIR"] {
+        if let Ok(v) = std::env::var(key) {
+            env_map.insert(key.to_string(), v);
+        }
+    }
+    env_map.insert("PATH".to_string(), augmented_path(&cwd));
+    env_map.insert("ANTHROPIC_API_KEY".to_string(), std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+
+    let mut child = std::process::Command::new(&bin)
+        .args(&args)
+        .current_dir(&cwd)
+        .envs(&env_map)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn claude: {e}"))?;
+
+    let stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+
+    // Reader: one JSON line per event → emit claude-data-{id}
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(l) => {
+                    let t = l.trim().to_string();
+                    if t.is_empty() { continue; }
+                    let _ = app2.emit(&format!("claude-data-{id}"), t);
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = app2.emit(&format!("claude-data-{id}"), r#"{"type":"exit"}"#);
+    });
+    // Drain stderr to prevent pipe stall.
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 4096];
+        let mut s = stderr;
+        while let Ok(n) = s.read(&mut buf) {
+            if n == 0 { break; }
+        }
+    });
+
+    state.procs.lock().unwrap().insert(id, ClaudeProc { stdin, child });
+    Ok(())
+}
+
+#[tauri::command]
+fn claude_send(state: State<ClaudeState>, id: u32, text: String, session_id: Option<String>) -> Result<(), String> {
+    use std::io::Write;
+    let mut guard = state.procs.lock().unwrap();
+    let proc = guard.get_mut(&id).ok_or("claude not running for this workspace")?;
+    let msg = serde_json::json!({
+        "type": "user",
+        "session_id": session_id.unwrap_or_default(),
+        "message": {
+            "role": "user",
+            "content": [{ "type": "text", "text": text }]
+        }
+    });
+    let line = msg.to_string() + "\n";
+    proc.stdin.write_all(line.as_bytes()).and_then(|_| proc.stdin.flush()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn claude_stop(state: State<ClaudeState>, id: u32) {
+    if let Some(mut proc) = state.procs.lock().unwrap().remove(&id) {
+        let _ = proc.child.kill();
+    }
+}
+
 // ── Skills manager ────────────────────────────────────────────────────────────
 // Claude skills live as <claude-dir>/skills/<name>/SKILL.md (YAML frontmatter with
 // `name` + `description`). Disabling a skill renames its SKILL.md → SKILL.md.off so
@@ -2030,6 +2195,7 @@ pub fn run() {
                 .ok();
             app.manage(DaemonState { client: Mutex::new(client) });
             app.manage(LspState::default());
+            app.manage(ClaudeState::default());
 
             start_hook_server(app.handle().clone());
             install_agent_docs(app.handle());
@@ -2075,6 +2241,9 @@ pub fn run() {
             lsp_start,
             lsp_send,
             lsp_stop,
+            claude_start,
+            claude_send,
+            claude_stop,
             read_file_base64,
             save_temp_image,
             get_hook_server_port,
