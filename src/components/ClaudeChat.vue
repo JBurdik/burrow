@@ -50,6 +50,12 @@
             <span class="tool-name">{{ msg.text }}</span>
           </div>
         </template>
+        <template v-else-if="msg.role === 'thinking'">
+          <details class="bubble-thinking">
+            <summary class="thinking-summary">Thinking…</summary>
+            <pre class="thinking-body">{{ msg.text }}</pre>
+          </details>
+        </template>
         <template v-else>
           <div class="bubble bubble-assistant">
             <!-- eslint-disable-next-line vue/no-v-html -->
@@ -137,7 +143,7 @@ const chats = useClaudeChatsStore();
 
 interface ChatMessage {
   id: number;
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "tool" | "thinking";
   text: string;
   partial?: boolean;
 }
@@ -254,7 +260,7 @@ const cwdDisplay = computed(() => {
 });
 
 const hasPartialAssistant = computed(() =>
-  messages.value.some((m) => m.role === "assistant" && m.partial)
+  messages.value.some((m) => (m.role === "assistant" || m.role === "thinking") && m.partial)
 );
 
 function scrollToBottom() {
@@ -299,8 +305,17 @@ function onLine(line: string) {
   if (type === "assistant") {
     const content = ((event.message as Record<string, unknown>)?.content ?? []) as Array<Record<string, unknown>>;
     const textParts = content.filter((b) => b.type === "text").map((b) => b.text as string).join("");
+    const thinkingParts = content.filter((b) => b.type === "thinking").map((b) => b.thinking as string).join("");
     const toolBlocks = content.filter((b) => b.type === "tool_use");
 
+    if (thinkingParts) {
+      const last = messages.value[messages.value.length - 1];
+      if (last?.role === "thinking" && last.partial) {
+        last.text += thinkingParts;
+      } else {
+        messages.value.push({ id: nextMsgId++, role: "thinking", text: thinkingParts, partial: true });
+      }
+    }
     if (textParts) {
       const last = messages.value[messages.value.length - 1];
       if (last?.role === "assistant" && last.partial) {
@@ -320,8 +335,9 @@ function onLine(line: string) {
 
   if (type === "result" || type === "exit") {
     busy.value = false;
-    const last = messages.value[messages.value.length - 1];
-    if (last?.partial) last.partial = false;
+    // Un-partial ALL messages — tool messages are pushed after assistant text,
+    // so checking only `last` would leave the assistant text bubble still partial.
+    for (const m of messages.value) { if (m.partial) m.partial = false; }
     // Capture usage/cost from result event
     if (type === "result") {
       const usage = event.usage as Record<string, number> | undefined;
@@ -671,6 +687,34 @@ watch(() => props.chatId, () => nextTick(() => inputEl.value?.focus()));
   animation: blink 1s step-end infinite;
 }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+.role-thinking { display: flex; justify-content: flex-start; }
+.bubble-thinking {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 4px 10px;
+  max-width: 95%;
+  opacity: 0.7;
+}
+.thinking-summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-style: italic;
+  user-select: none;
+}
+.thinking-summary:hover { color: var(--text-secondary); }
+.thinking-body {
+  margin: 6px 0 2px;
+  white-space: pre-wrap;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  max-height: 200px;
+  overflow-y: auto;
+}
 
 .role-tool { display: flex; justify-content: flex-start; }
 .bubble-tool {
