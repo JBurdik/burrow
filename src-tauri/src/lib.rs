@@ -1566,6 +1566,7 @@ fn claude_start(
     id: u32,
     cwd: String,
     resume_session_id: Option<String>,
+    bypass_permissions: Option<bool>,
 ) -> Result<(), String> {
     if state.procs.lock().unwrap().contains_key(&id) {
         return Ok(());
@@ -1575,12 +1576,13 @@ fn claude_start(
 
     let mcp_config = build_mcp_config();
 
+    let perm_mode = if bypass_permissions.unwrap_or(false) { "bypassPermissions" } else { "acceptEdits" };
     let mut args = vec![
         "--output-format".to_string(), "stream-json".to_string(),
         "--verbose".to_string(),
         "--input-format".to_string(), "stream-json".to_string(),
         "--include-partial-messages".to_string(),
-        "--permission-mode".to_string(), "acceptEdits".to_string(),
+        "--permission-mode".to_string(), perm_mode.to_string(),
         "--mcp-config".to_string(), mcp_config,
         "--strict-mcp-config".to_string(),
     ];
@@ -1686,6 +1688,18 @@ fn claude_abort(state: State<ClaudeState>, id: u32) {
                 .ok();
         }
     }
+}
+
+// Write a control_response to claude's stdin (approve/deny a permission prompt).
+// Format inferred from control_request event: {type,request_id,request:{type,...}}
+#[tauri::command]
+fn claude_respond_permission(state: State<ClaudeState>, id: u32, request_id: String, allow: bool) -> Result<(), String> {
+    use std::io::Write;
+    let mut guard = state.procs.lock().unwrap();
+    let proc = guard.get_mut(&id).ok_or("claude not running")?;
+    let msg = serde_json::json!({ "type": "control_response", "request_id": request_id, "allow": allow });
+    let line = msg.to_string() + "\n";
+    proc.stdin.write_all(line.as_bytes()).and_then(|_| proc.stdin.flush()).map_err(|e| e.to_string())
 }
 
 // ── Claude account info ───────────────────────────────────────────────────────
@@ -2325,6 +2339,7 @@ pub fn run() {
             claude_send,
             claude_stop,
             claude_abort,
+            claude_respond_permission,
             claude_get_account,
             read_file_base64,
             save_temp_image,

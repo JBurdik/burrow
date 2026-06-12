@@ -4,9 +4,28 @@
       <ClaudeIcon :size="16" class="chat-header-icon" />
       <span class="chat-header-title">Claude</span>
       <span class="chat-header-cwd" :title="cwd">{{ cwdDisplay }}</span>
-      <button class="chat-clear-btn" title="New conversation" @click="clearChat">
+      <button
+        class="chat-header-btn"
+        :class="{ 'btn-danger-active': dangerousMode }"
+        :title="dangerousMode ? 'Dangerous mode ON — click to disable' : 'Enable dangerous mode (skip all permissions)'"
+        @click="toggleDangerousMode"
+      >
+        <PhShieldWarning :size="13" weight="bold" />
+      </button>
+      <button class="chat-header-btn" title="New conversation" @click="clearChat">
         <PhArrowCounterClockwise :size="13" />
       </button>
+    </div>
+
+    <!-- Permission prompt -->
+    <div v-if="pendingPermission" class="permission-banner">
+      <PhShieldWarning :size="14" class="perm-icon" />
+      <div class="perm-body">
+        <span class="perm-title">Permission required</span>
+        <code class="perm-detail">{{ permissionDetail }}</code>
+      </div>
+      <button class="perm-btn perm-allow" @click="respondPermission(true)">Allow</button>
+      <button class="perm-btn perm-deny" @click="respondPermission(false)">Deny</button>
     </div>
 
     <div ref="scrollEl" class="chat-messages">
@@ -100,7 +119,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
-import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop } from "@phosphor-icons/vue";
+import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
@@ -179,6 +198,20 @@ const scrollEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const suggestionsEl = ref<HTMLElement | null>(null);
 let unlisten: UnlistenFn | null = null;
+
+// Dangerous mode (bypass all permissions) — persisted per chatId
+const DANGEROUS_KEY = (id: number) => `burrow.claude.dangerous.${id}`;
+const dangerousMode = ref(localStorage.getItem(DANGEROUS_KEY(props.chatId)) === "1");
+
+interface PendingPermission { requestId: string; request: Record<string, unknown> }
+const pendingPermission = ref<PendingPermission | null>(null);
+
+const permissionDetail = computed(() => {
+  const r = pendingPermission.value?.request;
+  if (!r) return "";
+  // Show command for bash, path for file ops, type otherwise
+  return (r.command ?? r.path ?? r.type ?? JSON.stringify(r).slice(0, 120)) as string;
+});
 const model = ref("");
 const accountInfo = ref<AccountInfo | null>(null);
 
@@ -243,6 +276,14 @@ function onLine(line: string) {
   catch { return; }
 
   const type = event.type as string;
+
+  if (type === "control_request") {
+    pendingPermission.value = {
+      requestId: event.request_id as string,
+      request: (event.request ?? {}) as Record<string, unknown>,
+    };
+    return;
+  }
 
   if (type === "system") {
     const sub = event.subtype as string;
@@ -341,10 +382,30 @@ async function sendMessage() {
   }
 }
 
+async function respondPermission(allow: boolean) {
+  if (!pendingPermission.value) return;
+  const { requestId } = pendingPermission.value;
+  pendingPermission.value = null;
+  await invoke("claude_respond_permission", { id: props.chatId, requestId, allow }).catch(() => {});
+}
+
+async function toggleDangerousMode() {
+  dangerousMode.value = !dangerousMode.value;
+  localStorage.setItem(DANGEROUS_KEY(props.chatId), dangerousMode.value ? "1" : "0");
+  // Restart process with new permission mode (keep session via --resume)
+  await invoke("claude_stop", { id: props.chatId }).catch(() => {});
+  await invoke("claude_start", {
+    id: props.chatId,
+    cwd: props.cwd,
+    resumeSessionId: sessionId.value || null,
+    bypassPermissions: dangerousMode.value,
+  }).catch(() => {});
+}
+
 async function abortTurn() {
   await invoke("claude_abort", { id: props.chatId }).catch(() => {});
   // Restart with --resume so session continues
-  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, resumeSessionId: sessionId.value || null }).catch(() => {});
+  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, resumeSessionId: sessionId.value || null, bypassPermissions: dangerousMode.value }).catch(() => {});
   busy.value = false;
   const last = messages.value[messages.value.length - 1];
   if (last?.partial) last.partial = false;
@@ -360,7 +421,7 @@ async function clearChat() {
   sessionCost.value = 0;
   localStorage.removeItem(msgKey(props.chatId));
   chats.sync(props.chatId, { claudeSessionId: "", busy: false, messageCount: 0, title: `Chat` });
-  await invoke("claude_start", { id: props.chatId, cwd: props.cwd }).catch(() => {});
+  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, bypassPermissions: dangerousMode.value }).catch(() => {});
 }
 
 function updateSuggestions() {
@@ -431,6 +492,7 @@ onMounted(async () => {
     id: props.chatId,
     cwd: props.cwd,
     resumeSessionId: stored || null,
+    bypassPermissions: dangerousMode.value,
   }).catch(() => {});
   unlisten = await listen<string>(`claude-data-${props.chatId}`, (ev) => onLine(ev.payload));
 
@@ -498,7 +560,7 @@ watch(() => props.chatId, () => nextTick(() => inputEl.value?.focus()));
   white-space: nowrap;
 }
 
-.chat-clear-btn {
+.chat-header-btn {
   background: none;
   border: none;
   color: var(--text-muted);
@@ -509,7 +571,43 @@ watch(() => props.chatId, () => nextTick(() => inputEl.value?.focus()));
   border-radius: 5px;
   transition: color .12s, background .12s;
 }
-.chat-clear-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.chat-header-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.btn-danger-active { color: #ef4444 !important; background: color-mix(in srgb, #ef4444 15%, transparent) !important; }
+
+/* Permission banner */
+.permission-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, #f59e0b 12%, var(--bg-panel));
+  border-bottom: 1px solid color-mix(in srgb, #f59e0b 40%, transparent);
+  flex-shrink: 0;
+}
+.perm-icon { color: #f59e0b; flex-shrink: 0; }
+.perm-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.perm-title { font-size: 11px; font-weight: 600; color: var(--text-primary); }
+.perm-detail {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perm-btn {
+  border: none;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity .12s;
+}
+.perm-btn:hover { opacity: 0.85; }
+.perm-allow { background: #16a34a; color: #fff; }
+.perm-deny  { background: #dc2626; color: #fff; }
 
 .chat-messages {
   flex: 1;
