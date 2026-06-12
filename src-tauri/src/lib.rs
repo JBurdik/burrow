@@ -1669,6 +1669,25 @@ fn claude_stop(state: State<ClaudeState>, id: u32) {
     }
 }
 
+// Abort the current turn by sending SIGINT — lets claude finalize gracefully
+// (it emits a result event) rather than SIGKILL which just drops the pipe.
+// The stdout reader thread will see EOF and emit the exit event normally.
+#[tauri::command]
+fn claude_abort(state: State<ClaudeState>, id: u32) {
+    let guard = state.procs.lock().unwrap();
+    if let Some(proc) = guard.get(&id) {
+        let pid = proc.child.id();
+        drop(guard);
+        #[cfg(unix)]
+        {
+            std::process::Command::new("kill")
+                .args(["-INT", &pid.to_string()])
+                .spawn()
+                .ok();
+        }
+    }
+}
+
 // ── Skills manager ────────────────────────────────────────────────────────────
 // Claude skills live as <claude-dir>/skills/<name>/SKILL.md (YAML frontmatter with
 // `name` + `description`). Disabling a skill renames its SKILL.md → SKILL.md.off so
@@ -2244,6 +2263,7 @@ pub fn run() {
             claude_start,
             claude_send,
             claude_stop,
+            claude_abort,
             read_file_base64,
             save_temp_image,
             get_hook_server_port,

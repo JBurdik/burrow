@@ -33,7 +33,8 @@
         </template>
         <template v-else>
           <div class="bubble bubble-assistant">
-            <pre class="assistant-text">{{ msg.text }}</pre>
+            <!-- eslint-disable-next-line vue/no-v-html -->
+            <div class="assistant-text md-body" v-html="renderMd(msg.text)" />
             <span v-if="msg.partial" class="partial-cursor" />
           </div>
         </template>
@@ -83,7 +84,10 @@
         @keydown="onKeydown"
         @input="onInput"
       />
-      <button class="chat-send-btn" :disabled="!inputText.trim() || busy" @click="sendMessage">
+      <button v-if="busy" class="chat-abort-btn" title="Abort" @click="abortTurn">
+        <PhStop :size="14" weight="bold" />
+      </button>
+      <button v-else class="chat-send-btn" :disabled="!inputText.trim()" @click="sendMessage">
         <PhArrowUp :size="14" weight="bold" />
       </button>
     </div>
@@ -92,11 +96,17 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
-import { PhArrowUp, PhArrowCounterClockwise, PhWrench } from "@phosphor-icons/vue";
+import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
+
+function renderMd(text: string): string {
+  return DOMPurify.sanitize(marked.parse(text) as string);
+}
 
 const props = defineProps<{ chatId: number; workspaceId: number; cwd: string }>();
 
@@ -113,6 +123,7 @@ interface ChatMessage {
 interface Command { name: string; description: string }
 
 const BUILTIN_COMMANDS: Command[] = [
+  { name: "pr",           description: "Write a PR description from recent git diff" },
   { name: "clear",        description: "Clear conversation history" },
   { name: "compact",      description: "Compact conversation with summary" },
   { name: "help",         description: "Show help and available commands" },
@@ -229,11 +240,24 @@ function onLine(line: string) {
 }
 
 async function sendMessage() {
-  const text = inputText.value.trim();
+  let text = inputText.value.trim();
   if (!text || busy.value) return;
   inputText.value = "";
   await nextTick();
   autoResize();
+
+  // /pr: build a PR description prompt from git diff
+  if (text.match(/^\/pr\b/)) {
+    try {
+      const stat = await invoke<{ stdout: string }>("run_git", { cwd: props.cwd, args: ["diff", "HEAD~1", "--stat", "--no-color"] });
+      const diff = await invoke<{ stdout: string }>("run_git", { cwd: props.cwd, args: ["diff", "HEAD~1", "--no-color"] });
+      text = `Write a PR description for these changes:\n\n${stat.stdout}\n\`\`\`diff\n${diff.stdout.slice(0, 8000)}\n\`\`\``;
+    } catch (e) {
+      messages.value.push({ id: nextMsgId++, role: "assistant", text: `Error reading git diff: ${e}` });
+      return;
+    }
+  }
+
   messages.value.push({ id: nextMsgId++, role: "user", text });
   busy.value = true;
 
@@ -252,6 +276,16 @@ async function sendMessage() {
     busy.value = false;
     syncStore();
   }
+}
+
+async function abortTurn() {
+  await invoke("claude_abort", { id: props.chatId }).catch(() => {});
+  // Restart with --resume so session continues
+  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, resumeSessionId: sessionId.value || null }).catch(() => {});
+  busy.value = false;
+  const last = messages.value[messages.value.length - 1];
+  if (last?.partial) last.partial = false;
+  syncStore();
 }
 
 async function clearChat() {
@@ -595,4 +629,46 @@ watch(() => props.chatId, () => nextTick(() => inputEl.value?.focus()));
 }
 .chat-send-btn:hover:not(:disabled) { background: var(--accent-dim); }
 .chat-send-btn:disabled { opacity: 0.4; cursor: default; }
+
+.chat-abort-btn {
+  background: #dc2626;
+  border: none;
+  border-radius: 7px;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  transition: background .12s;
+}
+.chat-abort-btn:hover { background: #b91c1c; }
+
+/* Markdown body inside assistant bubble */
+.md-body {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.6;
+  white-space: normal;
+}
+.md-body :deep(p) { margin: 0 0 8px; }
+.md-body :deep(p:last-child) { margin-bottom: 0; }
+.md-body :deep(ul), .md-body :deep(ol) { margin: 4px 0 8px; padding-left: 20px; }
+.md-body :deep(li) { margin: 2px 0; }
+.md-body :deep(code) { font-family: var(--font-mono); font-size: 11px; background: color-mix(in srgb, var(--accent) 12%, transparent); padding: 1px 4px; border-radius: 3px; }
+.md-body :deep(pre) { background: var(--bg-base); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 6px 0; }
+.md-body :deep(pre code) { background: none; padding: 0; font-size: 11px; }
+.md-body :deep(blockquote) { border-left: 3px solid var(--accent); margin: 6px 0; padding-left: 10px; color: var(--text-secondary); }
+.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-weight: 700; margin: 10px 0 4px; color: var(--text-primary); }
+.md-body :deep(h1) { font-size: 16px; }
+.md-body :deep(h2) { font-size: 14px; }
+.md-body :deep(h3) { font-size: 13px; }
+.md-body :deep(a) { color: var(--accent); text-decoration: underline; }
+.md-body :deep(hr) { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.md-body :deep(table) { border-collapse: collapse; font-size: 12px; margin: 6px 0; }
+.md-body :deep(th), .md-body :deep(td) { border: 1px solid var(--border); padding: 4px 8px; }
+.md-body :deep(th) { background: var(--bg-panel); font-weight: 600; }
 </style>
