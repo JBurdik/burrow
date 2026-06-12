@@ -80,7 +80,7 @@
 
     <!-- Status line below input -->
     <div class="status-line">
-      <span v-if="model" class="status-item status-model">{{ model }}</span>
+      <span v-if="modelDisplay" class="status-item status-model">{{ modelDisplay }}</span>
       <span v-if="planLabel" class="status-item status-plan">{{ planLabel }}</span>
       <span v-if="fiveHourWindow" class="status-item" :title="'5h usage window'">5h: {{ fiveHourWindow }}</span>
       <span class="status-spacer" />
@@ -126,20 +126,15 @@ interface ChatMessage {
 // Built-in claude slash commands
 interface Command { name: string; description: string }
 
+// Only commands that work in stream-json mode (no TTY display, no editor).
 const BUILTIN_COMMANDS: Command[] = [
-  { name: "pr",           description: "Write a PR description from recent git diff" },
-  { name: "clear",        description: "Clear conversation history" },
-  { name: "compact",      description: "Compact conversation with summary" },
-  { name: "help",         description: "Show help and available commands" },
-  { name: "review",       description: "Review changes in current directory" },
-  { name: "init",         description: "Initialize project with CLAUDE.md" },
-  { name: "memory",       description: "Edit memory files" },
-  { name: "status",       description: "Show account and session status" },
-  { name: "doctor",       description: "Check Claude Code installation health" },
-  { name: "config",       description: "Open settings" },
-  { name: "permissions",  description: "Manage tool permissions" },
-  { name: "cost",         description: "Show token and cost usage for this session" },
-  { name: "model",        description: "Switch model" },
+  { name: "pr",      description: "Write a PR description from recent git diff" },
+  { name: "clear",   description: "Clear conversation history" },
+  { name: "compact", description: "Compact conversation with summary" },
+  { name: "help",    description: "Show available commands" },
+  { name: "review",  description: "Review changes in current directory" },
+  { name: "init",    description: "Initialize project with CLAUDE.md" },
+  { name: "cost",    description: "Show token and cost usage for this session" },
 ];
 
 const allCommands = ref<Command[]>([...BUILTIN_COMMANDS]);
@@ -186,6 +181,14 @@ const suggestionsEl = ref<HTMLElement | null>(null);
 let unlisten: UnlistenFn | null = null;
 const model = ref("");
 const accountInfo = ref<AccountInfo | null>(null);
+
+// Model from stream or fallback from account info (claude stores chosen model in status_text)
+const modelDisplay = computed(() => {
+  if (model.value) return model.value;
+  // Try to parse "Model: <name>" from claude status text
+  const m = accountInfo.value?.status_text.match(/model[:\s]+([^\s\n]+)/i);
+  return m ? m[1] : "";
+});
 
 // Parse plan label from organizationType / rateLimitTier
 const planLabel = computed(() => {
@@ -436,18 +439,16 @@ onMounted(async () => {
     .then((info) => { accountInfo.value = info; })
     .catch(() => {});
 
-  // Load installed skills and merge with built-ins for command suggestions.
+  // Load installed skills and merge with built-ins. Skills override same-named built-ins.
+  // Map-based dedup ensures no duplicates regardless of list_skills returning overlaps.
   try {
     const skills = await invoke<{ name: string; description: string; enabled: boolean }[]>("list_skills");
-    const skillCmds: Command[] = skills
-      .filter((s) => s.enabled)
-      .map((s) => ({ name: s.name, description: s.description || `/${s.name} skill` }));
-    // Merge: skills override built-ins with same name.
-    const builtinNames = new Set(skillCmds.map((s) => s.name));
-    allCommands.value = [
-      ...BUILTIN_COMMANDS.filter((c) => !builtinNames.has(c.name)),
-      ...skillCmds,
-    ].sort((a, b) => a.name.localeCompare(b.name));
+    const merged = new Map<string, Command>();
+    for (const c of BUILTIN_COMMANDS) merged.set(c.name, c);
+    for (const s of skills) {
+      if (s.enabled) merged.set(s.name, { name: s.name, description: s.description || `/${s.name} skill` });
+    }
+    allCommands.value = [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
   } catch { /* browser-only dev without Tauri */ }
 });
 
