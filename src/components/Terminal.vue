@@ -29,6 +29,13 @@
         <span class="tab-label" :class="{ 'tab-flash': getAllLeaves(tab.root).some(l => flashingLeafs.has(l.id)) }">{{ tabTitle(tab) }}</span>
         <span v-if="tabStatusText(tab)" class="tab-status-text">{{ tabStatusText(tab) }}</span>
         <span
+          v-if="tabProgress(tab) !== undefined"
+          class="tab-progress-bar"
+          :title="tabProgressLabel(tab)"
+        >
+          <span class="tab-progress-fill" :style="{ width: `${(tabProgress(tab)! * 100).toFixed(0)}%` }" />
+        </span>
+        <span
           v-if="tabLeafCount(tab) > 1"
           class="tab-split-count"
           :title="`${tabLeafCount(tab)} panes`"
@@ -51,6 +58,24 @@
       <button key="__add" class="tab tab-add" @click="addTab()" title="New terminal">
         <PhPlus :size="12" />
       </button>
+    </TransitionGroup>
+
+    <!-- Log strip: last entries from `burrow log` for the active tab -->
+    <TransitionGroup
+      v-if="activeTabLogs.length"
+      name="log-fade"
+      tag="div"
+      class="log-strip"
+    >
+      <div
+        v-for="entry in activeTabLogs"
+        :key="entry.ts"
+        class="log-entry"
+        :class="`log-${entry.level}`"
+      >
+        <span class="log-level">{{ entry.level }}</span>
+        <span class="log-msg">{{ entry.message }}</span>
+      </div>
     </TransitionGroup>
 
     <div v-if="tabs.length > 0" class="terminal-body">
@@ -151,7 +176,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut, PhFileCode } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -203,6 +228,13 @@ interface PersistedTab {
   initial_cmd: string | null;
   pty_id: number | null;
   cwd: string | null;
+  session_id: string | null;
+}
+
+interface LogEntry {
+  level: "info" | "warn" | "error";
+  message: string;
+  ts: number;
 }
 
 interface DaemonSession {
@@ -414,10 +446,19 @@ function tabDirty(tab: Tab): boolean {
 
 const doneTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
-// ── Per-leaf hook-server event listeners (status-text + flash) ────────────────
+// ── Per-leaf hook-server event listeners ─────────────────────────────────────
 // Keyed by ptyId. Registered when a leaf is created, cleaned up when closed.
 const leafUnlisteners = new Map<number, UnlistenFn[]>();
 const flashingLeafs = ref(new Set<number>());
+// Log strip: last N entries per tab (keyed by tab.id, NOT leaf.id).
+const tabLogs = ref<Record<number, LogEntry[]>>({});
+
+function findTabIdByLeafId(leafId: number): number | null {
+  for (const tab of tabs.value) {
+    if (findLeaf(tab.root, leafId)) return tab.id;
+  }
+  return null;
+}
 
 function registerLeafListeners(leafId: number) {
   const unlisteners: UnlistenFn[] = [];
@@ -439,6 +480,33 @@ function registerLeafListeners(leafId: number) {
     listen<{ diff: string; title: string }>(`pty-open-diff-${leafId}`, (ev) => {
       const { diff, title } = ev.payload;
       if (diff) openDiffInTab(title, false, diff);
+    }),
+    listen<{ progress: number | null; label: string }>(`pty-progress-${leafId}`, (ev) => {
+      for (const tab of tabs.value) {
+        const leaf = findLeaf(tab.root, leafId);
+        if (leaf) {
+          leaf.progress = ev.payload.progress ?? undefined;
+          leaf.progressLabel = ev.payload.label || undefined;
+          break;
+        }
+      }
+    }),
+    listen<{ level: string; message: string }>(`pty-log-${leafId}`, (ev) => {
+      const tabId = findTabIdByLeafId(leafId);
+      if (tabId === null) return;
+      const entry: LogEntry = {
+        level: (ev.payload.level as LogEntry["level"]) || "info",
+        message: ev.payload.message,
+        ts: Date.now(),
+      };
+      const prev = tabLogs.value[tabId] ?? [];
+      tabLogs.value = { ...tabLogs.value, [tabId]: [...prev, entry].slice(-20) };
+    }),
+    listen<string>(`pty-session-id-${leafId}`, (ev) => {
+      for (const tab of tabs.value) {
+        const leaf = findLeaf(tab.root, leafId);
+        if (leaf) { leaf.sessionId = ev.payload; break; }
+      }
     }),
   ]).then((fns) => {
     // Only store if the leaf wasn't already removed before promises resolved.
@@ -635,6 +703,26 @@ function tabStatusText(tab: Tab): string {
   }
   return "";
 }
+
+function tabProgress(tab: Tab): number | undefined {
+  for (const l of getAllLeaves(tab.root)) {
+    if (l.progress !== undefined) return l.progress;
+  }
+  return undefined;
+}
+
+function tabProgressLabel(tab: Tab): string {
+  for (const l of getAllLeaves(tab.root)) {
+    if (l.progressLabel) return l.progressLabel;
+  }
+  return "";
+}
+
+const activeTabLogs = computed(() => {
+  const tab = tabs.value.find((t) => t.id === activeTabId.value);
+  if (!tab) return [];
+  return (tabLogs.value[tab.id] ?? []).slice(-5);
+});
 
 // ── in-app close confirmation ───────────────────────────────────────────────
 
@@ -901,6 +989,15 @@ function onKeydown(e: KeyboardEvent) {
     if (wsTabs[idx]) activateTab(wsTabs[idx].id);
     return;
   }
+  if (e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey && e.key === "U") {
+    // Jump to first unread (review) tab in this workspace.
+    const reviewTab = tabs.value.find((t) => tabStatus(t) === "review");
+    if (reviewTab) {
+      e.preventDefault();
+      activateTab(reviewTab.id);
+    }
+    return;
+  }
   if (!e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key.toLowerCase();
   if (k === "t") {
@@ -932,14 +1029,14 @@ function persist() {
     initial_cmd: l.initialCmd ?? null,
     pty_id: l.id,
     cwd: l.cwd ?? null,
+    session_id: l.sessionId ?? null,
   }));
   invoke("save_terminal_tabs", { workspaceId: props.workspaceId, tabs: payload });
 }
 
-// Include both title and defaultTitle in the watcher key so a live-title change
-// (agent sets a descriptive name mid-session) actually triggers a save.
+// Include title, defaultTitle, and sessionId so any of those changes triggers a save.
 watch(
-  () => allLeaves().map((l) => `${l.id}|${l.title}|${l.defaultTitle}`).join(","),
+  () => allLeaves().map((l) => `${l.id}|${l.title}|${l.defaultTitle}|${l.sessionId ?? ""}`).join(","),
   persist,
 );
 
@@ -1007,7 +1104,15 @@ onMounted(async () => {
     saved.forEach((s) => {
       // Use saved pty_id when the session is alive in daemon, otherwise get fresh id
       const useSavedId = s.pty_id != null && alivePtys.has(s.pty_id);
-      const leaf = makeLeaf(undefined, {
+      // Auto-resume Claude if PTY is dead but we have a session_id.
+      // Pattern: `claude --resume <id>` — picks up the conversation where it left off.
+      const resumeCmd =
+        !useSavedId &&
+        s.session_id &&
+        /\bclaude\b/.test(s.initial_cmd ?? "")
+          ? `claude --resume ${s.session_id}`
+          : undefined;
+      const leaf = makeLeaf(resumeCmd, {
         cwd: s.cwd ?? undefined,
         id: useSavedId ? s.pty_id! : undefined,
       });
@@ -1017,6 +1122,7 @@ onMounted(async () => {
       // Restore the live meaningful title (agent-set, command name, …).
       // Falls back to defaultTitle if not saved (old rows / first-run).
       leaf.title = s.title || leaf.defaultTitle;
+      if (s.session_id) leaf.sessionId = s.session_id;
       const tab: Tab = { id: leaf.id, root: leaf };
       tabs.value.push(tab);
       registerLeafListeners(leaf.id);
@@ -1409,4 +1515,63 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
 }
 .pane-titlebar:hover .pane-title-close { opacity: 0.8; }
 .pane-title-close:hover { opacity: 1 !important; color: var(--red); background: rgba(239,68,68,0.15); }
+
+/* Progress bar inside a tab button */
+.tab-progress-bar {
+  display: inline-flex;
+  align-items: center;
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255,255,255,0.1);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.tab-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+  min-width: 2px;
+}
+
+/* Log strip below the tab bar */
+.log-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: color-mix(in srgb, var(--bg-panel) 95%, var(--accent) 5%);
+  border-bottom: 1px solid var(--border);
+  padding: 2px 10px;
+  flex-shrink: 0;
+  max-height: 80px;
+  overflow: hidden;
+}
+.log-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.log-level {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.log-entry.log-info .log-level  { color: var(--accent); }
+.log-entry.log-warn .log-level  { color: var(--yellow); }
+.log-entry.log-error .log-level { color: var(--red); }
+.log-msg { overflow: hidden; text-overflow: ellipsis; }
+.log-fade-enter-active { transition: opacity 0.2s ease, transform 0.2s ease; }
+.log-fade-enter-from  { opacity: 0; transform: translateY(-4px); }
+.log-fade-leave-active { transition: opacity 0.15s ease; position: absolute; }
+.log-fade-leave-to    { opacity: 0; }
 </style>

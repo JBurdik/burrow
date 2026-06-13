@@ -4,6 +4,11 @@
       <div class="header-title">
         <span class="header-label">Workspaces</span>
         <span v-if="store.topLevel.length" class="header-count">{{ store.topLevel.length }}</span>
+        <span
+          v-if="unreadCount > 0"
+          class="header-unread"
+          :title="`${unreadCount} unread — ⌘⇧U to jump`"
+        >{{ unreadCount }}</span>
       </div>
       <button class="icon-btn" title="Open folder" @click="pickFolder">
         <PhFolderPlus :size="15" />
@@ -456,6 +461,16 @@ function aggStatus(id: number): TermStatus | null {
   return s === "idle" ? null : s;
 }
 
+// Count of tabs with "review" status across ALL workspaces (agent finished while
+// user wasn't watching). Drives the unread badge in the sidebar header.
+const unreadCount = computed(() => {
+  let n = 0;
+  for (const tabs of Object.values(termTabs.tabsByWs)) {
+    n += tabs.filter((t) => t.status === "review").length;
+  }
+  return n;
+});
+
 // ── branch switcher ──────────────────────────────────────────────────────────
 interface GitOutput { stdout: string; stderr: string; code: number; }
 
@@ -819,6 +834,21 @@ async function confirmCreate() {
   border-radius: 9px;
   padding: 1px 7px;
   line-height: 1.5;
+}
+
+.header-unread {
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--green);
+  border-radius: 9px;
+  padding: 1px 6px;
+  line-height: 1.5;
+  animation: pulse-unread 2s ease-in-out infinite;
+}
+@keyframes pulse-unread {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
 }
 
 .icon-btn {

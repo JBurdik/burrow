@@ -22,7 +22,7 @@
 # Sub-agents run INTERACTIVELY on your subscription (plain `claude`, never -p).
 
 sub="$1"
-[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|trigger-flash|diff|top|capture-pane <args>" >&2; exit 1; }
+[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane <args>" >&2; exit 1; }
 shift
 
 case "$sub" in
@@ -191,6 +191,20 @@ case "$sub" in
           git_head=$(git rev-parse HEAD 2>/dev/null)
           [ -n "$git_head" ] && printf '%s\n%s' "$git_head" "$PWD" \
             > "$BURROW_SESSION_DIR/last_head_${BURROW_PTY_ID}"
+        fi
+        # Persist session_id so Burrow can auto-resume this conversation on restart.
+        session_id=$(printf '%s' "$json" | sed -n 's/.*"session_id"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+        if [ -n "$session_id" ]; then
+          file_port=""
+          [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
+            file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+          for port in "$BURROW_HOOK_PORT" "$file_port"; do
+            [ -n "$port" ] || continue
+            curl -sf -X POST "http://127.0.0.1:$port/session-id" \
+              -H 'Content-Type: application/json' \
+              -d "{\"ptyId\":$BURROW_PTY_ID,\"sessionId\":\"$session_id\"}" \
+              >/dev/null 2>&1 && break
+          done
         fi ;;
       PreToolUse|PostToolUse) state=running ;;
       Notification)
@@ -448,6 +462,68 @@ PY
     exit $?
     ;;
 
+  set-progress)
+    # burrow set-progress [0.0-1.0] [--label "text"]
+    # Show a progress bar in this tab's header. No arg = clear the bar.
+    progress=""; label=""
+    if [ $# -gt 0 ]; then
+      case "$1" in
+        --*) ;;  # no positional progress value, just flags
+        *)   progress="$1"; shift ;;
+      esac
+    fi
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --label) label="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -n "$BURROW_PTY_ID" ] || exit 0
+    if [ -z "$progress" ]; then
+      payload="{\"ptyId\":$BURROW_PTY_ID,\"progress\":null}"
+    else
+      escaped_label=$(printf '%s' "$label" | sed 's/\\/\\\\/g; s/"/\\"/g')
+      payload="{\"ptyId\":$BURROW_PTY_ID,\"progress\":$progress,\"label\":\"$escaped_label\"}"
+    fi
+    file_port=""
+    [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
+      file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+    for port in "$BURROW_HOOK_PORT" "$file_port"; do
+      [ -n "$port" ] || continue
+      curl -sf -X POST "http://127.0.0.1:$port/set-progress" \
+        -H 'Content-Type: application/json' \
+        -d "$payload" >/dev/null 2>&1 && break
+    done
+    exit 0
+    ;;
+
+  log)
+    # burrow log [--level info|warn|error] [--] <message>
+    # Append a timestamped log line in the Burrow tab log strip.
+    level="info"; msg=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --level) level="$2"; shift 2 ;;
+        --) shift; msg="$*"; break ;;
+        *)  msg="$*"; break ;;
+      esac
+    done
+    [ -n "$BURROW_PTY_ID" ] || exit 0
+    msg_json=$(printf '%s' "$msg" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null)
+    [ -n "$msg_json" ] || msg_json='""'
+    file_port=""
+    [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
+      file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+    for port in "$BURROW_HOOK_PORT" "$file_port"; do
+      [ -n "$port" ] || continue
+      curl -sf -X POST "http://127.0.0.1:$port/log" \
+        -H 'Content-Type: application/json' \
+        -d "{\"ptyId\":$BURROW_PTY_ID,\"level\":\"$level\",\"message\":$msg_json}" \
+        >/dev/null 2>&1 && break
+    done
+    exit 0
+    ;;
+
   capture-pane)
     # burrow capture-pane [--scrollback] [--lines N]
     # Prints recent PTY output for the current terminal.
@@ -458,7 +534,7 @@ PY
     ;;
 
   *)
-    echo "burrow: unknown command '$sub' (use spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|trigger-flash|diff|top|capture-pane)" >&2
+    echo "burrow: unknown command '$sub' (use spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane)" >&2
     exit 1
     ;;
 esac

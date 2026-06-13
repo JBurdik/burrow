@@ -94,6 +94,7 @@ import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { useGitStore } from "@/stores/git";
 import { useAgentsStore } from "@/stores/agents";
 import { useUpdateStore } from "@/stores/update";
+import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { matchesShortcut } from "@/lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -154,6 +155,7 @@ const claudeSessions = computed(() =>
 const git = useGitStore();
 const agents = useAgentsStore();
 const update = useUpdateStore();
+const tabsStore = useTerminalTabsStore();
 const spotlightRef = ref<InstanceType<typeof Spotlight> | null>(null);
 const cheatsheetOpen = ref(false);
 
@@ -164,6 +166,7 @@ const CHEATSHEET_GROUPS = [
       { keys: "⌘ ,",   desc: "Settings" },
       { keys: "⌘ P",   desc: "Command Palette" },
       { keys: "⌘ /",   desc: "Keyboard Shortcuts" },
+      { keys: "⌘ ⇧ U", desc: "Jump to unread tab" },
       { keys: "Esc",   desc: "Close overlay" },
     ],
   },
@@ -270,6 +273,20 @@ function onKeydown(e: KeyboardEvent) {
       activeTerm()?.spawnAgent(agents.commandLine(a));
       return;
     }
+  }
+  // ⌘⇧U — jump to first unread (review) tab across ALL workspaces
+  if (e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey && e.key === "U") {
+    e.preventDefault();
+    for (const [wsId, wsTabs] of Object.entries(tabsStore.tabsByWs)) {
+      const reviewTab = wsTabs.find((t) => t.status === "review");
+      if (reviewTab) {
+        const targetWs = ws.workspaces.find((w) => w.id === Number(wsId));
+        if (targetWs) ws.open(targetWs);
+        tabsStore.activate(Number(wsId), reviewTab.id);
+        break;
+      }
+    }
+    return;
   }
   if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
     if (e.key === ",") {

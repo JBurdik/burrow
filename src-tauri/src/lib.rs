@@ -546,11 +546,15 @@ burrow worktree hotfix --base-ref main      # new branch based on main\n\
 burrow worktree feat/x --path ~/wt/x        # override the on-disk location\n\
 ```\n\
 Use this to isolate a sub-task on its own branch/checkout instead of sharing the working tree. The worktree's disk path defaults to Burrow's configured worktrees dir.\n\n\
-## Status labels & visual signals\n\
+## Status labels, progress & logs\n\
 ```\n\
 burrow set-status \"running tests...\"   # show a label next to this tab's status dot\n\
 burrow set-status                        # clear the label\n\
 burrow trigger-flash                     # briefly flash this tab (visual ping)\n\
+burrow set-progress 0.4 --label \"Building\"  # show a progress bar in the tab (0.0–1.0)\n\
+burrow set-progress                      # clear the progress bar\n\
+burrow log -- \"Compiled 12 files\"       # append a timestamped log line below the tab bar\n\
+burrow log --level warn -- \"Tests slow\" # levels: info (default), warn, error\n\
 ```\n\
 Use these to communicate progress to the user without printing to the terminal.\n\n\
 ## Inspect what changed this turn\n\
@@ -586,17 +590,31 @@ These rules apply to every task you run inside Burrow. Follow them unless the us
 **Diff check (`burrow diff --last-turn`):**\n\
 - Before reporting a multi-file change as complete, run `burrow diff --last-turn` internally as a sanity check to confirm the expected files changed.\n\
 - You may skip this for single-file edits or when the user's request was purely read-only.\n\n\
+**Progress bar (`burrow set-progress`):**\n\
+- Use `burrow set-progress <0.0-1.0> --label \"<phase>\"` for tasks with measurable progress (running many tests, compiling many files, processing a list).\n\
+- Clear with `burrow set-progress` (no arg) when the task ends.\n\
+- Do NOT use for tasks where progress is not measurable — `set-status` suffices.\n\n\
+**Log strip (`burrow log`):**\n\
+- Use `burrow log -- \"message\"` to record key milestones that are worth keeping visible (e.g. \"Compiled 12 files\", \"3 tests failed\", \"Wrote auth.ts\").\n\
+- Use `--level warn` or `--level error` for problems.\n\
+- Do NOT log every step — only events the user would want to scroll back and read. Aim for 3-8 log lines per turn max.\n\n\
 **Example turn lifecycle:**\n\
 ```\n\
 burrow set-status \"analyzing\"\n\
+burrow log -- \"Reading 8 files\"\n\
 # ...read files, understand the problem...\n\
 burrow set-status \"fixing\"\n\
-# ...make edits...\n\
+burrow set-progress 0.0 --label \"Editing\"\n\
+# ...make edits, update progress as files done...\n\
+burrow set-progress 1.0 --label \"Editing\"\n\
 burrow set-status \"testing\"\n\
+burrow set-progress 0.0 --label \"Tests\"\n\
 # ...run tests...\n\
-burrow diff --last-turn     # quick sanity check\n\
-burrow set-status           # clear — turn done\n\
-burrow trigger-flash        # ping user: \"this tab finished\"\n\
+burrow log -- \"All tests passed\"\n\
+burrow set-progress          # clear\n\
+burrow diff --last-turn      # quick sanity check\n\
+burrow set-status            # clear — turn done\n\
+burrow trigger-flash         # ping user: \"this tab finished\"\n\
 ```";
 
 // ── Hook HTTP server ──────────────────────────────────────────────────────────
@@ -668,6 +686,40 @@ fn start_hook_server(app: AppHandle) {
                                 &format!("pty-open-diff-{pty_id}"),
                                 serde_json::json!({ "diff": diff, "title": title }),
                             );
+                        }
+                    }
+                    "/set-progress" => {
+                        // burrow set-progress: show/clear a progress bar in the tab header.
+                        if let Some(pty_id) = val["ptyId"].as_u64() {
+                            let _ = app.emit(
+                                &format!("pty-progress-{pty_id}"),
+                                serde_json::json!({
+                                    "progress": val["progress"],
+                                    "label": val["label"].as_str().unwrap_or("")
+                                }),
+                            );
+                        }
+                    }
+                    "/log" => {
+                        // burrow log: append a timestamped log entry for this tab.
+                        if let Some(pty_id) = val["ptyId"].as_u64() {
+                            let level = val["level"].as_str().unwrap_or("info").to_string();
+                            let message = val["message"].as_str().unwrap_or("").to_string();
+                            let _ = app.emit(
+                                &format!("pty-log-{pty_id}"),
+                                serde_json::json!({ "level": level, "message": message }),
+                            );
+                        }
+                    }
+                    "/session-id" => {
+                        // burrow hook (UserPromptSubmit): persist Claude session_id for resume.
+                        if let Some(pty_id) = val["ptyId"].as_u64() {
+                            if let Some(sid) = val["sessionId"].as_str() {
+                                let _ = app.emit(
+                                    &format!("pty-session-id-{pty_id}"),
+                                    sid.to_string(),
+                                );
+                            }
                         }
                     }
                     _ => {}
@@ -1383,13 +1435,16 @@ pub struct TerminalTab {
     /// The "Terminal N" fallback / user-renamed base title, separate from the
     /// live agent-set title stored in `title`. Added via idempotent migration.
     pub default_title: Option<String>,
+    /// Claude Code session_id — set when a UserPromptSubmit hook fires. Used to
+    /// auto-resume the conversation on app restart via `claude --resume <id>`.
+    pub session_id: Option<String>,
 }
 
 #[tauri::command]
 fn list_terminal_tabs(workspace_id: i64, db: State<DbState>) -> Result<Vec<TerminalTab>, String> {
     let conn = db.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT title, initial_cmd, pty_id, cwd, default_title FROM terminal_tabs WHERE workspace_id = ?1 ORDER BY ord ASC")
+        .prepare("SELECT title, initial_cmd, pty_id, cwd, default_title, session_id FROM terminal_tabs WHERE workspace_id = ?1 ORDER BY ord ASC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(rusqlite::params![workspace_id], |row| Ok(TerminalTab {
@@ -1398,6 +1453,7 @@ fn list_terminal_tabs(workspace_id: i64, db: State<DbState>) -> Result<Vec<Termi
             pty_id: row.get(2)?,
             cwd: row.get(3)?,
             default_title: row.get(4)?,
+            session_id: row.get(5)?,
         }))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -1417,8 +1473,8 @@ fn save_terminal_tabs(
         .map_err(|e| e.to_string())?;
     for (ord, tab) in tabs.iter().enumerate() {
         tx.execute(
-            "INSERT INTO terminal_tabs (workspace_id, ord, title, initial_cmd, pty_id, cwd, default_title) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![workspace_id, ord as i64, tab.title, tab.initial_cmd, tab.pty_id, tab.cwd, tab.default_title],
+            "INSERT INTO terminal_tabs (workspace_id, ord, title, initial_cmd, pty_id, cwd, default_title, session_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![workspace_id, ord as i64, tab.title, tab.initial_cmd, tab.pty_id, tab.cwd, tab.default_title, tab.session_id],
         ).map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
@@ -2104,6 +2160,7 @@ fn init_db(app: &AppHandle) -> Result<Connection, rusqlite::Error> {
     let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN parent_id INTEGER");
     let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN worktree_branch TEXT");
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN default_title TEXT");
+    let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN session_id TEXT");
     Ok(conn)
 }
 
