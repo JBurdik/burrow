@@ -48,11 +48,14 @@
       </div>
     </div>
 
-    <!-- Claude 5h usage widget -->
+    <!-- Claude 5h usage widget — visible as long as any session exists -->
     <div
-      v-if="chats.turnsInWindow.length > 0"
+      v-if="chats.allSessions.length > 0"
       class="claude-usage"
-      :title="`${chats.turnsInWindow.length} turns · ${fmtTokens(chats.windowTokens)} tokens in last 5h`"
+      :class="{ 'usage-empty': chats.turnsInWindow.length === 0 }"
+      :title="chats.turnsInWindow.length > 0
+        ? `${chats.turnsInWindow.length} turns · ${fmtTokens(chats.windowTokens)} tokens in last 5h`
+        : 'No Claude turns recorded in the last 5h'"
       data-tauri-drag-region
     >
       <ClaudeIcon :size="11" class="usage-icon" />
@@ -477,6 +480,7 @@ const isDev = import.meta.env.DEV;
 }
 
 .usage-icon { color: #d97706; flex-shrink: 0; }
+.usage-empty { opacity: 0.45; }
 
 .usage-bar-wrap {
   width: 36px;
