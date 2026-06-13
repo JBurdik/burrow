@@ -1,5 +1,6 @@
 <template>
   <div class="claude-chat">
+    <div class="chat-main">
     <div class="chat-header">
       <ClaudeIcon :size="16" class="chat-header-icon" />
       <span class="chat-header-title">Claude</span>
@@ -14,6 +15,15 @@
       </button>
       <button class="chat-header-btn" title="New conversation" @click="clearChat">
         <PhArrowCounterClockwise :size="13" />
+      </button>
+      <button
+        class="chat-header-btn"
+        :class="{ 'btn-active': changesVisible }"
+        :title="changesVisible ? 'Hide changes' : 'Show changes'"
+        @click="changesVisible = !changesVisible"
+      >
+        <PhGitDiff :size="13" />
+        <span v-if="changedFiles.length > 0" class="changes-badge">{{ changedFiles.length }}</span>
       </button>
     </div>
 
@@ -104,7 +114,7 @@
     </div>
 
     <!-- Status line below input -->
-    <div class="status-line">
+    <div class="status-line" style="position:relative;z-index:1;">
       <span v-if="modelDisplay" class="status-item status-model">{{ modelDisplay }}</span>
       <span v-if="planLabel" class="status-item status-plan">{{ planLabel }}</span>
       <span v-if="fiveHourWindow" class="status-item" :title="'5h usage window'">5h: {{ fiveHourWindow }}</span>
@@ -120,16 +130,54 @@
       </span>
       <span v-if="busy" class="status-item status-busy">thinking…</span>
     </div>
+    </div><!-- end .chat-main -->
+
+    <!-- Changes panel -->
+    <div v-if="changesVisible" class="chat-changes">
+      <div class="chg-header">
+        <PhGitDiff :size="12" class="chg-header-icon" />
+        <span>Changes</span>
+        <span v-if="changedFiles.length" class="chg-count">{{ changedFiles.length }}</span>
+        <button class="chg-refresh-btn" title="Refresh" @click="refreshChanges">
+          <PhArrowsClockwise :size="11" />
+        </button>
+      </div>
+      <div class="chg-body">
+        <div v-if="changedFiles.length === 0" class="chg-empty">No changes yet</div>
+        <template v-for="f in changedFiles" :key="f.path">
+          <div
+            class="chg-file"
+            :class="{ 'chg-file-open': diffFile === f.path }"
+            @click="toggleFileDiff(f.path)"
+          >
+            <span class="chg-stats">
+              <span class="chg-add">+{{ f.added }}</span>
+              <span class="chg-del">-{{ f.deleted }}</span>
+            </span>
+            <span class="chg-path" :title="f.path">{{ f.shortPath }}</span>
+            <span class="chg-status" :class="`chg-status-${f.status}`">{{ f.status }}</span>
+          </div>
+          <pre v-if="diffFile === f.path && fileDiff" class="chg-diff"><span
+            v-for="(line, i) in fileDiff.split('\n')"
+            :key="i"
+            class="diff-line"
+            :class="diffLineClass(line)"
+          >{{ line }}</span></pre>
+        </template>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
-import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning } from "@phosphor-icons/vue";
+import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhGitDiff, PhArrowsClockwise } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
+import { useNotificationsStore } from "@/stores/notifications";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
@@ -140,6 +188,7 @@ function renderMd(text: string): string {
 const props = defineProps<{ chatId: number; workspaceId: number; cwd: string }>();
 
 const chats = useClaudeChatsStore();
+const notifStore = useNotificationsStore();
 
 interface ChatMessage {
   id: number;
@@ -208,6 +257,84 @@ let unlisten: UnlistenFn | null = null;
 // Dangerous mode (bypass all permissions) — persisted per chatId
 const DANGEROUS_KEY = (id: number) => `burrow.claude.dangerous.${id}`;
 const dangerousMode = ref(localStorage.getItem(DANGEROUS_KEY(props.chatId)) === "1");
+
+// ── Changes panel ────────────────────────────────────────────────────────────
+interface ChangedFile { path: string; shortPath: string; added: number; deleted: number; status: string }
+const changesVisible = ref(false);
+const changedFiles = ref<ChangedFile[]>([]);
+const diffFile = ref<string | null>(null);
+const fileDiff = ref("");
+
+interface GitOut { stdout: string; stderr: string; code: number }
+
+async function refreshChanges() {
+  if (!props.cwd) return;
+  try {
+    const [numstat, statusOut] = await Promise.all([
+      invoke<GitOut>("run_git", { cwd: props.cwd, args: ["diff", "--numstat", "HEAD"] }),
+      invoke<GitOut>("run_git", { cwd: props.cwd, args: ["status", "--porcelain"] }),
+    ]);
+    const files = new Map<string, ChangedFile>();
+    // Parse numstat: "<added>\t<deleted>\t<path>"
+    for (const line of numstat.stdout.split("\n")) {
+      const m = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
+      if (!m) continue;
+      const path = m[3].trim();
+      files.set(path, {
+        path,
+        shortPath: path.split("/").pop() ?? path,
+        added: parseInt(m[1]) || 0,
+        deleted: parseInt(m[2]) || 0,
+        status: "M",
+      });
+    }
+    // Layer in status codes (A=added, D=deleted, ?)
+    for (const line of statusOut.stdout.split("\n")) {
+      if (line.length < 3) continue;
+      const xy = line.slice(0, 2).trim();
+      const rawPath = line.slice(3).trim();
+      const path = rawPath.includes(" -> ") ? rawPath.split(" -> ")[1] : rawPath;
+      if (!files.has(path)) {
+        files.set(path, { path, shortPath: path.split("/").pop() ?? path, added: 0, deleted: 0, status: xy || "?" });
+      } else {
+        files.get(path)!.status = xy || "M";
+      }
+    }
+    changedFiles.value = [...files.values()];
+    // Auto-show panel when changes appear
+    if (files.size > 0 && !changesVisible.value) changesVisible.value = true;
+    // Refresh open diff if its file is still changed
+    if (diffFile.value && !files.has(diffFile.value)) { diffFile.value = null; fileDiff.value = ""; }
+  } catch { /* git not available or not a repo */ }
+}
+
+async function toggleFileDiff(path: string) {
+  if (diffFile.value === path) { diffFile.value = null; fileDiff.value = ""; return; }
+  diffFile.value = path;
+  fileDiff.value = "";
+  try {
+    const out = await invoke<GitOut>("run_git", { cwd: props.cwd, args: ["diff", "HEAD", "--", path] });
+    fileDiff.value = out.stdout || "(no diff — file may be untracked or binary)";
+  } catch { fileDiff.value = ""; }
+}
+
+async function notifyDone() {
+  const session = chats.sessions.find((s) => s.id === props.chatId);
+  const body = session?.title || "Claude finished";
+  notifStore.push({ type: "done", title: "Claude", body, workspaceId: props.workspaceId });
+  if (!document.hasFocus()) {
+    let granted = await isPermissionGranted();
+    if (!granted) { const p = await requestPermission(); granted = p === "granted"; }
+    if (granted) sendNotification({ title: "Burrow", body: `✓ ${body}` });
+  }
+}
+
+function diffLineClass(line: string) {
+  if (line.startsWith("+") && !line.startsWith("+++")) return "diff-add";
+  if (line.startsWith("-") && !line.startsWith("---")) return "diff-del";
+  if (line.startsWith("@@")) return "diff-hunk";
+  return "diff-ctx";
+}
 
 interface PendingPermission { requestId: string; request: Record<string, unknown> }
 const pendingPermission = ref<PendingPermission | null>(null);
@@ -343,17 +470,18 @@ function onLine(line: string) {
       const usage = event.usage as Record<string, number> | undefined;
       const cost = (event.cost_usd as number) ?? 0;
       if (usage) {
-        turnStats.value = {
-          inputTokens: usage.input_tokens ?? 0,
-          outputTokens: usage.output_tokens ?? 0,
-          costUsd: cost,
-        };
+        const inp = usage.input_tokens ?? 0;
+        const out = usage.output_tokens ?? 0;
+        turnStats.value = { inputTokens: inp, outputTokens: out, costUsd: cost };
         sessionCost.value += cost;
+        chats.recordTurn(inp, out);
       }
     }
     saveMessages(props.chatId, messages.value);
     syncStore();
     scrollToBottom();
+    refreshChanges();
+    notifyDone();
     return;
   }
 }
@@ -517,6 +645,8 @@ onMounted(async () => {
     .then((info) => { accountInfo.value = info; })
     .catch(() => {});
 
+  refreshChanges();
+
   // Load installed skills and merge with built-ins. Skills override same-named built-ins.
   // Map-based dedup ensures no duplicates regardless of list_skills returning overlaps.
   try {
@@ -536,16 +666,180 @@ onBeforeUnmount(() => {
 });
 
 watch(() => props.chatId, () => nextTick(() => inputEl.value?.focus()));
+
+// Scroll to bottom when this chat becomes the active one (user clicked it in sidebar).
+watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
+  if (activeId === props.chatId) nextTick(() => scrollToBottom());
+});
 </script>
 
 <style scoped>
 .claude-chat {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100%;
   background: var(--bg-base);
   overflow: hidden;
 }
+
+.chat-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Changes panel */
+.chat-changes {
+  width: 230px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+.chg-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.chg-header-icon { color: var(--accent); }
+
+.chg-count {
+  background: var(--bg-hover);
+  border-radius: 8px;
+  padding: 0 5px;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.chg-refresh-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 3px;
+  margin-left: auto;
+}
+.chg-refresh-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+
+.chg-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.chg-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 20px 12px;
+}
+
+.chg-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 1px 4px;
+  transition: background .1s;
+}
+.chg-file:hover { background: var(--bg-hover); }
+.chg-file.chg-file-open { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+.chg-stats {
+  display: flex;
+  gap: 3px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+.chg-add { color: var(--green); }
+.chg-del { color: var(--red); }
+
+.chg-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chg-status {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.chg-status-M { color: var(--yellow); }
+.chg-status-A { color: var(--green); }
+.chg-status-D { color: var(--red); }
+.chg-status-\? { color: var(--text-muted); }
+
+.chg-diff {
+  margin: 0 4px 4px;
+  padding: 6px 8px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 9.5px;
+  font-family: var(--font-mono);
+  overflow-x: auto;
+  white-space: pre;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.diff-line { line-height: 1.5; }
+.diff-add { color: var(--green); }
+.diff-del { color: var(--red); }
+.diff-hunk { color: var(--accent); opacity: 0.8; }
+.diff-ctx { color: var(--text-secondary); }
+
+/* Toggle button badge */
+.changes-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 7px;
+  font-weight: 700;
+  border-radius: 6px;
+  line-height: 12px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.chat-header-btn { position: relative; }
 
 .chat-header {
   display: flex;
@@ -589,6 +883,7 @@ watch(() => props.chatId, () => nextTick(() => inputEl.value?.focus()));
 }
 .chat-header-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
 .btn-danger-active { color: #ef4444 !important; background: color-mix(in srgb, #ef4444 15%, transparent) !important; }
+.btn-active { color: var(--accent) !important; background: color-mix(in srgb, var(--accent) 12%, transparent) !important; }
 
 /* Permission banner */
 .permission-banner {

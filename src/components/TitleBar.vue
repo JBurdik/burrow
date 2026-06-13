@@ -32,7 +32,8 @@
             v-for="item in notifStore.history"
             :key="item.id"
             class="notif-item"
-            :class="`notif-${item.type}`"
+            :class="[`notif-${item.type}`, { 'notif-clickable': item.workspaceId }]"
+            @click="navigateToNotif(item.workspaceId)"
           >
             <PhCheckCircle v-if="item.type === 'done'" :size="13" class="notif-icon" />
             <PhWarning v-else-if="item.type === 'error'" :size="13" class="notif-icon" />
@@ -45,6 +46,20 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Claude 5h usage widget -->
+    <div
+      v-if="chats.turnsInWindow.length > 0"
+      class="claude-usage"
+      :title="`${chats.turnsInWindow.length} turns · ${fmtTokens(chats.windowTokens)} tokens in last 5h`"
+      data-tauri-drag-region
+    >
+      <ClaudeIcon :size="11" class="usage-icon" />
+      <div class="usage-bar-wrap">
+        <div class="usage-bar-fill" :style="{ width: usagePct + '%' }" :class="{ 'usage-warn': usagePct > 75, 'usage-crit': usagePct > 90 }" />
+      </div>
+      <span class="usage-label">{{ chats.turnsInWindow.length }}<span class="usage-window">/ 5h</span></span>
     </div>
 
     <div class="titlebar-center" data-tauri-drag-region>
@@ -138,6 +153,9 @@ import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo } from "@phosphor-icons/vue";
 import { useNotificationsStore } from "@/stores/notifications";
+import { useClaudeChatsStore } from "@/stores/claudeChats";
+import { useWorkspaceStore } from "@/stores/workspace";
+import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 
 const props = defineProps<{ workspaceName?: string; branch?: string; folderPath?: string; rightPanelVisible?: boolean }>();
 defineEmits(["back", "toggle-rightpanel", "open-settings"]);
@@ -147,6 +165,28 @@ const menuOpen = ref(false);
 // ── Notification center ─────────────────────────────────────────────────────
 const notifStore = useNotificationsStore();
 const notifOpen = ref(false);
+const wsStore = useWorkspaceStore();
+
+function navigateToNotif(workspaceId?: number) {
+  if (!workspaceId) return;
+  const ws = wsStore.workspaces.find((w) => w.id === workspaceId);
+  if (ws) wsStore.open(ws);
+  notifOpen.value = false;
+}
+
+// ── Claude 5h usage widget ──────────────────────────────────────────────────
+const chats = useClaudeChatsStore();
+
+// Soft cap: Claude Pro ~45 turns / 5h. Bar fills toward this; goes red past 90%.
+const TURNS_SOFT_CAP = 45;
+
+const usagePct = computed(() => Math.min(100, (chats.turnsInWindow.length / TURNS_SOFT_CAP) * 100));
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(0) + "k";
+  return String(n);
+}
 
 function toggleNotif() {
   notifOpen.value = !notifOpen.value;
@@ -421,6 +461,54 @@ const isDev = import.meta.env.DEV;
   text-align: center;
 }
 
+/* Claude 5h usage widget */
+.claude-usage {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  cursor: default;
+  flex-shrink: 0;
+  margin-left: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.usage-icon { color: #d97706; flex-shrink: 0; }
+
+.usage-bar-wrap {
+  width: 36px;
+  height: 3px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.4s ease, background 0.2s;
+}
+.usage-bar-fill.usage-warn { background: #f59e0b; }
+.usage-bar-fill.usage-crit { background: var(--red); }
+
+.usage-label {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.usage-window {
+  color: var(--text-muted);
+  font-size: 9px;
+  margin-left: 1px;
+}
+
 /* Notification center */
 .titlebar-notif {
   margin-left: 4px;
@@ -504,6 +592,7 @@ const isDev = import.meta.env.DEV;
   cursor: default;
 }
 .notif-item:hover { background: var(--bg-hover); }
+.notif-clickable { cursor: pointer; }
 
 .notif-icon { flex-shrink: 0; margin-top: 1px; }
 .notif-done  .notif-icon { color: var(--green); }

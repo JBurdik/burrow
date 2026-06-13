@@ -6,6 +6,7 @@ export interface Toast {
   title: string;
   body?: string;
   type: "done" | "info" | "error";
+  workspaceId?: number;
 }
 
 export interface HistoryItem extends Toast {

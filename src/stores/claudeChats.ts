@@ -14,6 +14,22 @@ export interface ClaudeSession {
 const SESSIONS_KEY = "burrow.claude.sessions";
 const ACTIVE_KEY = "burrow.claude.active";
 const COUNTER_KEY = "burrow.claude.nextId";
+const TURNS_KEY = "burrow.claude.turns";
+
+export interface TurnEvent {
+  ts: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+const WINDOW_MS = 5 * 60 * 60 * 1000; // 5 hours
+
+function loadTurns(): TurnEvent[] {
+  try {
+    const raw = localStorage.getItem(TURNS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
 
 function loadSessions(): ClaudeSession[] {
   try {
@@ -37,6 +53,7 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
   const sessions = ref<ClaudeSession[]>(loadSessions());
   const activeByWs = ref<Record<number, number>>(loadActive());
   let nextId = loadCounter();
+  const turns = ref<TurnEvent[]>(loadTurns());
 
   function persist() {
     const toSave = sessions.value.map((s) => ({ ...s, busy: false }));
@@ -101,6 +118,30 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
     persist();
   }
 
+  // Turn event tracking for 5-hour usage window.
+  function recordTurn(inputTokens: number, outputTokens: number) {
+    const now = Date.now();
+    turns.value.push({ ts: now, inputTokens, outputTokens });
+    // Prune events older than 5h to keep storage small.
+    turns.value = turns.value.filter((t) => now - t.ts < WINDOW_MS);
+    localStorage.setItem(TURNS_KEY, JSON.stringify(turns.value));
+  }
+
+  const turnsInWindow = computed(() => {
+    const now = Date.now();
+    return turns.value.filter((t) => now - t.ts < WINDOW_MS);
+  });
+
+  const windowTokens = computed(() => {
+    return turnsInWindow.value.reduce((acc, t) => acc + t.inputTokens + t.outputTokens, 0);
+  });
+
+  // Earliest turn in window — resets when no turns remain.
+  const windowStart = computed(() => {
+    const wt = turnsInWindow.value;
+    return wt.length ? wt[0].ts : null;
+  });
+
   // Called by ClaudeChat.vue to sync live state back.
   function sync(id: number, patch: Partial<Pick<ClaudeSession, "busy" | "messageCount" | "claudeSessionId" | "title">>) {
     const s = sessions.value.find((x) => x.id === id);
@@ -119,6 +160,11 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
     sessions,
     activeByWs,
     allSessions,
+    turns,
+    turnsInWindow,
+    windowTokens,
+    windowStart,
+    recordTurn,
     sessionsForWs,
     activeSession,
     create,

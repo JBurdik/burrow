@@ -655,7 +655,7 @@ async function notifyDone(leafTitle: string) {
   const toastTitle = "Task complete";
   const body = leafTitle || "Agent finished";
   // In-app toast always
-  notifStore.push({ type: "done", title: toastTitle, body });
+  notifStore.push({ type: "done", title: toastTitle, body, workspaceId: props.workspaceId });
   // System notification when window not focused.
   // Title = "Burrow" so the app name is visible even in dev mode
   // (where macOS shows the terminal emulator name instead of the bundle name).

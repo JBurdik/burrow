@@ -154,9 +154,9 @@
           </div>
         </TransitionGroup>
 
-        <!-- Claude chat sessions (shown in claude mode) -->
+        <!-- Claude chat sessions (always visible when any exist) -->
         <div
-          v-if="!isCollapsed(item.id) && ui.mode === 'claude'"
+          v-if="!isCollapsed(item.id) && chats.sessionsForWs(item.id).length > 0"
           class="ws-terminals"
         >
           <div class="ws-worktree-head">
