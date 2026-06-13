@@ -4,6 +4,49 @@
     <!-- Spacer for native macOS traffic lights (~72px) -->
     <div class="traffic-light-spacer" data-tauri-drag-region />
 
+    <!-- Notification center -->
+    <div class="tb-menu-wrap titlebar-notif">
+      <button
+        class="tb-btn notif-btn"
+        :class="{ on: notifOpen, 'has-unread': notifStore.unreadCount > 0 }"
+        title="Notifications"
+        @click.stop="toggleNotif"
+      >
+        <PhBell :size="14" />
+        <span v-if="notifStore.unreadCount > 0" class="notif-badge">
+          {{ notifStore.unreadCount > 9 ? "9+" : notifStore.unreadCount }}
+        </span>
+      </button>
+      <div v-if="notifOpen" class="tb-menu notif-menu" @click.stop>
+        <div class="notif-header">
+          <span class="notif-title">Notifications</span>
+          <button
+            v-if="notifStore.history.length"
+            class="notif-clear-btn"
+            @click="notifStore.clearHistory()"
+          >Clear all</button>
+        </div>
+        <div v-if="!notifStore.history.length" class="notif-empty">No notifications</div>
+        <div v-else class="notif-list">
+          <div
+            v-for="item in notifStore.history"
+            :key="item.id"
+            class="notif-item"
+            :class="`notif-${item.type}`"
+          >
+            <PhCheckCircle v-if="item.type === 'done'" :size="13" class="notif-icon" />
+            <PhWarning v-else-if="item.type === 'error'" :size="13" class="notif-icon" />
+            <PhInfo v-else :size="13" class="notif-icon" />
+            <div class="notif-body">
+              <div class="notif-item-title">{{ item.title }}</div>
+              <div v-if="item.body" class="notif-item-body">{{ item.body }}</div>
+            </div>
+            <span class="notif-time">{{ relTime(item.ts) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="titlebar-center" data-tauri-drag-region>
       <button v-if="workspaceName" class="back-btn" @click="$emit('back')" title="Switch workspace">
         <PhHouse :size="13" />
@@ -93,12 +136,30 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise } from "@phosphor-icons/vue";
+import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo } from "@phosphor-icons/vue";
+import { useNotificationsStore } from "@/stores/notifications";
 
 const props = defineProps<{ workspaceName?: string; branch?: string; folderPath?: string; rightPanelVisible?: boolean }>();
 defineEmits(["back", "toggle-rightpanel", "open-settings"]);
 
 const menuOpen = ref(false);
+
+// ── Notification center ─────────────────────────────────────────────────────
+const notifStore = useNotificationsStore();
+const notifOpen = ref(false);
+
+function toggleNotif() {
+  notifOpen.value = !notifOpen.value;
+  if (notifOpen.value) notifStore.markAllRead();
+}
+
+function relTime(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return "now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
+  return `${Math.floor(diff / 86_400_000)}d`;
+}
 
 // ── Stats dropdown ──────────────────────────────────────────────────────────
 type SystemStats = { cpu_percent: number; mem_used: number; mem_total: number };
@@ -183,6 +244,7 @@ async function openIn(target: "finder" | "vscode" | "zed") {
 
 function onDocClick() {
   menuOpen.value = false;
+  notifOpen.value = false;
   if (statsOpen.value) { statsOpen.value = false; clearInterval(statsTimer); }
 }
 onMounted(() => window.addEventListener("click", onDocClick));
@@ -357,5 +419,119 @@ const isDev = import.meta.env.DEV;
   color: var(--text-muted);
   padding: 6px 2px 2px;
   text-align: center;
+}
+
+/* Notification center */
+.titlebar-notif {
+  margin-left: 4px;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+
+.notif-btn {
+  position: relative;
+}
+.notif-btn.has-unread { color: var(--green); }
+
+.notif-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--green);
+  color: #000;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.notif-menu {
+  left: 0;
+  right: auto;
+  min-width: 280px;
+  max-width: 320px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.notif-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.notif-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.notif-clear-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.notif-clear-btn:hover { color: var(--text-secondary); background: var(--bg-hover); }
+
+.notif-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 20px 12px;
+}
+
+.notif-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.notif-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 5px;
+  cursor: default;
+}
+.notif-item:hover { background: var(--bg-hover); }
+
+.notif-icon { flex-shrink: 0; margin-top: 1px; }
+.notif-done  .notif-icon { color: var(--green); }
+.notif-error .notif-icon { color: var(--red); }
+.notif-info  .notif-icon { color: var(--accent); }
+
+.notif-body { flex: 1; min-width: 0; }
+.notif-item-title {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notif-item-body {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notif-time {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--text-muted);
+  margin-top: 2px;
 }
 </style>
