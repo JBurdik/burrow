@@ -94,6 +94,16 @@
       </div>
     </div>
 
+    <!-- Image previews above input -->
+    <div v-if="pendingImages.length > 0" class="pending-images">
+      <div v-for="(img, i) in pendingImages" :key="i" class="pending-img-wrap">
+        <img :src="img" class="pending-img" :alt="`Image ${i + 1}`" />
+        <button class="pending-img-remove" @click="pendingImages.splice(i, 1)" title="Remove">
+          <PhX :size="9" weight="bold" />
+        </button>
+      </div>
+    </div>
+
     <div class="chat-input-area">
       <textarea
         ref="inputEl"
@@ -104,6 +114,7 @@
         rows="1"
         @keydown="onKeydown"
         @input="onInput"
+        @paste="onPaste"
       />
       <button v-if="busy" class="chat-abort-btn" title="Abort" @click="abortTurn">
         <PhStop :size="14" weight="bold" />
@@ -258,6 +269,7 @@ const messages = ref<ChatMessage[]>(loadMessages(props.chatId));
 const inputText = ref("");
 const busy = ref(false);
 const messageQueue = ref<string[]>([]);
+const pendingImages = ref<string[]>([]); // data URIs
 const sessionId = ref("");
 const turnStats = ref<TurnStats | null>(null);
 const sessionCost = ref(0);
@@ -545,7 +557,9 @@ async function sendMessage(forcedText?: string) {
   syncStore();
   scrollToBottom();
   try {
-    await invoke("claude_send", { id: props.chatId, text, sessionId: sessionId.value || null });
+    const images = pendingImages.value.length > 0 ? [...pendingImages.value] : undefined;
+    pendingImages.value = [];
+    await invoke("claude_send", { id: props.chatId, text, sessionId: sessionId.value || null, images });
   } catch (e) {
     messages.value.push({ id: nextMsgId++, role: "assistant", text: `Error: ${e}` });
     busy.value = false;
@@ -590,6 +604,7 @@ async function clearChat() {
   sessionId.value = "";
   busy.value = false;
   messageQueue.value = [];
+  pendingImages.value = [];
   turnStats.value = null;
   sessionCost.value = 0;
   localStorage.removeItem(msgKey(props.chatId));
@@ -649,6 +664,23 @@ function onKeydown(e: KeyboardEvent) {
 function onInput() {
   autoResize();
   updateSuggestions();
+}
+
+function onPaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of Array.from(items)) {
+    if (item.type.startsWith("image/")) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (!file) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") pendingImages.value.push(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
+  }
 }
 
 function autoResize() {
@@ -1177,6 +1209,48 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 }
 .chat-input:focus { border-color: var(--accent); }
 .input-queued { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)) !important; }
+
+/* Pending image previews */
+.pending-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px 0;
+  flex-shrink: 0;
+}
+
+.pending-img-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.pending-img {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  display: block;
+}
+
+.pending-img-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: color .1s, background .1s;
+}
+.pending-img-remove:hover { color: var(--red); background: color-mix(in srgb, var(--red) 15%, var(--bg-panel)); }
 .chat-input::placeholder { color: var(--text-muted); }
 
 .chat-send-btn {

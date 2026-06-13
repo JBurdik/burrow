@@ -1823,17 +1823,34 @@ fn claude_start(
 }
 
 #[tauri::command]
-fn claude_send(state: State<ClaudeState>, id: u32, text: String, session_id: Option<String>) -> Result<(), String> {
+fn claude_send(state: State<ClaudeState>, id: u32, text: String, session_id: Option<String>, images: Option<Vec<String>>) -> Result<(), String> {
     use std::io::Write;
     let mut guard = state.procs.lock().unwrap();
     let proc = guard.get_mut(&id).ok_or("claude not running for this workspace")?;
+
+    let mut content: Vec<serde_json::Value> = vec![];
+
+    // Prepend image blocks — each entry is a data URI "data:<mime>;base64,<data>"
+    for data_uri in images.unwrap_or_default() {
+        if let Some(rest) = data_uri.strip_prefix("data:") {
+            if let Some(comma) = rest.find(',') {
+                let meta = &rest[..comma];
+                let data = &rest[comma + 1..];
+                let media_type = meta.split(';').next().unwrap_or("image/png");
+                content.push(serde_json::json!({
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": media_type, "data": data }
+                }));
+            }
+        }
+    }
+
+    content.push(serde_json::json!({ "type": "text", "text": text }));
+
     let msg = serde_json::json!({
         "type": "user",
         "session_id": session_id.unwrap_or_default(),
-        "message": {
-            "role": "user",
-            "content": [{ "type": "text", "text": text }]
-        }
+        "message": { "role": "user", "content": content }
     });
     let line = msg.to_string() + "\n";
     proc.stdin.write_all(line.as_bytes()).and_then(|_| proc.stdin.flush()).map_err(|e| e.to_string())
