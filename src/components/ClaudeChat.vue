@@ -99,16 +99,24 @@
         ref="inputEl"
         v-model="inputText"
         class="chat-input"
-        placeholder="Message Claude… (Enter to send, Shift+Enter for newline)"
+        :class="{ 'input-queued': busy && inputText.trim() }"
+        :placeholder="busy ? 'Type next message — will send when Claude finishes…' : 'Message Claude… (Enter to send, Shift+Enter for newline)'"
         rows="1"
-        :disabled="busy"
         @keydown="onKeydown"
         @input="onInput"
       />
       <button v-if="busy" class="chat-abort-btn" title="Abort" @click="abortTurn">
         <PhStop :size="14" weight="bold" />
       </button>
-      <button v-else class="chat-send-btn" :disabled="!inputText.trim()" @click="sendMessage">
+      <button
+        v-else-if="messageQueue.length > 0"
+        class="chat-send-btn chat-send-queued"
+        disabled
+        :title="`${messageQueue.length} message${messageQueue.length > 1 ? 's' : ''} queued`"
+      >
+        {{ messageQueue.length }}
+      </button>
+      <button v-else class="chat-send-btn" :disabled="!inputText.trim()" @click="sendMessage()">
         <PhArrowUp :size="14" weight="bold" />
       </button>
     </div>
@@ -127,6 +135,9 @@
       </span>
       <span v-if="sessionCost > 0" class="status-item status-cost">
         ${{ sessionCost.toFixed(4) }}
+      </span>
+      <span v-if="messageQueue.length > 0" class="status-item status-queued">
+        {{ messageQueue.length }} queued
       </span>
       <span v-if="busy" class="status-item status-busy">thinking…</span>
     </div>
@@ -246,6 +257,7 @@ let nextMsgId = 0;
 const messages = ref<ChatMessage[]>(loadMessages(props.chatId));
 const inputText = ref("");
 const busy = ref(false);
+const messageQueue = ref<string[]>([]);
 const sessionId = ref("");
 const turnStats = ref<TurnStats | null>(null);
 const sessionCost = ref(0);
@@ -482,16 +494,31 @@ function onLine(line: string) {
     scrollToBottom();
     refreshChanges();
     notifyDone();
+    // Flush one queued message (next turn will flush the next one).
+    if (messageQueue.value.length > 0) {
+      const next = messageQueue.value.shift()!;
+      nextTick(() => sendMessage(next));
+    }
     return;
   }
 }
 
-async function sendMessage() {
-  let text = inputText.value.trim();
-  if (!text || busy.value) return;
-  inputText.value = "";
-  await nextTick();
-  autoResize();
+async function sendMessage(forcedText?: string) {
+  let text = (forcedText ?? inputText.value).trim();
+  if (!text) return;
+  // While busy: queue the message instead of sending immediately.
+  if (busy.value && !forcedText) {
+    messageQueue.value.push(text);
+    inputText.value = "";
+    await nextTick();
+    autoResize();
+    return;
+  }
+  if (!forcedText) {
+    inputText.value = "";
+    await nextTick();
+    autoResize();
+  }
 
   // /pr: build a PR description prompt from git diff
   if (text.match(/^\/pr\b/)) {
@@ -551,6 +578,7 @@ async function abortTurn() {
   // Restart with --resume so session continues
   await invoke("claude_start", { id: props.chatId, cwd: props.cwd, resumeSessionId: sessionId.value || null, bypassPermissions: dangerousMode.value }).catch(() => {});
   busy.value = false;
+  messageQueue.value = [];
   const last = messages.value[messages.value.length - 1];
   if (last?.partial) last.partial = false;
   syncStore();
@@ -561,6 +589,7 @@ async function clearChat() {
   messages.value = [];
   sessionId.value = "";
   busy.value = false;
+  messageQueue.value = [];
   turnStats.value = null;
   sessionCost.value = 0;
   localStorage.removeItem(msgKey(props.chatId));
@@ -1080,6 +1109,7 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 }
 .status-cost { color: #a78bfa; }
 .status-busy { color: var(--accent); animation: blink 1s step-end infinite; }
+.status-queued { color: var(--text-muted); font-family: var(--font-mono); }
 
 /* Command suggestions */
 .cmd-suggestions {
@@ -1146,7 +1176,7 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   transition: border-color .15s;
 }
 .chat-input:focus { border-color: var(--accent); }
-.chat-input:disabled { opacity: 0.5; cursor: not-allowed; }
+.input-queued { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)) !important; }
 .chat-input::placeholder { color: var(--text-muted); }
 
 .chat-send-btn {
@@ -1165,6 +1195,14 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 }
 .chat-send-btn:hover:not(:disabled) { background: var(--accent-dim); }
 .chat-send-btn:disabled { opacity: 0.4; cursor: default; }
+.chat-send-queued {
+  background: color-mix(in srgb, var(--accent) 20%, transparent) !important;
+  color: var(--accent) !important;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  opacity: 1 !important;
+}
 
 .chat-abort-btn {
   background: #dc2626;
