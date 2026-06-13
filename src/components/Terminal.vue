@@ -58,6 +58,9 @@
       <button key="__add" class="tab tab-add" @click="addTab()" title="New terminal">
         <PhPlus :size="12" />
       </button>
+      <button key="__claude" class="tab tab-add tab-claude" @click="openClaudeChat()" title="Open Claude chat">
+        <ClaudeIcon :size="12" />
+      </button>
     </TransitionGroup>
 
     <!-- Log strip: last entries from `burrow log` for the active tab -->
@@ -178,6 +181,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut, PhFileCode } from "@phosphor-icons/vue";
+import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
+import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import XTerm from "./XTerm.vue";
@@ -211,6 +216,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 const props = defineProps<{ cwd: string; workspaceId: number }>();
 const wsStore = useWorkspaceStore();
 const uiStore = useUIStore();
+const chatsStore = useClaudeChatsStore();
 const tabsStore = useTerminalTabsStore();
 const notifStore = useNotificationsStore();
 const gitStore = useGitStore();
@@ -765,6 +771,11 @@ function activateTab(id: number) {
   nextTick(() => xtermRefs.get(leaf.id)?.focus());
 }
 
+function openClaudeChat() {
+  chatsStore.ensureSession(props.workspaceId);
+  uiStore.setMode('claude');
+}
+
 function addTab(initialCmd?: string, extra?: { cwd?: string; resultToken?: string }): Leaf {
   const leaf = makeLeaf(initialCmd, extra);
   const tab: Tab = { id: leaf.id, root: leaf };
@@ -1256,6 +1267,8 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
 .tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
 .tab-add { color: var(--text-muted); font-size: 14px; max-width: none; }
 .tab-add:hover { color: var(--text-secondary); }
+.tab-claude { color: #d97706; }
+.tab-claude:hover { color: #f59e0b; }
 
 /* drag-to-reorder feedback */
 .tab { touch-action: none; }
