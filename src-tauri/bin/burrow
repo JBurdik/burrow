@@ -211,12 +211,14 @@ case "$sub" in
         # `Notification` is ambiguous: Claude fires it BOTH for a permission
         # prompt (genuinely waiting on the user) AND ~60s after a turn ends, idle
         # at the prompt ("Claude is waiting for your input"). The idle ping is NOT
-        # "blocked on me" — the turn is already over — so mapping it to `waiting`
-        # (blue) made finished agents look stuck-blue. Disambiguate by message:
-        # an idle ping means done; anything else (permission, etc.) means waiting.
+        # "blocked on me" — the turn is already over. Don't emit `done` for the
+        # idle ping: Stop already fired that, and a late `done` ~60s later triggers
+        # a duplicate notification (the 4s done-timer already reset the leaf to
+        # idle, defeating the dedup guard). Just no-op it. Anything else (a real
+        # permission prompt) maps to waiting.
         msg=$(printf '%s' "$json" | sed -n 's/.*"message"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
         case "$msg" in
-          *waiting\ for\ your\ input*) state=done ;;
+          *waiting\ for\ your\ input*) exit 0 ;;
           *)                          state=waiting ;;
         esac ;;
       PermissionRequest)            state=waiting ;;

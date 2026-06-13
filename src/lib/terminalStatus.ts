@@ -146,10 +146,11 @@ export function markSeen(leaf: StatusLeaf, ctx: ReducerCtx): void {
   leaf.status = "idle";
 }
 
-/** Internal: settle a finished turn. Dedup guard: if the leaf is already settled
- *  and no new turn resurrected it via "running", ignore the duplicate. */
+/** Internal: settle a finished turn. Dedup guard: if nothing is active (busy=false),
+ *  any late `done` event is a no-op — Stop already fired, timer may have reset status
+ *  to idle, but the turn is definitively over. */
 function _settle(leaf: StatusLeaf, ctx: ReducerCtx): void {
-  if (!leaf.busy && (leaf.status === "done" || leaf.status === "review")) return;
+  if (!leaf.busy) return;
   leaf.busy = false;
   ctx.clearDoneTimer(leaf.id);
   if (ctx.watching) {
