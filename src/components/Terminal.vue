@@ -1,6 +1,6 @@
 <template>
   <div class="terminal-pane" @click="focusActive">
-    <AgentToolbar @launch="spawnAgent" />
+    <AgentToolbar @launch="spawnAgent" @open-chat="openClaudeChat()" />
 
     <TransitionGroup v-if="tabs.length > 0" name="tab-move" tag="div" class="terminal-tabs">
       <button
@@ -59,9 +59,7 @@
       <button key="__add" class="tab tab-add" @click="addTab()" title="New terminal">
         <PhPlus :size="12" />
       </button>
-      <button key="__claude" class="tab tab-add tab-claude" @click="openClaudeChat()" title="Open Claude chat">
-        <ClaudeIcon :size="12" />
-      </button>
+
     </TransitionGroup>
 
     <!-- Log strip: last entries from `burrow log` for the active tab -->
@@ -564,13 +562,12 @@ function makeCtx(tab: Tab): ReducerCtx {
     },
     playSound(kind: "waiting" | "done") { playSound(kind); },
     onSettled(statusLeaf) {
-      // Look up the full Leaf to get its display title for the notification.
       let title = "";
       for (const t of tabs.value) {
         const l = findLeaf(t.root, statusLeaf.id);
         if (l) { title = l.title; break; }
       }
-      notifyDone(title);
+      notifyDone(title, tab.id);
       if (gitStore.cwd === props.cwd) gitStore.refresh(true);
     },
   };
@@ -669,11 +666,10 @@ function onAgentState(id: number, s: string) {
   }
 }
 
-async function notifyDone(leafTitle: string) {
+async function notifyDone(leafTitle: string, tabId?: number) {
   const toastTitle = "Task complete";
   const body = leafTitle || "Agent finished";
-  // In-app toast always
-  notifStore.push({ type: "done", title: toastTitle, body, workspaceId: props.workspaceId });
+  notifStore.push({ type: "done", title: toastTitle, body, workspaceId: props.workspaceId, tabId });
   // System notification when window not focused.
   // Title = "Burrow" so the app name is visible even in dev mode
   // (where macOS shows the terminal emulator name instead of the bundle name).
@@ -1274,44 +1270,59 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
   min-width: 0;
 }
 
+/* ── Tab bar ───────────────────────────────────────────────────── */
 .terminal-tabs {
   display: flex;
   align-items: center;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
-  padding: 0 4px;
+  padding: 0 6px;
   flex-shrink: 0;
   overflow-x: auto;
+  gap: 1px;
 }
 
 .tab {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 11.5px;
   font-family: var(--font-ui);
-  padding: 6px 10px;
+  padding: 5px 9px 5px 8px;
   white-space: nowrap;
-  transition: color 0.1s;
+  transition: color .1s, background .1s;
   max-width: 200px;
   flex-shrink: 0;
+  position: relative;
+  touch-action: none;
 }
-.tab:hover { color: var(--text-primary); }
-.tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
-.tab-add { color: var(--text-muted); font-size: 14px; max-width: none; }
-.tab-add:hover { color: var(--text-secondary); }
-.tab-claude { color: #d97706; }
-.tab-claude:hover { color: #f59e0b; }
+.tab:hover {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--border) 35%, transparent);
+}
+.tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
 
-/* drag-to-reorder feedback */
-.tab { touch-action: none; }
+/* ── Add / Claude-chat buttons ─────────────────────────────────── */
+.tab-add {
+  color: var(--text-muted);
+  max-width: none;
+  opacity: 0.5;
+  padding: 5px 7px;
+}
+.tab-add:hover { color: var(--text-secondary); opacity: 1; background: var(--bg-hover); }
+
+/* ── Drag feedback ─────────────────────────────────────────────── */
 .tab.dragging { opacity: 0.4; }
-.tab.drag-over { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tab.drag-over { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .tab.drag-over::before {
   content: "";
   position: absolute;
@@ -1322,23 +1333,26 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
   border-radius: 2px;
   background: var(--accent);
 }
-.tab { position: relative; }
 .tab-move-move { transition: transform .22s cubic-bezier(.2, .8, .2, 1); }
 
+/* ── Tab label ─────────────────────────────────────────────────── */
 .tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 140px;
 }
 
+/* ── Icons ─────────────────────────────────────────────────────── */
 .tab-agent-icon { color: var(--accent); flex-shrink: 0; }
 .tab-term-icon  { color: var(--text-muted); flex-shrink: 0; }
 .tab-chat-icon  { color: #d97706; flex-shrink: 0; }
+.tab.active .tab-term-icon { color: var(--text-secondary); }
 
+/* ── Status text ───────────────────────────────────────────────── */
 .tab-status-text {
   font-size: 10px;
   color: var(--text-muted);
-  opacity: 0.75;
+  opacity: 0.65;
   flex-shrink: 0;
   max-width: 80px;
   overflow: hidden;
@@ -1346,19 +1360,19 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
   white-space: nowrap;
 }
 
+/* ── Flash animation ───────────────────────────────────────────── */
 @keyframes tab-flash-anim {
   0%   { color: var(--accent); }
   50%  { color: var(--accent); opacity: 0.4; }
   100% { color: inherit; }
 }
-.tab-flash {
-  animation: tab-flash-anim 0.6s ease-out;
-}
+.tab-flash { animation: tab-flash-anim 0.6s ease-out; }
 
+/* ── Split-pane count badge ────────────────────────────────────── */
 .tab-split-count {
   flex-shrink: 0;
-  min-width: 14px;
-  height: 14px;
+  min-width: 13px;
+  height: 13px;
   padding: 0 4px;
   display: inline-flex;
   align-items: center;
@@ -1366,28 +1380,28 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
   font-size: 9px;
   font-weight: 600;
   line-height: 1;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-muted);
 }
 
-/* Status dot styles are in src/styles/status-dots.css (shared with Sidebar.vue).
-   Only component-specific overrides go here. */
+/* ── Dirty dot ─────────────────────────────────────────────────── */
 .dirty-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
-  background: var(--text-secondary);
+  background: var(--text-muted);
 }
 
+/* ── Close / float buttons ─────────────────────────────────────── */
 .tab-close,
 .tab-float {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   border-radius: 3px;
   flex-shrink: 0;
   cursor: pointer;
@@ -1396,8 +1410,8 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
 }
 .tab:hover .tab-close,
 .tab:hover .tab-float { opacity: 0.45; }
-.tab-close:hover { opacity: 1 !important; background: rgba(239,68,68,0.2); color: var(--red); }
-.tab-float:hover { opacity: 1 !important; background: rgba(255,255,255,0.1); }
+.tab-close:hover { opacity: 1 !important; background: rgba(239, 68, 68, 0.18); color: var(--red); }
+.tab-float:hover { opacity: 1 !important; background: rgba(255, 255, 255, 0.09); }
 
 .terminal-body {
   flex: 1;

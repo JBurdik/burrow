@@ -7,6 +7,7 @@ export interface Toast {
   body?: string;
   type: "done" | "info" | "error";
   workspaceId?: number;
+  tabId?: number;
 }
 
 export interface HistoryItem extends Toast {

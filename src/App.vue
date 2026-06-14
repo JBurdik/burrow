@@ -15,18 +15,21 @@
       <Sidebar class="panel-sidebar" />
       <div class="resize-handle panel-resize-left" @mousedown="startResize('left', $event)" />
       <div class="ide-main">
-        <div v-show="!ws.active" class="no-workspace">
-          <PhFolderOpen :size="32" weight="thin" />
-          <span>Select a workspace</span>
-        </div>
-        <Terminal
-          v-for="w in ws.opened"
-          v-show="ws.active && w.id === ws.active.id"
-          :key="w.id"
-          :workspace-id="w.id"
-          :cwd="w.path"
-          :ref="(el) => setTermRef(w.id, el)"
-        />
+        <GitPanel v-if="ui.mode === 'git'" class="git-main-panel" />
+        <template v-else>
+          <div v-show="!ws.active" class="no-workspace">
+            <PhFolderOpen :size="32" weight="thin" />
+            <span>Select a workspace</span>
+          </div>
+          <Terminal
+            v-for="w in ws.opened"
+            v-show="ws.active && w.id === ws.active.id"
+            :key="w.id"
+            :workspace-id="w.id"
+            :cwd="w.path"
+            :ref="(el) => setTermRef(w.id, el)"
+          />
+        </template>
       </div>
       <div v-show="ui.rightPanelVisible" class="resize-handle panel-resize-right" @mousedown="startResize('right', $event)" />
       <RightPanel v-show="ui.rightPanelVisible" class="panel-right" :cwd="ws.active?.path ?? ''" />
@@ -75,6 +78,7 @@ import Sidebar from "@/components/Sidebar.vue";
 import ActivityBar from "@/components/ActivityBar.vue";
 import Terminal from "@/components/Terminal.vue";
 import RightPanel from "@/components/RightPanel.vue";
+import GitPanel from "@/components/GitPanel.vue";
 import Settings from "@/components/Settings.vue";
 import Spotlight from "@/components/Spotlight.vue";
 import ToastStack from "@/components/ToastStack.vue";
@@ -361,6 +365,11 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.git-main-panel {
+  flex: 1;
+  overflow: hidden;
 }
 
 .resize-handle {

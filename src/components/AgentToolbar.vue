@@ -5,7 +5,7 @@
         v-for="a in store.agents"
         :key="a.id"
         class="agent-btn"
-        :style="{ borderColor: a.color, color: a.color }"
+        :style="{ '--agent-color': a.color }"
         :disabled="!a.command.trim()"
         :title="store.commandLine(a) || 'No command set'"
         @click="a.command.trim() && $emit('launch', store.commandLine(a))"
@@ -15,6 +15,12 @@
         <span v-if="a.shortcut" class="agent-kbd">{{ a.shortcut }}</span>
       </button>
       <span v-if="store.agents.length === 0" class="no-agents">No agents configured</span>
+    </div>
+    <div class="toolbar-end">
+      <button class="claude-ui-btn" title="Open Claude chat" @click="$emit('open-chat')">
+        <ClaudeIcon :size="13" />
+        <span>Claude UI</span>
+      </button>
     </div>
   </div>
 </template>
@@ -40,7 +46,7 @@ function iconFor(icon: AgentIcon) {
   return iconMap[icon] ?? PhRobot;
 }
 
-defineEmits<{ launch: [cmd: string] }>();
+defineEmits<{ launch: [cmd: string]; "open-chat": [] }>();
 
 const store = useAgentsStore();
 </script>
@@ -49,98 +55,82 @@ const store = useAgentsStore();
 .agent-toolbar {
   display: flex;
   align-items: center;
-  height: 40px;
-  padding: 0 12px;
-  background: var(--bg-base);
+  height: 36px;
+  padding: 0 10px;
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  gap: 8px;
 }
 
 .agent-btns {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 
 .agent-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  border-radius: 4px;
-  border: 1px solid;
+  gap: 5px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--agent-color, var(--accent)) 22%, var(--border));
+  background: color-mix(in srgb, var(--agent-color, var(--accent)) 7%, transparent);
+  color: var(--text-secondary);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
   font-family: var(--font-ui);
-  padding: 5px 10px;
-  transition: opacity 0.15s;
+  padding: 4px 9px;
+  transition: background .12s, color .12s;
   white-space: nowrap;
 }
-.agent-btn { background: rgba(255, 255, 255, 0.03); }
-.agent-btn:hover:not(:disabled) { opacity: 0.8; }
-.agent-btn:active:not(:disabled) { opacity: 0.6; }
-.agent-btn:disabled { opacity: 0.4; cursor: default; }
+.agent-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--agent-color, var(--accent)) 14%, transparent);
+  color: var(--text-primary);
+}
+.agent-btn:active:not(:disabled) { opacity: 0.75; }
+.agent-btn:disabled { opacity: 0.35; cursor: default; }
 
 .no-agents {
   font-size: 11px;
   color: var(--text-muted);
 }
 
-.at-divider {
-  width: 1px;
-  height: 20px;
-  background: #2a2a2a;
-  flex-shrink: 0;
-}
-
-.at-spacer { flex: 1; }
-
-.cmd-input {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 26px;
-  padding: 0 12px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  cursor: text;
-}
-
-.cmd-icon { color: var(--text-muted); flex-shrink: 0; }
-
-.cmd-placeholder {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.cmd-kbd {
-  font-family: var(--font-ui);
-  font-size: 10px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
 .agent-kbd {
   font-family: var(--font-ui);
   font-size: 9px;
-  color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--agent-color, var(--accent)) 10%, rgba(255,255,255,0.05));
   border-radius: 3px;
   padding: 1px 4px;
-  margin-left: 2px;
-}
-
-.at-gap { width: 8px; }
-
-.toolbar-icon {
-  color: var(--text-secondary);
+  margin-left: 1px;
   flex-shrink: 0;
-  cursor: pointer;
 }
-.toolbar-icon:hover { color: var(--text-primary); }
-.toolbar-icon.on { color: var(--accent); }
+
+.toolbar-end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+.claude-ui-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, #d97706 18%, var(--border));
+  background: color-mix(in srgb, #d97706 6%, transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: var(--font-ui);
+  padding: 4px 9px;
+  transition: background .12s, color .12s;
+}
+.claude-ui-btn :deep(svg) { color: #d97706; }
+.claude-ui-btn:hover {
+  background: color-mix(in srgb, #d97706 13%, transparent);
+  color: var(--text-primary);
+}
 </style>

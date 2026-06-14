@@ -281,7 +281,7 @@ watch(activeTab, (t) => { if (t === "git") autoRefresh(); });
 onMounted(() => {
   window.addEventListener("focus", onFocus);
   document.addEventListener("visibilitychange", onVisible);
-  pollId = window.setInterval(autoRefresh, 5000);
+  pollId = window.setInterval(autoRefresh, 30_000);
 });
 
 onBeforeUnmount(() => {
@@ -310,6 +310,7 @@ onBeforeUnmount(() => {
   display: flex;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  height: 32px;
 }
 
 .panel-tab {
@@ -317,18 +318,23 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 11px;
   font-family: var(--font-ui);
-  padding: 7px 4px;
+  padding: 0 4px;
+  transition: color 0.1s;
 }
-.panel-tab:hover  { color: var(--text-primary); }
-.panel-tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+.panel-tab:hover { color: var(--text-secondary); }
+.panel-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
 
 .panel-content {
   flex: 1;
@@ -351,15 +357,13 @@ onBeforeUnmount(() => {
 }
 
 /* Git panel */
-.git-panel {
-  overflow: hidden;
-}
+.git-panel { overflow: hidden; }
 
 .git-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 10px;
+  padding: 5px 8px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -367,50 +371,57 @@ onBeforeUnmount(() => {
 .branch-tag {
   display: flex;
   align-items: center;
-  gap: 5px;
-  color: var(--yellow);
+  gap: 4px;
+  color: var(--text-secondary);
   font-size: 11px;
-  font-weight: 600;
+  font-family: var(--font-mono);
 }
+.branch-tag :deep(svg) { color: var(--yellow); flex-shrink: 0; }
 
-.ahead-tag { color: var(--green); font-size: 10px; font-weight: 600; }
-.behind-tag { color: var(--yellow); font-size: 10px; font-weight: 600; }
+.ahead-tag { color: var(--green); font-size: 10px; }
+.behind-tag { color: var(--yellow); font-size: 10px; }
 
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 
 .push-btn {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   background: none;
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text-secondary);
   cursor: pointer;
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 500;
   font-family: var(--font-ui);
-  padding: 2px 8px;
+  padding: 2px 7px;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
 }
-.push-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); border-color: var(--accent); }
-.push-btn:disabled { opacity: 0.4; cursor: default; }
+.push-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.push-btn:disabled { opacity: 0.35; cursor: default; }
 
 .icon-btn {
   background: none;
   border: none;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 3px;
   border-radius: 3px;
   display: flex;
   align-items: center;
+  transition: color 0.1s, background 0.1s;
 }
 .icon-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
-.icon-btn:disabled { opacity: 0.4; cursor: default; }
+.icon-btn:disabled { opacity: 0.35; cursor: default; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 1s linear infinite; }
@@ -419,7 +430,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
 .git-progress-bar {
@@ -433,24 +444,23 @@ onBeforeUnmount(() => {
 .git-progress-bar::after {
   content: "";
   position: absolute;
-  top: 0;
-  left: 0;
+  top: 0; left: 0;
   height: 100%;
   width: 40%;
   border-radius: 2px;
   background: var(--accent);
   animation: git-indeterminate 1.1s ease-in-out infinite;
 }
-.git-progress-label { font-size: 10px; color: var(--text-secondary); font-weight: 600; }
+.git-progress-label { font-size: 10px; color: var(--text-muted); }
 @keyframes git-indeterminate {
-  0% { left: -40%; }
+  0%   { left: -40%; }
   100% { left: 100%; }
 }
 
 .git-body {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 0;
+  padding: 6px 0;
   display: flex;
   flex-direction: column;
 }
@@ -461,7 +471,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 6px;
   color: var(--text-secondary);
-  padding: 16px 12px;
+  padding: 16px 10px;
   font-size: 11px;
 }
 
@@ -478,16 +488,17 @@ onBeforeUnmount(() => {
   font-size: 11px;
   cursor: pointer;
 }
-.git-init-btn:hover { background: var(--yellow); color: var(--bg-primary); border-color: var(--yellow); }
-.git-init-btn:disabled { opacity: 0.4; cursor: default; }
+.git-init-btn:hover { background: var(--yellow); color: #000; border-color: var(--yellow); }
+.git-init-btn:disabled { opacity: 0.35; cursor: default; }
 
 .section-label {
   font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-muted);
-  padding: 2px 10px 4px;
+  opacity: 0.65;
+  padding: 4px 8px 3px;
 }
 
 .section-label-row {
@@ -498,46 +509,51 @@ onBeforeUnmount(() => {
 
 .stage-all-btn {
   font-size: 10px;
-  font-weight: 600;
-  padding: 1px 6px;
+  font-weight: 500;
+  padding: 1px 5px;
   border-radius: 3px;
   border: 1px solid var(--border);
   background: none;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   cursor: pointer;
   text-transform: none;
   letter-spacing: 0;
+  opacity: 0.8;
+  transition: background 0.1s, color 0.1s, opacity 0.1s;
 }
-.stage-all-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-.stage-all-btn:disabled { opacity: 0.4; cursor: default; }
+.stage-all-btn:hover { background: var(--bg-hover); color: var(--text-primary); opacity: 1; }
+.stage-all-btn:disabled { opacity: 0.3; cursor: default; }
 
 .section-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 
 .empty-hint {
   font-size: 11px;
   color: var(--text-muted);
-  padding: 2px 10px 6px;
+  opacity: 0.6;
+  padding: 2px 8px 6px;
 }
 
 .git-file {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 10px;
+  gap: 5px;
+  padding: 2px 8px;
   cursor: pointer;
   border-radius: 3px;
-  margin: 0 4px;
+  margin: 0 3px;
+  transition: background 0.08s;
 }
 .git-file:hover { background: var(--bg-hover); }
 
 .file-status {
   font-family: var(--font-mono);
-  font-size: 11px;
-  width: 12px;
+  font-size: 10px;
+  font-weight: 700;
+  width: 11px;
   flex-shrink: 0;
   text-align: center;
 }
@@ -551,15 +567,18 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
-  color: var(--text-primary);
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  transition: color 0.08s;
 }
+.git-file:hover .file-path { color: var(--text-primary); }
 
 .file-btn {
   background: none;
   border: none;
   cursor: pointer;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
   padding: 0 2px;
   flex-shrink: 0;
@@ -571,17 +590,17 @@ onBeforeUnmount(() => {
 
 /* Commit */
 .commit-section {
-  margin-top: 10px;
-  padding: 10px;
+  margin-top: 6px;
+  padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
 
 .commit-input {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--border) 15%, var(--bg-panel));
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text-primary);
@@ -590,31 +609,36 @@ onBeforeUnmount(() => {
   line-height: 1.5;
   outline: none;
   padding: 6px 8px;
-  resize: vertical;
+  resize: none;
   width: 100%;
-  overflow-x: hidden;
-  min-height: 58px;
-  max-height: 120px;
+  min-height: 52px;
+  max-height: 100px;
   box-sizing: border-box;
+  transition: border-color 0.1s;
 }
-.commit-input:focus { border-color: var(--accent); }
+.commit-input::placeholder { color: var(--text-muted); opacity: 0.6; }
+.commit-input:focus { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
+.commit-input::-webkit-scrollbar { display: none; }
 
 .commit-btn {
-  align-self: flex-end;
+  width: 100%;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
-  background: var(--accent);
+  background: color-mix(in srgb, var(--accent) 85%, transparent);
   border: none;
   border-radius: 4px;
   color: #fff;
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
-  padding: 4px 10px;
+  font-family: var(--font-ui);
+  padding: 5px 10px;
+  transition: background 0.1s;
 }
-.commit-btn:hover:not(:disabled) { background: var(--accent-dim); }
-.commit-btn:disabled { opacity: 0.4; cursor: default; }
+.commit-btn:hover:not(:disabled) { background: var(--accent); }
+.commit-btn:disabled { opacity: 0.35; cursor: default; }
 
 /* Diff */
 .diff-section {
@@ -629,15 +653,15 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
-  background: var(--bg-hover);
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--border) 20%, var(--bg-panel));
   flex-shrink: 0;
 }
 
 .diff-title {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -657,7 +681,7 @@ onBeforeUnmount(() => {
   line-height: 1.5;
   white-space: pre;
   margin: 0;
-  padding: 6px 0;
+  padding: 5px 0;
   flex: 1;
 }
 
@@ -669,8 +693,8 @@ onBeforeUnmount(() => {
 /* History */
 .history-section {
   border-top: 1px solid var(--border);
-  margin-top: 10px;
-  padding-top: 6px;
+  margin-top: 6px;
+  padding-top: 4px;
   flex-shrink: 0;
 }
 
@@ -682,11 +706,12 @@ onBeforeUnmount(() => {
 .log-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 10px;
+  gap: 5px;
+  padding: 2px 8px;
   cursor: pointer;
-  margin: 0 4px;
+  margin: 0 3px;
   border-radius: 3px;
+  transition: background 0.08s;
 }
 .log-row:hover { background: var(--bg-hover); }
 .log-row.unpushed { background: color-mix(in srgb, var(--accent) 6%, transparent); }
@@ -698,7 +723,6 @@ onBeforeUnmount(() => {
   font-weight: 700;
   color: var(--accent);
   flex-shrink: 0;
-  line-height: 1;
 }
 
 .log-hash {
@@ -713,8 +737,10 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
-  color: var(--text-primary);
+  color: var(--text-secondary);
+  transition: color 0.08s;
 }
+.log-row:hover .log-subject { color: var(--text-primary); }
 .log-meta {
   font-size: 10px;
   color: var(--text-muted);

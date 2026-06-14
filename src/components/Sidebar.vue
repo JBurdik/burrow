@@ -15,6 +15,29 @@
       </button>
     </div>
 
+    <!-- Fleet strip: all non-idle agents across all workspaces -->
+    <div v-if="fleetItems.length > 0" class="fleet-strip">
+      <div class="fleet-header">
+        <PhActivity :size="10" class="fleet-header-icon" />
+        <span>Agents</span>
+        <span class="fleet-count">{{ fleetItems.length }}</span>
+      </div>
+      <div
+        v-for="item in fleetItems"
+        :key="`${item.wsId}-${item.tabId}`"
+        class="fleet-row"
+        :class="`fleet-${item.status}`"
+        @click="selectFleetItem(item)"
+      >
+        <span class="fleet-dot status-dot" :class="`status-${item.status}`">{{ item.status === 'running' ? spinnerFrame : '' }}</span>
+        <div class="fleet-info">
+          <span class="fleet-tab">{{ item.tabTitle }}</span>
+          <span class="fleet-ws">{{ item.wsName }}</span>
+        </div>
+        <PhArrowRight :size="9" class="fleet-arrow" />
+      </div>
+    </div>
+
     <div class="ws-list">
       <TransitionGroup name="ws-move" tag="div" class="ws-list-inner">
       <div
@@ -45,66 +68,11 @@
           </div>
           <div class="ws-info">
             <div class="ws-name">{{ item.name }}</div>
-            <div class="ws-path">{{ item.path }}</div>
-            <button
-              v-if="wsBranch[item.id]"
-              class="ws-branch-pill"
-              :title="`Branch: ${wsBranch[item.id]} — click to switch`"
-              data-no-drag
-              @click.stop="openBranchPicker(item, $event)"
-            >
-              <PhGitBranch :size="9" />
-              <span>{{ wsBranch[item.id] }}</span>
-            </button>
+            <div class="ws-path">{{ shortPath(item.path) }}</div>
           </div>
           <button class="ws-delete" title="Remove" data-no-drag @click.stop="store.remove(item.id)">
             <PhX :size="10" />
           </button>
-        </div>
-
-        <!-- branch picker dropdown -->
-        <div
-          v-if="showBranchPicker === item.id"
-          class="branch-picker"
-          @click.stop
-        >
-          <input
-            ref="branchInputEl"
-            v-model="branchFilter"
-            class="branch-filter"
-            placeholder="Switch or create branch…"
-            @keydown.enter="filteredBranches().length === 1
-              ? switchBranch(item, filteredBranches()[0])
-              : (showCreateOption() && createBranch(item, branchFilter))"
-            @keydown.esc="showBranchPicker = null"
-          />
-          <div class="branch-list">
-            <div v-if="branchLoading" class="branch-item branch-loading">Loading…</div>
-            <template v-else>
-              <div
-                v-for="b in filteredBranches()"
-                :key="b"
-                class="branch-item"
-                :class="{ 'branch-current': b === wsBranch[item.id] }"
-                @click="switchBranch(item, b)"
-              >
-                <PhGitBranch :size="10" />
-                <span>{{ b }}</span>
-                <span v-if="b === wsBranch[item.id]" class="branch-check">✓</span>
-              </div>
-              <div
-                v-if="showCreateOption()"
-                class="branch-item branch-create"
-                @click="createBranch(item, branchFilter)"
-              >
-                <PhPlus :size="10" />
-                <span>Create "{{ branchFilter.trim() }}"</span>
-              </div>
-              <div v-if="!branchLoading && filteredBranches().length === 0 && !showCreateOption()" class="branch-empty">
-                No branches found
-              </div>
-            </template>
-          </div>
         </div>
 
         <!-- Terminal tabs -->
@@ -185,8 +153,8 @@
           </div>
         </div>
 
-        <!-- Worktrees subsection -->
-        <div v-if="!isCollapsed(item.id)" class="ws-worktrees">
+        <!-- Worktrees subsection — only when worktrees exist -->
+        <div v-if="!isCollapsed(item.id) && (store.worktreesByParent[item.id]?.length ?? 0) > 0" class="ws-worktrees">
           <div class="ws-worktree-head">
             <span>Worktrees</span>
             <button class="icon-btn" title="New worktree" @click.stop="openWtDialog(item)">
@@ -391,6 +359,8 @@ import {
   PhTrash,
   PhCaretRight,
   PhCaretDown,
+  PhActivity,
+  PhArrowRight,
 } from "@phosphor-icons/vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -402,11 +372,13 @@ import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { spinnerFrame } from "@/lib/spinner";
 import { usePointerReorder } from "@/composables/usePointerReorder";
 import { aggregateStatus, type TermStatus } from "@/lib/terminalStatus";
+import { useGitStore } from "@/stores/git";
 
 const store = useWorkspaceStore();
 const termTabs = useTerminalTabsStore();
 const ui = useUIStore();
 const chats = useClaudeChatsStore();
+const git = useGitStore();
 
 // ── collapse / expand per workspace ──────────────────────────────────────────
 const COLLAPSE_KEY = "burrow.ws.collapsed";
@@ -470,27 +442,32 @@ const unreadCount = computed(() => {
   return n;
 });
 
-// ── branch switcher ──────────────────────────────────────────────────────────
-interface GitOutput { stdout: string; stderr: string; code: number; }
+// ── branch helpers (listBranches used by worktree dialog) ────────────────────
+// ── fleet view ────────────────────────────────────────────────────────────────
+interface FleetItem { wsId: number; wsName: string; tabId: number; tabTitle: string; status: TermStatus; }
 
-const wsBranch = ref<Record<number, string>>({});
-const showBranchPicker = ref<number | null>(null);
-const branchList = ref<string[]>([]);
-const branchFilter = ref("");
-const branchLoading = ref(false);
-const branchError = ref("");
-const branchInputEl = ref<HTMLInputElement[]>([]);
+const fleetItems = computed<FleetItem[]>(() => {
+  const items: FleetItem[] = [];
+  for (const ws of store.workspaces) {
+    for (const tab of termTabs.tabsByWs[ws.id] ?? []) {
+      if (tab.status !== "idle") {
+        items.push({ wsId: ws.id, wsName: ws.name, tabId: tab.id, tabTitle: tab.title, status: tab.status });
+      }
+    }
+  }
+  return items;
+});
 
-async function fetchBranch(ws: Workspace) {
-  try {
-    const out = await invoke<GitOutput>("run_git", { cwd: ws.path, args: ["branch", "--show-current"] });
-    if (out.code === 0) wsBranch.value[ws.id] = out.stdout.trim();
-  } catch {}
+function selectFleetItem(item: FleetItem) {
+  const ws = store.workspaces.find((w) => w.id === item.wsId);
+  if (ws) selectTab(ws, item.tabId);
 }
 
-// Parse `git branch --list` into a plain branch-name array. Shared by the branch
-// picker and the new-worktree base-branch field.
+// ── branch helpers (worktree dialog) ─────────────────────────────────────────
+interface GitOutput { stdout: string; stderr: string; code: number; }
+
 async function listBranches(path: string): Promise<string[]> {
+  if (git.cwd === path && git.branches.length > 0) return git.branches;
   try {
     const out = await invoke<GitOutput>("run_git", { cwd: path, args: ["branch", "--list"] });
     if (out.code === 0) {
@@ -502,70 +479,13 @@ async function listBranches(path: string): Promise<string[]> {
   return [];
 }
 
-async function openBranchPicker(ws: Workspace, e: MouseEvent) {
-  e.stopPropagation();
-  if (showBranchPicker.value === ws.id) { showBranchPicker.value = null; return; }
-  branchLoading.value = true;
-  branchError.value = "";
-  branchFilter.value = "";
-  showBranchPicker.value = ws.id;
-  try {
-    branchList.value = await listBranches(ws.path);
-  } finally {
-    branchLoading.value = false;
-    await nextTick();
-    branchInputEl.value[0]?.focus();
-  }
-}
-
-async function switchBranch(ws: Workspace, name: string) {
-  showBranchPicker.value = null;
-  try {
-    const out = await invoke<GitOutput>("run_git", { cwd: ws.path, args: ["checkout", name] });
-    if (out.code === 0) wsBranch.value[ws.id] = name;
-    else branchError.value = out.stderr;
-  } catch (e: unknown) {
-    branchError.value = e instanceof Error ? e.message : "git error";
-  }
-}
-
-async function createBranch(ws: Workspace, name: string) {
-  if (!name.trim()) return;
-  showBranchPicker.value = null;
-  try {
-    const out = await invoke<GitOutput>("run_git", { cwd: ws.path, args: ["checkout", "-b", name.trim()] });
-    if (out.code === 0) wsBranch.value[ws.id] = name.trim();
-    else branchError.value = out.stderr;
-  } catch (e: unknown) {
-    branchError.value = e instanceof Error ? e.message : "git error";
-  }
-}
-
-function filteredBranches() {
-  const q = branchFilter.value.toLowerCase();
-  if (!q) return branchList.value;
-  return branchList.value.filter(b => b.toLowerCase().includes(q));
-}
-
-function showCreateOption() {
-  const q = branchFilter.value.trim();
-  return q && !branchList.value.includes(q);
-}
-
 onMounted(() => {
   store.workspaces.forEach(ws => {
-    fetchBranch(ws);
-    // Persisted-expanded workspaces must reopen so their Terminal mounts and
-    // tabsByWs populates — otherwise the row looks expanded but lists no tabs
-    // until a manual collapse+expand fires store.open().
     if (!isCollapsed(ws.id)) { store.open(ws); mountWorktrees(ws.id); }
   });
-  document.addEventListener("click", () => { showBranchPicker.value = null; ctxMenu.value = null; wtCtxMenu.value = null; });
+  document.addEventListener("click", () => { ctxMenu.value = null; wtCtxMenu.value = null; });
 });
 watch(() => store.workspaces, (wss) => wss.forEach(ws => {
-  if (!(ws.id in wsBranch.value)) fetchBranch(ws);
-  // Reopen persisted-expanded parents (and mount their worktrees) once the
-  // async load() populates the list — Sidebar onMounted may have run while empty.
   if (!ws.parent_id && !isCollapsed(ws.id)) { store.ensureOpen(ws); mountWorktrees(ws.id); }
 }), { deep: true });
 
@@ -787,9 +707,17 @@ async function confirmCreate() {
   pendingName.value = "";
   store.open(ws);
 }
+
+function shortPath(p: string): string {
+  const tilde = p.replace(/^\/Users\/[^/]+/, "~");
+  const parts = tilde.split("/").filter(Boolean);
+  if (parts.length <= 2) return tilde;
+  return "~/" + parts.slice(-2).join("/");
+}
 </script>
 
 <style scoped>
+/* ── Sidebar shell ─────────────────────────────────────────────── */
 .sidebar {
   width: var(--sidebar-width, 220px);
   flex: 0 0 var(--sidebar-width, 220px);
@@ -803,36 +731,37 @@ async function confirmCreate() {
   overflow: hidden;
 }
 
+/* ── Header ────────────────────────────────────────────────────── */
 .sidebar-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 11px 12px 9px;
+  padding: 10px 10px 8px 12px;
   flex-shrink: 0;
 }
 
 .header-title {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
 }
 
 .header-label {
   font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
+  font-weight: 600;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: var(--text-secondary);
+  color: var(--text-muted);
 }
 
 .header-count {
   font-size: 9px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-muted);
   background: var(--bg-hover);
-  border-radius: 9px;
-  padding: 1px 7px;
-  line-height: 1.5;
+  border-radius: 8px;
+  padding: 1px 6px;
+  line-height: 1.6;
 }
 
 .header-unread {
@@ -840,16 +769,17 @@ async function confirmCreate() {
   font-weight: 700;
   color: #fff;
   background: var(--green);
-  border-radius: 9px;
+  border-radius: 8px;
   padding: 1px 6px;
-  line-height: 1.5;
+  line-height: 1.6;
   animation: pulse-unread 2s ease-in-out infinite;
 }
 @keyframes pulse-unread {
   0%, 100% { opacity: 1; }
-  50%       { opacity: 0.6; }
+  50%       { opacity: 0.55; }
 }
 
+/* ── Icon buttons ──────────────────────────────────────────────── */
 .icon-btn {
   background: none;
   border: none;
@@ -858,47 +788,57 @@ async function confirmCreate() {
   display: flex;
   align-items: center;
   padding: 4px;
-  border-radius: 6px;
+  border-radius: 5px;
   transition: color .12s, background .12s;
 }
 .icon-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
-.icon-btn:active { transform: scale(0.92); }
+.icon-btn:active { transform: scale(0.9); }
 
+/* ── Workspace list ────────────────────────────────────────────── */
 .ws-list {
   flex: 1;
   overflow-y: auto;
-  padding: 2px 0 8px;
+  padding: 2px 0 6px;
 }
 
+.ws-group { margin-bottom: 2px; }
+
+/* ── Workspace row ─────────────────────────────────────────────── */
 .ws-item {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 10px 7px 11px;
+  gap: 6px;
+  padding: 5px 8px 5px 7px;
   cursor: pointer;
-  border-radius: 8px;
-  margin: 1px 6px;
+  border-radius: 6px;
+  margin: 0 4px;
   position: relative;
   transition: background .12s;
+  touch-action: none;
 }
+
 .ws-item::before {
   content: "";
   position: absolute;
-  left: -2px;
-  top: 50%;
-  transform: translateY(-50%) scaleY(0);
-  width: 3px;
-  height: 18px;
-  border-radius: 2px;
+  left: 1px;
+  top: 20%;
+  height: 60%;
+  width: 2px;
+  border-radius: 1px;
   background: var(--accent);
-  transition: transform .15s ease;
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: transform .15s cubic-bezier(.2, .8, .2, 1);
 }
-.ws-item:hover { background: var(--bg-hover); }
-.ws-item.active {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-.ws-item.active::before { transform: translateY(-50%) scaleY(1); }
 
+.ws-item:hover { background: var(--bg-hover); }
+
+.ws-item.active {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.ws-item.active::before { transform: scaleY(1); }
+
+/* ── Caret ─────────────────────────────────────────────────────── */
 .ws-caret {
   background: none;
   border: none;
@@ -907,18 +847,38 @@ async function confirmCreate() {
   display: flex;
   align-items: center;
   padding: 0;
-  margin: 0 -3px 0 -5px;
+  margin: 0 -2px 0 -3px;
   flex-shrink: 0;
   border-radius: 3px;
-  opacity: 0.6;
+  opacity: 0;
   transition: opacity .12s, color .12s;
 }
-.ws-item:hover .ws-caret { opacity: 1; }
-.ws-caret:hover { color: var(--text-primary); }
+.ws-item:hover .ws-caret,
+.ws-item.active .ws-caret { opacity: 0.7; }
+.ws-caret:hover { opacity: 1 !important; color: var(--text-primary); }
 
-.ws-icon { color: #60a5fa; flex-shrink: 0; }
+/* ── Workspace icon box ────────────────────────────────────────── */
+.ws-icon-wrap {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+  transition: background .12s;
+}
+.ws-item.active .ws-icon-wrap {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.ws-custom-icon { width: 24px; height: 24px; object-fit: cover; }
+.ws-icon { color: var(--text-secondary); flex-shrink: 0; }
 .ws-item.active .ws-icon { color: var(--accent); }
 
+/* ── Workspace info ────────────────────────────────────────────── */
 .ws-info {
   flex: 1;
   min-width: 0;
@@ -942,8 +902,10 @@ async function confirmCreate() {
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-top: 1px;
+  opacity: 0.65;
 }
 
+/* ── Delete button ─────────────────────────────────────────────── */
 .ws-delete {
   background: none;
   border: none;
@@ -951,85 +913,72 @@ async function confirmCreate() {
   cursor: pointer;
   display: none;
   align-items: center;
-  padding: 4px;
-  border-radius: 6px;
+  padding: 3px;
+  border-radius: 4px;
   flex-shrink: 0;
   transition: color .12s, background .12s;
 }
 .ws-item:hover .ws-delete { display: flex; }
-.ws-delete:hover { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
+.ws-delete:hover { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
 
-/* Nested terminal list */
-.ws-group { margin-bottom: 1px; }
-
-/* Worktrees subsection */
-.ws-worktrees {
-  margin: 0 8px 5px 24px;
+/* ── Terminal tabs wrapper ─────────────────────────────────────── */
+.ws-terminals {
+  margin: 1px 6px 3px 26px;
   display: flex;
   flex-direction: column;
   gap: 1px;
-  border-left: 1.5px solid var(--border);
-  padding-left: 8px;
+  border-left: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  padding-left: 7px;
 }
+
+/* ── Worktrees subsection ──────────────────────────────────────── */
+.ws-worktrees {
+  margin: 2px 6px 4px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-left: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  padding-left: 7px;
+}
+
 .ws-worktree-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 3px 8px 3px 4px;
+  padding: 5px 4px 2px 4px;
   font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   color: var(--text-muted);
+  opacity: 0.6;
 }
+
 .ws-worktree .ws-term-icon { color: #a78bfa; }
+.ws-worktree.active .ws-term-icon { color: var(--accent); }
 .claude-session-icon { color: #d97706; }
 .ws-term.active .claude-session-icon { color: var(--accent); }
-.ws-worktree.active .ws-term-icon { color: var(--accent); }
 
-/* Terminal tabs nested under a worktree row — indented inside the worktree group */
 .ws-wt-terminals {
-  margin: 1px 0 3px 12px;
-  border-left-color: color-mix(in srgb, #a78bfa 40%, transparent);
+  margin: 1px 0 2px 12px;
+  border-left-color: color-mix(in srgb, #a78bfa 28%, transparent);
 }
 
-.wt-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: -6px;
-}
-.wt-hint { font-weight: 400; color: var(--text-muted); }
-.wt-error {
-  font-size: 11px;
-  color: var(--red);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.ws-terminals {
-  margin: 2px 8px 4px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  border-left: 1.5px solid var(--border);
-  padding-left: 8px;
-}
-
+/* ── Terminal / worktree tab row ───────────────────────────────── */
 .ws-term {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 8px;
-  border-radius: 7px;
+  gap: 6px;
+  padding: 4px 7px;
+  border-radius: 5px;
   cursor: pointer;
   color: var(--text-secondary);
   position: relative;
   transition: background .12s, color .12s;
+  touch-action: none;
 }
 .ws-term:hover { background: var(--bg-hover); color: var(--text-primary); }
 .ws-term.active {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--text-primary);
 }
 
@@ -1058,13 +1007,12 @@ async function confirmCreate() {
   font-size: 9px;
   font-weight: 600;
   line-height: 1;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-muted);
 }
 
-/* Status dot styles are in src/styles/status-dots.css (shared with Terminal.vue).
-   No local overrides needed here. */
+/* Status dot styles in status-dots.css — no local overrides needed. */
 
 .ws-term-close {
   opacity: 0;
@@ -1072,16 +1020,15 @@ async function confirmCreate() {
   flex-shrink: 0;
   border-radius: 3px;
   padding: 1px;
+  transition: opacity .1s, color .1s;
 }
 .ws-term:hover .ws-term-close { opacity: 0.5; }
 .ws-term-close:hover { opacity: 1 !important; color: var(--red); }
 
+/* ── Drag states ───────────────────────────────────────────────── */
 .ws-term.drag-over { background: var(--bg-hover); outline: 1px solid var(--accent); outline-offset: -1px; }
 .ws-term.dragging { opacity: 0.4; }
-.ws-term { touch-action: none; }
 
-/* workspace row drag feedback */
-.ws-item { touch-action: none; }
 .ws-item.drag-over { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ws-item.drag-over::after {
   content: "";
@@ -1095,23 +1042,25 @@ async function confirmCreate() {
 }
 .ws-item.dragging { opacity: 0.45; }
 
-/* FLIP move animation for reordering (workspaces + nested tabs) */
+/* ── FLIP reorder animation ────────────────────────────────────── */
 .ws-move-move { transition: transform .22s cubic-bezier(.2, .8, .2, 1); }
 
+/* ── Empty state ───────────────────────────────────────────────── */
 .ws-empty {
   font-size: 11.5px;
   color: var(--text-muted);
   text-align: center;
-  padding: 40px 20px;
+  padding: 36px 20px;
   line-height: 1.7;
   margin: 8px;
-  border: 1px dashed var(--border);
-  border-radius: 10px;
+  border: 1px dashed color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 8px;
 }
 
+/* ── Footer ────────────────────────────────────────────────────── */
 .sidebar-footer {
   border-top: 1px solid var(--border);
-  padding: 8px;
+  padding: 6px 8px;
   flex-shrink: 0;
 }
 
@@ -1119,30 +1068,30 @@ async function confirmCreate() {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: 6px;
   width: 100%;
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text-secondary);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  border-radius: 6px;
+  color: var(--text-muted);
   cursor: pointer;
-  font-size: 11.5px;
-  font-weight: 600;
-  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 6px 10px;
   transition: color .12s, border-color .12s, background .12s;
 }
 .footer-btn:hover {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text-secondary);
+  border-color: var(--border);
+  background: var(--bg-hover);
 }
 .footer-btn:active { transform: scale(0.985); }
 
-/* Dialog */
+/* ── Dialog overlay ────────────────────────────────────────────── */
 .dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.6);
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1227,73 +1176,22 @@ async function confirmCreate() {
 }
 .btn-secondary:hover { color: var(--text-primary); border-color: #444; }
 
-/* branch pill + picker */
-.ws-branch-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 9px;
-  font-family: var(--font-mono);
-  padding: 1px 5px;
-  margin-top: 2px;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ws-branch-pill:hover { color: var(--text-secondary); border-color: #444; background: var(--bg-hover); }
-.ws-item.active .ws-branch-pill { border-color: var(--accent); color: var(--accent); }
-
-.branch-picker {
-  margin: 0 4px 6px 22px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--bg-base);
-  overflow: hidden;
-}
-
-.branch-filter {
-  width: 100%;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-primary);
+/* ── Worktree dialog ───────────────────────────────────────────── */
+.wt-label {
   font-size: 11px;
-  outline: none;
-  padding: 6px 8px;
-  box-sizing: border-box;
-}
-.branch-filter::placeholder { color: var(--text-muted); }
-
-.branch-list {
-  max-height: 140px;
-  overflow-y: auto;
-}
-
-.branch-item {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 8px;
-  font-size: 11px;
-  font-family: var(--font-mono);
+  font-weight: 600;
   color: var(--text-secondary);
-  cursor: pointer;
+  margin-bottom: -6px;
 }
-.branch-item:hover { background: var(--bg-hover); color: var(--text-primary); }
-.branch-item.branch-current { color: var(--accent); }
-.branch-item.branch-create { color: var(--text-muted); font-style: italic; }
-.branch-item.branch-create:hover { color: var(--text-primary); background: var(--bg-hover); }
-.branch-check { margin-left: auto; color: var(--accent); }
-.branch-loading { color: var(--text-muted); font-style: italic; }
-.branch-empty { color: var(--text-muted); font-size: 10px; padding: 8px; text-align: center; }
+.wt-hint { font-weight: 400; color: var(--text-muted); }
+.wt-error {
+  font-size: 11px;
+  color: var(--red);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
-/* context menu */
+/* ── Context menu ──────────────────────────────────────────────── */
 .ctx-menu {
   position: fixed;
   z-index: 1000;
@@ -1326,25 +1224,91 @@ async function confirmCreate() {
 .ctx-item.ctx-danger:hover { color: var(--red); }
 .ctx-sep { height: 1px; background: var(--border); margin: 3px 0; }
 
-.ws-icon-wrap {
-  position: relative;
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
+/* ── Fleet strip ───────────────────────────────────────────────── */
+.fleet-strip {
+  margin: 0 6px 6px;
   border-radius: 7px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
   overflow: hidden;
+  flex-shrink: 0;
+}
+
+.fleet-header {
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: var(--bg-hover);
-  transition: background .12s;
+  gap: 5px;
+  padding: 5px 8px 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
 }
-.ws-item.active .ws-icon-wrap {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+
+.fleet-header-icon { color: var(--accent); flex-shrink: 0; }
+
+.fleet-count {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  border-radius: 8px;
+  padding: 1px 6px;
+  line-height: 1.6;
 }
-.ws-custom-icon {
-  width: 26px;
-  height: 26px;
-  object-fit: cover;
+
+.fleet-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+.fleet-row:last-child { border-bottom: none; }
+.fleet-row:hover { background: var(--bg-hover); }
+.fleet-row:hover .fleet-arrow { opacity: 0.6; }
+
+.fleet-dot {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.fleet-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.fleet-tab {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-ws {
+  font-size: 9.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.fleet-arrow {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.1s;
 }
 </style>

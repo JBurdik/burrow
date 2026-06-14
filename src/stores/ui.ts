@@ -49,7 +49,7 @@ interface Prefs {
   debugOverlay: boolean; // show the per-terminal diagnostic overlay (XTerm.vue)
   floatCorner: string; // which screen corner floating windows snap+stack to
   worktreesDir: string; // parent dir for git worktrees: <dir>/<repo>/<branch>
-  mode: "terminal" | "claude"; // active main-pane mode, switched via activity bar
+  mode: "terminal" | "claude" | "git"; // active main-pane mode, switched via activity bar
 }
 
 // The px sizes in the stylesheets are authored at this baseline. `zoom` scales
@@ -120,7 +120,7 @@ export const useUIStore = defineStore("ui", () => {
   const debugOverlay = ref(loaded.debugOverlay);
   const floatCorner = ref(loaded.floatCorner);
   const worktreesDir = ref(loaded.worktreesDir);
-  const mode = ref<"terminal" | "claude">(loaded.mode);
+  const mode = ref<"terminal" | "claude" | "git">(loaded.mode);
 
   // Push the float-window corner to Rust whenever it changes (and on load), so
   // every floating window snaps + stacks at the chosen corner.
@@ -245,8 +245,12 @@ export const useUIStore = defineStore("ui", () => {
     theme.value = key;
   }
 
-  function setMode(m: "terminal" | "claude") {
+  function setMode(m: "terminal" | "claude" | "git") {
     mode.value = m;
+  }
+
+  function toggleGitPanel() {
+    mode.value = mode.value === "git" ? "terminal" : "git";
   }
 
   function resetFonts() {
@@ -286,6 +290,7 @@ export const useUIStore = defineStore("ui", () => {
     worktreesDir,
     mode,
     setMode,
+    toggleGitPanel,
     openSettings,
     closeSettings,
     toggleSettings,

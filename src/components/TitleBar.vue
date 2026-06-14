@@ -33,7 +33,7 @@
             :key="item.id"
             class="notif-item"
             :class="[`notif-${item.type}`, { 'notif-clickable': item.workspaceId }]"
-            @click="navigateToNotif(item.workspaceId)"
+            @click="navigateToNotif(item.workspaceId, item.tabId)"
           >
             <PhCheckCircle v-if="item.type === 'done'" :size="13" class="notif-icon" />
             <PhWarning v-else-if="item.type === 'error'" :size="13" class="notif-icon" />
@@ -48,9 +48,9 @@
       </div>
     </div>
 
-    <!-- Claude 5h usage widget — visible as long as any session exists -->
+    <!-- Claude 5h usage widget — visible whenever there's any usage in the window -->
     <div
-      v-if="chats.allSessions.length > 0"
+      v-if="realUsage.outputTokens > 0"
       class="claude-usage"
       :class="{ 'usage-empty': realUsage.turnCount === 0 }"
       :title="realUsage.turnCount > 0
@@ -70,10 +70,53 @@
         <PhHouse :size="13" />
       </button>
       <span class="project-name" data-tauri-drag-region>{{ workspaceName || "Burrow" }}</span>
-      <span v-if="branch" class="branch-name" data-tauri-drag-region>
-        <PhGitBranch :size="11" />
-        {{ branch }}
-      </span>
+      <div v-if="branch" class="tb-branch-wrap">
+        <button
+          class="branch-btn"
+          :title="`Branch: ${branch} — click to switch`"
+          @click.stop="openBranchPicker"
+        >
+          <PhGitBranch :size="11" />
+          {{ branch }}
+        </button>
+        <div v-if="branchPickerOpen" class="tb-branch-picker" @click.stop>
+          <input
+            ref="branchInputEl"
+            v-model="branchFilter"
+            class="tb-branch-filter"
+            placeholder="Switch or create branch…"
+            @keydown.enter="onBranchEnter"
+            @keydown.esc="branchPickerOpen = false"
+          />
+          <div class="tb-branch-list">
+            <div v-if="branchLoading" class="tb-branch-item tb-branch-loading">Loading…</div>
+            <template v-else>
+              <div
+                v-for="b in filteredBranches"
+                :key="b"
+                class="tb-branch-item"
+                :class="{ 'tb-branch-current': b === branch }"
+                @click="switchBranch(b)"
+              >
+                <PhGitBranch :size="10" />
+                <span>{{ b }}</span>
+                <span v-if="b === branch" class="tb-branch-check">✓</span>
+              </div>
+              <div
+                v-if="showCreateOption"
+                class="tb-branch-item tb-branch-create"
+                @click="createBranch(branchFilter.trim())"
+              >
+                <PhPlus :size="10" />
+                <span>Create "{{ branchFilter.trim() }}"</span>
+              </div>
+              <div v-if="!branchLoading && filteredBranches.length === 0 && !showCreateOption" class="tb-branch-empty">
+                No branches found
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="titlebar-end">
@@ -152,12 +195,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo } from "@phosphor-icons/vue";
+import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus } from "@phosphor-icons/vue";
 import { useNotificationsStore } from "@/stores/notifications";
-import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { useGitStore } from "@/stores/git";
+import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 
 const props = defineProps<{ workspaceName?: string; branch?: string; folderPath?: string; rightPanelVisible?: boolean }>();
@@ -165,21 +209,72 @@ defineEmits(["back", "toggle-rightpanel", "open-settings"]);
 
 const menuOpen = ref(false);
 
+// ── Branch picker ───────────────────────────────────────────────────────────
+const git = useGitStore();
+const branchPickerOpen = ref(false);
+const branchFilter = ref("");
+const branchLoading = ref(false);
+const branchInputEl = ref<HTMLInputElement | null>(null);
+
+const filteredBranches = computed(() => {
+  const q = branchFilter.value.toLowerCase();
+  return q ? git.branches.filter(b => b.toLowerCase().includes(q)) : git.branches;
+});
+const showCreateOption = computed(() => {
+  const q = branchFilter.value.trim();
+  return q && !git.branches.includes(q);
+});
+
+async function openBranchPicker() {
+  if (branchPickerOpen.value) { branchPickerOpen.value = false; return; }
+  if (!props.folderPath) return;
+  branchPickerOpen.value = true;
+  branchFilter.value = "";
+  branchLoading.value = true;
+  try {
+    await git.fetchBranches();
+  } finally {
+    branchLoading.value = false;
+    await nextTick();
+    branchInputEl.value?.focus();
+  }
+}
+
+async function switchBranch(name: string) {
+  branchPickerOpen.value = false;
+  try { await git.switchBranch(name); }
+  catch (e) { console.error("branch switch failed", e); }
+}
+
+async function createBranch(name: string) {
+  if (!name) return;
+  branchPickerOpen.value = false;
+  try { await git.createBranch(name); }
+  catch (e) { console.error("branch create failed", e); }
+}
+
+function onBranchEnter() {
+  if (filteredBranches.value.length === 1) { switchBranch(filteredBranches.value[0]); return; }
+  if (showCreateOption.value) createBranch(branchFilter.value.trim());
+}
+
 // ── Notification center ─────────────────────────────────────────────────────
 const notifStore = useNotificationsStore();
 const notifOpen = ref(false);
 const wsStore = useWorkspaceStore();
+const termTabs = useTerminalTabsStore();
 
-function navigateToNotif(workspaceId?: number) {
+function navigateToNotif(workspaceId?: number, tabId?: number) {
   if (!workspaceId) return;
   const ws = wsStore.workspaces.find((w) => w.id === workspaceId);
-  if (ws) wsStore.open(ws);
+  if (ws) {
+    wsStore.open(ws);
+    if (tabId != null) termTabs.activate(workspaceId, tabId);
+  }
   notifOpen.value = false;
 }
 
 // ── Claude 5h usage widget ──────────────────────────────────────────────────
-const chats = useClaudeChatsStore();
-
 // Real usage from ~/.claude/projects/**/*.jsonl — polled every 60s.
 // Soft cap for the bar: ~2M output tokens is a very heavy 5h session.
 const OUTPUT_TOKENS_SOFT_CAP = 2_000_000;
@@ -303,6 +398,7 @@ async function openIn(target: "finder" | "vscode" | "zed") {
 function onDocClick() {
   menuOpen.value = false;
   notifOpen.value = false;
+  branchPickerOpen.value = false;
   if (statsOpen.value) { statsOpen.value = false; clearInterval(statsTimer); }
 }
 onMounted(() => {
@@ -371,14 +467,78 @@ const isDev = import.meta.env.DEV;
   color: var(--text-secondary);
 }
 
-.branch-name {
+.tb-branch-wrap {
+  position: relative;
+  -webkit-app-region: no-drag;
+}
+
+.branch-btn {
   display: flex;
   align-items: center;
   gap: 3px;
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--text-muted);
+  padding: 2px 6px;
+  transition: color .12s, border-color .12s, background .12s;
 }
+.branch-btn:hover {
+  color: var(--text-secondary);
+  border-color: var(--border);
+  background: var(--bg-hover);
+}
+
+.tb-branch-picker {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 220px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  z-index: 2000;
+}
+
+.tb-branch-filter {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 11px;
+  outline: none;
+  padding: 7px 9px;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+}
+.tb-branch-filter::placeholder { color: var(--text-muted); }
+
+.tb-branch-list { max-height: 180px; overflow-y: auto; }
+
+.tb-branch-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.tb-branch-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.tb-branch-current { color: var(--accent); }
+.tb-branch-create { color: var(--text-muted); font-style: italic; }
+.tb-branch-create:hover { color: var(--text-primary); background: var(--bg-hover); }
+.tb-branch-check { margin-left: auto; color: var(--accent); font-style: normal; }
+.tb-branch-loading { color: var(--text-muted); font-style: italic; }
+.tb-branch-empty { color: var(--text-muted); font-size: 10px; padding: 10px; text-align: center; }
 
 .titlebar-end {
   display: flex;

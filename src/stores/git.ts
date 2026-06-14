@@ -71,6 +71,8 @@ export const useGitStore = defineStore("git", () => {
   const pulling = ref(false);
   const log = ref<GitCommit[]>([]);
   const logLoading = ref(false);
+  const branches = ref<string[]>([]);
+  const fetching = ref(false);
 
   async function refresh(silent = false) {
     if (!cwd.value) return;
@@ -88,6 +90,7 @@ export const useGitStore = defineStore("git", () => {
       branch.value = branchOut.trim();
       await refreshUpstream();
       await refreshLog();
+      await fetchBranches();
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : "git error";
       staged.value = [];
@@ -229,6 +232,49 @@ export const useGitStore = defineStore("git", () => {
     }
   }
 
+  async function fetchBranches() {
+    if (!cwd.value) return;
+    try {
+      const out = await runGit(cwd.value, ["branch", "--format=%(refname:short)"]);
+      branches.value = out.split("\n").map((b) => b.trim()).filter(Boolean);
+    } catch {
+      branches.value = [];
+    }
+  }
+
+  async function switchBranch(name: string) {
+    await runGit(cwd.value, ["checkout", name]);
+    await refresh();
+  }
+
+  async function createBranch(name: string) {
+    await runGit(cwd.value, ["checkout", "-b", name]);
+    await refresh();
+  }
+
+  async function fetch() {
+    if (!cwd.value) return;
+    fetching.value = true;
+    try {
+      await runGit(cwd.value, ["fetch"]);
+      await refreshUpstream();
+    } catch {
+      /* network errors are silent */
+    } finally {
+      fetching.value = false;
+    }
+  }
+
+  async function discardFile(path: string) {
+    await runGit(cwd.value, ["checkout", "--", path]);
+    await refresh();
+  }
+
+  async function unstageAll() {
+    await runGit(cwd.value, ["reset", "HEAD"]);
+    await refresh();
+  }
+
   async function gitInit() {
     if (!cwd.value) return;
     loading.value = true;
@@ -248,7 +294,8 @@ export const useGitStore = defineStore("git", () => {
     diff, diffFile, diffStaged,
     loading, error, commitMsg,
     ahead, behind, hasUpstream, pushing, pulling, log, logLoading,
-    setCwd, refresh, stageFile, unstageFile, stageAll, commit, showDiff, clearDiff, fetchAllDiff, gitInit,
+    setCwd, refresh, stageFile, unstageFile, unstageAll, stageAll, commit, showDiff, clearDiff, fetchAllDiff, gitInit,
     push, pull, refreshLog,
+    branches, fetching, fetchBranches, switchBranch, createBranch, fetch, discardFile,
   };
 });
