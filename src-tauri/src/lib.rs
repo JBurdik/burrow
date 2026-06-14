@@ -229,10 +229,25 @@ fn install_agent_docs(app: &AppHandle) {
     let dirs = load_config_dirs(app);
 
     for claude_dir in &dirs.claude {
-        let skill_dir = Path::new(claude_dir).join("skills").join("burrow");
+        let claude_dir = Path::new(claude_dir);
+        let skill_dir = claude_dir.join("skills").join("burrow");
         if std::fs::create_dir_all(&skill_dir).is_ok() {
             let _ = std::fs::write(skill_dir.join("SKILL.md"), BURROW_SKILL_MD);
         }
+        // Inject a brief always-in-context rule into ~/.claude/CLAUDE.md so Claude
+        // never reaches for its built-in Agent/fork tool before loading the skill.
+        let claude_md = claude_dir.join("CLAUDE.md");
+        let existing = std::fs::read_to_string(&claude_md).unwrap_or_default();
+        let block = format!("<!-- BURROW:BEGIN -->\n{BURROW_CLAUDE_MD_RULE}\n<!-- BURROW:END -->");
+        let merged = match (existing.find("<!-- BURROW:BEGIN -->"), existing.find("<!-- BURROW:END -->")) {
+            (Some(s), Some(e)) if e > s => {
+                let end = e + "<!-- BURROW:END -->".len();
+                format!("{}{}{}", &existing[..s], block, &existing[end..])
+            }
+            _ if existing.trim().is_empty() => block,
+            _ => format!("{}\n\n{block}", existing.trim_end()),
+        };
+        let _ = std::fs::write(&claude_md, merged);
     }
 
     for codex_dir in &dirs.codex {
@@ -512,6 +527,9 @@ fn set_config_dirs(app: AppHandle, claude: Vec<String>, codex: Vec<String>, copi
     install_agent_docs(&app);
     cd
 }
+
+const BURROW_CLAUDE_MD_RULE: &str = "## Burrow IDE — sub-agent delegation rule\n\
+You are running inside **Burrow** IDE. When you want to delegate work to sub-agents or fan out tasks in parallel, use `burrow spawn` via Bash — NOT the built-in `Agent` tool or `fork`. The `Agent` tool runs in-process and its agents won't appear as Burrow tabs. Type `/burrow` to load the full delegation guide.";
 
 const BURROW_AGENT_DOC: &str = "## Delegating to sub-agents (`burrow`)\n\
 You are running inside Burrow, which gives you a `burrow` CLI to delegate work to sub-agents in new terminal tabs. Reach for it whenever the user wants to **delegate to agents**, **spawn an agent to** do something, run work **in parallel**, **fan out** subtasks, or **hand off** a task.\n\n\
