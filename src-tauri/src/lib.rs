@@ -2434,6 +2434,130 @@ fn notify_float_grid(app: AppHandle, pty_id: u32, cols: u16, rows: u16) {
     let _ = app.emit(&format!("float-grid-{pty_id}"), json!({ "cols": cols, "rows": rows }));
 }
 
+// ── Claude 5h usage ───────────────────────────────────────────────────────────
+
+/// Parse "2026-06-02T07:06:19.987Z" → ms since Unix epoch. No external crates.
+fn iso_to_unix_ms(s: &str) -> Option<u64> {
+    let s = s.strip_suffix('Z').unwrap_or(s);
+    let (date, time_part) = s.split_once('T')?;
+    let mut dp = date.splitn(3, '-');
+    let year: u32 = dp.next()?.parse().ok()?;
+    let month: u32 = dp.next()?.parse().ok()?;
+    let day: u32 = dp.next()?.parse().ok()?;
+    let (hms, frac_str) = time_part.split_once('.').unwrap_or((time_part, ""));
+    let mut tp = hms.splitn(3, ':');
+    let hour: u64 = tp.next()?.parse().ok()?;
+    let min: u64 = tp.next()?.parse().ok()?;
+    let sec: u64 = tp.next()?.parse().ok()?;
+
+    let leap = |y: u32| (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let mut days: u64 = 0;
+    for y in 1970..year {
+        days += if leap(y) { 366 } else { 365 };
+    }
+    let mdays: [u32; 12] = [31, if leap(year) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for m in 0..(month.saturating_sub(1)) as usize {
+        days += mdays[m] as u64;
+    }
+    days += day.saturating_sub(1) as u64;
+
+    let frac_ms: u64 = {
+        let trimmed = &frac_str[..frac_str.len().min(3)];
+        format!("{:0<3}", trimmed).parse().unwrap_or(0)
+    };
+    Some(days * 86_400_000 + hour * 3_600_000 + min * 60_000 + sec * 1_000 + frac_ms)
+}
+
+/// Scan ~/.claude/projects/**/*.jsonl and aggregate assistant turn data from the
+/// last 5 hours. Returns { outputTokens, turnCount } — no external crates needed.
+#[tauri::command]
+fn claude_usage_5h(app: AppHandle) -> serde_json::Value {
+    use std::io::{BufRead, BufReader};
+
+    let home = match app.path().home_dir() {
+        Ok(h) => h,
+        Err(_) => return json!({ "outputTokens": 0, "turnCount": 0 }),
+    };
+    let projects_dir = home.join(".claude/projects");
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let cutoff_ms = now_ms.saturating_sub(5 * 3600 * 1000);
+
+    let mut output_tokens: u64 = 0;
+    let mut turn_count: u32 = 0;
+
+    let Ok(project_dirs) = std::fs::read_dir(&projects_dir) else {
+        return json!({ "outputTokens": 0, "turnCount": 0 });
+    };
+
+    for project_entry in project_dirs.flatten() {
+        if !project_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        // Skip files too old to contain recent entries (file mtime heuristic).
+        if let Ok(meta) = project_entry.path().metadata() {
+            if let Ok(modified) = meta.modified() {
+                let mtime_ms = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                if mtime_ms < cutoff_ms {
+                    continue;
+                }
+            }
+        }
+        let Ok(jsonl_files) = std::fs::read_dir(project_entry.path()) else { continue };
+        for file_entry in jsonl_files.flatten() {
+            let path = file_entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            // Same mtime heuristic for individual files.
+            if let Ok(meta) = path.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    let mtime_ms = modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    if mtime_ms < cutoff_ms {
+                        continue;
+                    }
+                }
+            }
+            let Ok(f) = std::fs::File::open(&path) else { continue };
+            for line in BufReader::new(f).lines().flatten() {
+                if !line.contains("\"assistant\"") {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                if v["type"].as_str() != Some("assistant") {
+                    continue;
+                }
+                let ts_str = match v["timestamp"].as_str() {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let ts_ms = match iso_to_unix_ms(ts_str) {
+                    Some(ms) => ms,
+                    None => continue,
+                };
+                if ts_ms < cutoff_ms {
+                    continue;
+                }
+                if let Some(tokens) = v["message"]["usage"]["output_tokens"].as_u64() {
+                    output_tokens += tokens;
+                    turn_count += 1;
+                }
+            }
+        }
+    }
+
+    json!({ "outputTokens": output_tokens, "turnCount": turn_count })
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2555,6 +2679,7 @@ pub fn run() {
             send_float_snapshot,
             notify_float_grid,
             set_float_corner,
+            claude_usage_5h,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

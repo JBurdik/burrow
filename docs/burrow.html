@@ -271,6 +271,96 @@ burrow collect a b      # later: picks up the stragglers</code></pre>
   <h3>Delegate in another project</h3>
   <pre><code>burrow spawn --cwd ~/code/other-app claude "bump deps and run the build"</code></pre>
 
+  <h2>Sidebar feedback — set-status, trigger-flash, diff, log, progress</h2>
+  <p>Agenti mohou posílat live feedback přímo do záhlaví tabu bez tisku do terminálu.</p>
+  <table>
+    <thead><tr><th>Příkaz</th><th>Co dělá</th></tr></thead>
+    <tbody>
+      <tr><td>burrow set-status "text"</td><td>Zobrazí krátký label vedle status tečky v tabu (fáze práce: "analyzing", "testing"…)</td></tr>
+      <tr><td>burrow set-status</td><td>Vymaže label — volat na konci turnu</td></tr>
+      <tr><td>burrow trigger-flash</td><td>Krátký vizuální záblesk tabu — "dokončeno, podívej se sem"</td></tr>
+      <tr><td>burrow diff --last-turn</td><td>Git diff od HEAD na začátku turnu — otevře diff tab v UI + tiskne do stdout</td></tr>
+      <tr><td>burrow set-progress 0.4 --label "Building"</td><td>Progress bar v tabu (0.0–1.0); <code>burrow set-progress</code> bez arg vymaže</td></tr>
+      <tr><td>burrow log -- "message"</td><td>Timestampovaný log řádek pod tab barem; <code>--level warn|error</code> pro problémy</td></tr>
+      <tr><td>burrow top</td><td>Tabulka všech živých PTY sessions v Burrow</td></tr>
+    </tbody>
+  </table>
+  <h3>Vzorový turn lifecycle (SKILL.md pravidla)</h3>
+  <pre><code>burrow set-status "analyzing"
+burrow log -- "Reading 8 files"
+# …read + understand…
+burrow set-status "fixing"
+burrow set-progress 0.0 --label "Editing"
+# …edits, update progress per file…
+burrow set-progress 1.0 --label "Editing"
+burrow set-status "testing"
+# …run tests…
+burrow log -- "All tests passed"
+burrow set-progress          # clear
+burrow diff --last-turn      # sanity check — co se vlastně změnilo
+burrow set-status            # clear — turn done
+burrow trigger-flash         # ping uživatele: "tento tab skončil"</code></pre>
+  <p>Podrobná pravidla kdy volat co jsou zabudována do <code>~/.claude/skills/burrow/SKILL.md</code> (přepisován při každém spuštění).</p>
+
+  <h2>tmux shim — CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS</h2>
+  <p>
+    V <code>&lt;app-data&gt;/bin/</code> (prepended to PATH každého PTY) leží vedle <code>burrow</code> i falešný <code>tmux</code> binary.
+    Překládá tmux API volání na Burrow nativní operace — takže Claude Code's <strong>agent teams</strong> feature
+    (<code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1</code>) funguje v Burrow bez skutečného tmux.
+  </p>
+  <table>
+    <thead><tr><th>tmux příkaz</th><th>Přeloženo na</th></tr></thead>
+    <tbody>
+      <tr><td>tmux new-window [cmd]</td><td><code>burrow spawn --tmux-win @N [cmd]</code> — nový tab</td></tr>
+      <tr><td>tmux split-window [cmd]</td><td>totéž — Burrow nemá split, otevře nový tab</td></tr>
+      <tr><td>tmux send-keys -t @N keys Enter</td><td><code>POST /write</code> na hook server → zapíše do PTY daného tabu</td></tr>
+      <tr><td>tmux new-session / has-session</td><td>no-op (exit 0)</td></tr>
+      <tr><td>tmux list-* / select-* / set-*</td><td>minimální fake output nebo no-op</td></tr>
+      <tr><td>tmux -V</td><td>prints "tmux 3.3a"</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Mapování window ID (<code>@1</code>, <code>@2</code>…) na Burrow PTY ID drží soubor
+    <code>&lt;app-data&gt;/tmux_wins/@N</code> — zapíše <code>burrow spawn</code> přes flag <code>--tmux-win</code>,
+    přečte <code>send-keys</code> při psaní do tabu.
+  </p>
+  <div class="note">
+    <strong>Proč shim?</strong> Agent teams spouští sub-agenty přes <code>tmux new-window</code>. Reálný tmux by otevřel
+    session mimo Burrow — v šedém terminálovém okně, bez status dotů, bez sidebar feedbacku. Shim zachytí volání
+    a přesměruje je do Burrow tabů, kde jsou sub-agenti viditelní a mají plný status tracking.
+  </div>
+
+  <h2>Příklady promptů — co říct agentovi</h2>
+  <p>Agenti SKILL.md znají automaticky. Tady jsou příklady co napsat člověkem:</p>
+
+  <h3>Spustit sub-agenta v novém tabu</h3>
+  <pre><code># Agent to udělá sám (spawn je v SKILL.md), ale kdybys chtěl ručně:
+burrow spawn claude "write unit tests for src/auth"
+burrow spawn --cwd ~/code/other-project claude "bump deps and build"</code></pre>
+
+  <h3>Paralelní práce s výsledky</h3>
+  <pre><code>burrow spawn --token a claude "audit src/auth for security bugs"
+burrow spawn --token b claude "audit src/api for security bugs"
+# …dělej svou práci…
+burrow collect a b      # vytiskne co doběhlo, konzumuje tokeny
+burrow collect          # nebo: vše co doběhlo, bez seznamu tokenů</code></pre>
+
+  <h3>Prompt pro agenta — delegace s feedbackem</h3>
+  <pre><code># Příklad promptu co napsat Claude:
+"Rozděl tuto úlohu na tři části a spusť každou jako samostatný sub-agent
+ přes burrow spawn. Průběžně updatuj set-status a na konci zavolej
+ trigger-flash a diff --last-turn."</code></pre>
+
+  <h3>Prompt pro agent teams (tmux shim)</h3>
+  <pre><code># Stačí mít CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 v prostředí
+# (Burrow to nastavuje automaticky). Claude pak sám spouští sub-agenty
+# přes tmux new-window — shim je zachytí a otevře Burrow taby.</code></pre>
+
+  <h3>Worktree pro izolovanou feature</h3>
+  <pre><code>burrow worktree feat/login                 # nová větev z HEAD
+burrow worktree hotfix --base-ref main      # větev z main
+burrow worktree feat/x --path ~/wt/x        # vlastní disk location</code></pre>
+
   <h2>Caveats</h2>
   <div class="warn">
     <ul style="margin:0;color:#fde68a;">

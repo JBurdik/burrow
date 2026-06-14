@@ -52,17 +52,17 @@
     <div
       v-if="chats.allSessions.length > 0"
       class="claude-usage"
-      :class="{ 'usage-empty': chats.turnsInWindow.length === 0 }"
-      :title="chats.turnsInWindow.length > 0
-        ? `${chats.turnsInWindow.length} turns · ${fmtTokens(chats.windowTokens)} tokens in last 5h`
-        : 'No Claude turns recorded in the last 5h'"
+      :class="{ 'usage-empty': realUsage.turnCount === 0 }"
+      :title="realUsage.turnCount > 0
+        ? `${realUsage.turnCount} turns · ${fmtTokens(realUsage.outputTokens)} output tokens in last 5h`
+        : 'No Claude turns in the last 5h'"
       data-tauri-drag-region
     >
       <ClaudeIcon :size="11" class="usage-icon" />
       <div class="usage-bar-wrap">
         <div class="usage-bar-fill" :style="{ width: usagePct + '%' }" :class="{ 'usage-warn': usagePct > 75, 'usage-crit': usagePct > 90 }" />
       </div>
-      <span class="usage-label">{{ chats.turnsInWindow.length }}<span class="usage-window">/ 5h</span></span>
+      <span class="usage-label">{{ fmtTokens(realUsage.outputTokens) }}<span class="usage-window">/ 5h</span></span>
     </div>
 
     <div class="titlebar-center" data-tauri-drag-region>
@@ -180,10 +180,25 @@ function navigateToNotif(workspaceId?: number) {
 // ── Claude 5h usage widget ──────────────────────────────────────────────────
 const chats = useClaudeChatsStore();
 
-// Soft cap: Claude Pro ~45 turns / 5h. Bar fills toward this; goes red past 90%.
-const TURNS_SOFT_CAP = 45;
+// Real usage from ~/.claude/projects/**/*.jsonl — polled every 60s.
+// Soft cap for the bar: ~2M output tokens is a very heavy 5h session.
+const OUTPUT_TOKENS_SOFT_CAP = 2_000_000;
 
-const usagePct = computed(() => Math.min(100, (chats.turnsInWindow.length / TURNS_SOFT_CAP) * 100));
+type UsageData = { outputTokens: number; turnCount: number };
+const realUsage = ref<UsageData>({ outputTokens: 0, turnCount: 0 });
+let usageTimer: number | undefined;
+
+async function refreshUsage() {
+  try {
+    realUsage.value = await invoke<UsageData>("claude_usage_5h");
+  } catch (e) {
+    console.error("claude_usage_5h failed", e);
+  }
+}
+
+const usagePct = computed(() =>
+  Math.min(100, (realUsage.value.outputTokens / OUTPUT_TOKENS_SOFT_CAP) * 100)
+);
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -290,8 +305,16 @@ function onDocClick() {
   notifOpen.value = false;
   if (statsOpen.value) { statsOpen.value = false; clearInterval(statsTimer); }
 }
-onMounted(() => window.addEventListener("click", onDocClick));
-onBeforeUnmount(() => { window.removeEventListener("click", onDocClick); clearInterval(statsTimer); });
+onMounted(() => {
+  window.addEventListener("click", onDocClick);
+  refreshUsage();
+  usageTimer = window.setInterval(refreshUsage, 60_000);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("click", onDocClick);
+  clearInterval(statsTimer);
+  clearInterval(usageTimer);
+});
 
 const isDev = import.meta.env.DEV;
 </script>

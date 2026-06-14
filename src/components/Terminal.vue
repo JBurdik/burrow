@@ -18,6 +18,7 @@
         @pointerdown="(e: PointerEvent) => tabDragDown(tabIdx, e, 'tab')"
       >
         <PhFileCode v-if="tabIsEditor(tab)" :size="12" class="tab-term-icon" />
+        <ClaudeIcon v-else-if="tabIsChat(tab)" :size="12" class="tab-chat-icon" />
         <PhRobot v-else-if="tabIsAgent(tab)" :size="12" class="tab-agent-icon" />
         <PhTerminal v-else :size="12" class="tab-term-icon" />
         <span v-if="tabIsEditor(tab) && tabDirty(tab)" class="dirty-dot" />
@@ -128,6 +129,12 @@
             @saved="() => onLeafSaved(pane.leaf.id)"
             @error="(m) => onLeafError(m)"
           />
+          <ClaudeChat
+            v-else-if="pane.leaf.leafType === 'chat'"
+            :chat-id="pane.leaf.chatId!"
+            :workspace-id="workspaceId"
+            :cwd="pane.leaf.cwd ?? cwd"
+          />
           <XTerm
             v-else
             :pty-id="pane.leaf.id"
@@ -188,6 +195,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import XTerm from "./XTerm.vue";
 import DiffTab from "./DiffTab.vue";
 import CodeEditor from "./CodeEditor.vue";
+import ClaudeChat from "./ClaudeChat.vue";
 import AgentToolbar from "./AgentToolbar.vue";
 import { type Leaf, type TreeNode, type SplitNode } from "./TerminalSplitView.vue";
 import { nextPtyId, initPtyCounter } from "@/lib/ptyId";
@@ -444,6 +452,10 @@ function tabIsAgent(tab: Tab): boolean {
 // A single-leaf editor tab shows a file icon + dirty dot instead of a status dot.
 function tabIsEditor(tab: Tab): boolean {
   return tab.root.type === "leaf" && tab.root.leafType === "editor";
+}
+
+function tabIsChat(tab: Tab): boolean {
+  return tab.root.type === "leaf" && tab.root.leafType === "chat";
 }
 
 function tabDirty(tab: Tab): boolean {
@@ -771,9 +783,34 @@ function activateTab(id: number) {
   nextTick(() => xtermRefs.get(leaf.id)?.focus());
 }
 
-function openClaudeChat() {
-  chatsStore.ensureSession(props.workspaceId);
-  uiStore.setMode('claude');
+function openClaudeChat(chatId?: number) {
+  let session: import("@/stores/claudeChats").ClaudeSession;
+  if (chatId != null) {
+    session = chatsStore.sessions.find((s) => s.id === chatId) ?? chatsStore.create(props.workspaceId);
+  } else {
+    session = chatsStore.create(props.workspaceId);
+  }
+  // Focus existing tab if already open
+  const existing = tabs.value.find(
+    (t) => t.root.type === "leaf" && t.root.leafType === "chat" && (t.root as Leaf).chatId === session.id
+  );
+  if (existing) { activateTab(existing.id); return; }
+  // Create new chat tab
+  const id = nextPtyId();
+  const leaf: Leaf = {
+    type: "leaf",
+    id,
+    title: session.title,
+    defaultTitle: session.title,
+    isAgent: false,
+    busy: false,
+    status: "idle",
+    leafType: "chat",
+    chatId: session.id,
+  };
+  const tab: Tab = { id: leaf.id, root: leaf };
+  tabs.value.push(tab);
+  activateTab(tab.id);
 }
 
 function addTab(initialCmd?: string, extra?: { cwd?: string; resultToken?: string }): Leaf {
@@ -935,7 +972,7 @@ async function closeTab(tabId: number) {
   // Explicitly kill PTYs so the daemon drops them (not a detach — user closed the
   // tab). Editor/diff leaves have no PTY — skip them.
   for (const leaf of leaves) {
-    if (leaf.leafType === "editor" || leaf.leafType === "diff") continue;
+    if (leaf.leafType === "editor" || leaf.leafType === "diff" || leaf.leafType === "chat") continue;
     invoke("kill_pty", { id: leaf.id }).catch(() => {});
     unregisterLeafListeners(leaf.id);
   }
@@ -974,7 +1011,7 @@ async function closePane(leafId: number) {
     const ok = await confirmClose(leaf.title, "unsaved");
     if (!ok) return;
   }
-  if (leaf && leaf.leafType !== "editor" && leaf.leafType !== "diff") {
+  if (leaf && leaf.leafType !== "editor" && leaf.leafType !== "diff" && leaf.leafType !== "chat") {
     invoke("kill_pty", { id: leafId }).catch(() => {});
     unregisterLeafListeners(leafId);
   }
@@ -1033,7 +1070,7 @@ function persist() {
   // Editor leaves have no PTY — don't persist them as bogus pty rows. Restoring
   // open editors on restart is a follow-up.
   const payload: PersistedTab[] = allLeaves()
-    .filter((l) => l.leafType !== "editor")
+    .filter((l) => l.leafType !== "editor" && l.leafType !== "chat")
     .map((l) => ({
     title: l.title,           // live meaningful title (agent-set, command name, …)
     default_title: l.defaultTitle,  // "Terminal N" fallback
@@ -1093,6 +1130,7 @@ watch(
     else if (req.action === "reorder" && req.fromIdx != null && req.toIdx != null) {
       reorderTabs(req.fromIdx, req.toIdx);
     }
+    else if (req.action === "openChat") openClaudeChat(req.chatId);
   },
 );
 
@@ -1221,7 +1259,7 @@ function focusLeaf(ptyId: number) {
   }
 }
 
-defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, focusLeaf });
+defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, focusLeaf, openClaudeChat });
 </script>
 
 <style scoped>
@@ -1295,6 +1333,7 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
 
 .tab-agent-icon { color: var(--accent); flex-shrink: 0; }
 .tab-term-icon  { color: var(--text-muted); flex-shrink: 0; }
+.tab-chat-icon  { color: #d97706; flex-shrink: 0; }
 
 .tab-status-text {
   font-size: 10px;

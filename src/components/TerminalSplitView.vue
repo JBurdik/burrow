@@ -78,7 +78,7 @@ export interface Leaf {
   initialCmd?: string;
   cwd?: string;          // per-tab cwd override (else workspace cwd)
   resultToken?: string;  // set on tabs spawned via `burrow spawn --token`
-  leafType?: "terminal" | "diff" | "editor";  // default "terminal"
+  leafType?: "terminal" | "diff" | "editor" | "chat";  // default "terminal"
   statusText?: string;  // set by `burrow set-status`; shown next to status dot
   progress?: number;    // 0.0–1.0; set by `burrow set-progress`
   progressLabel?: string;
@@ -88,6 +88,7 @@ export interface Leaf {
   diff?: string;
   filePath?: string;  // set when leafType === "editor" (absolute path)
   dirty?: boolean;    // editor: unsaved changes
+  chatId?: number;    // set when leafType === "chat"
 }
 
 export interface SplitNode {

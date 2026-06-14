@@ -107,9 +107,9 @@
           </div>
         </div>
 
-        <!-- Terminal tabs (shown in terminal mode) -->
+        <!-- Terminal tabs -->
         <TransitionGroup
-          v-if="!isCollapsed(item.id) && ui.mode === 'terminal' && termTabs.tabsByWs[item.id]?.length"
+          v-if="!isCollapsed(item.id) && termTabs.tabsByWs[item.id]?.length"
           name="ws-move"
           tag="div"
           class="ws-terminals"
@@ -176,7 +176,6 @@
             <span class="ws-term-label">{{ session.title }}</span>
             <span v-if="session.busy" class="status-dot status-running">{{ spinnerFrame }}</span>
             <PhX
-              v-if="chats.sessionsForWs(item.id).length > 1"
               :size="9"
               weight="bold"
               class="ws-term-close"
@@ -576,12 +575,12 @@ function newChatSession(workspaceId: number) {
     const w = store.workspaces.find((x) => x.id === workspaceId);
     if (w) store.open(w);
   }
-  chats.create(workspaceId);
+  termTabs.openChat(workspaceId);
 }
 
 function selectChatSession(ws: Workspace, sessionId: number) {
   if (store.active?.id !== ws.id) store.open(ws);
-  chats.setActive(ws.id, sessionId);
+  termTabs.openChat(ws.id, sessionId);
 }
 
 // ── drag-to-reorder ──────────────────────────────────────────────────────────

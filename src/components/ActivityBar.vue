@@ -2,17 +2,15 @@
   <nav class="activity-bar">
     <button
       class="ab-btn"
-      :class="{ active: ui.mode === 'terminal' }"
-      title="Terminal"
-      @click="ui.setMode('terminal')"
+      title="New terminal (⌘T)"
+      @click="newTerminal()"
     >
       <PhTerminal :size="18" />
     </button>
     <button
       class="ab-btn"
-      :class="{ active: ui.mode === 'claude' }"
-      title="Claude"
-      @click="ui.setMode('claude')"
+      title="New Claude chat"
+      @click="newChat()"
     >
       <ClaudeIcon :size="18" />
     </button>
@@ -22,9 +20,19 @@
 <script setup lang="ts">
 import { PhTerminal } from "@phosphor-icons/vue";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
-import { useUIStore } from "@/stores/ui";
+import { useWorkspaceStore } from "@/stores/workspace";
+import { useTerminalTabsStore } from "@/stores/terminalTabs";
 
-const ui = useUIStore();
+const ws = useWorkspaceStore();
+const termTabs = useTerminalTabsStore();
+
+function newTerminal() {
+  if (ws.active) termTabs.add(ws.active.id);
+}
+
+function newChat() {
+  if (ws.active) termTabs.openChat(ws.active.id);
+}
 </script>
 
 <style scoped>
@@ -56,19 +64,4 @@ const ui = useUIStore();
   position: relative;
 }
 .ab-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
-.ab-btn.active {
-  color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-}
-.ab-btn.active::before {
-  content: "";
-  position: absolute;
-  left: -1px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 20px;
-  border-radius: 0 2px 2px 0;
-  background: var(--accent);
-}
 </style>

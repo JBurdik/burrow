@@ -17,8 +17,9 @@ export interface TabSummary {
 
 type TabRequest = {
   wsId: number;
-  action: "activate" | "add" | "close" | "reorder";
+  action: "activate" | "add" | "close" | "reorder" | "openChat";
   tabId?: number;
+  chatId?: number;
   fromIdx?: number;
   toIdx?: number;
   nonce: number;
@@ -53,6 +54,9 @@ export const useTerminalTabsStore = defineStore("terminalTabs", () => {
   function reorder(wsId: number, fromIdx: number, toIdx: number) {
     request.value = { wsId, action: "reorder", fromIdx, toIdx, nonce: ++nonce };
   }
+  function openChat(wsId: number, chatId?: number) {
+    request.value = { wsId, action: "openChat", chatId, nonce: ++nonce };
+  }
 
-  return { tabsByWs, activeByWs, request, setTabs, setActive, clear, activate, add, close, reorder };
+  return { tabsByWs, activeByWs, request, setTabs, setActive, clear, activate, add, close, reorder, openChat };
 });
