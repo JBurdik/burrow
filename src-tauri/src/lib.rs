@@ -100,7 +100,15 @@ const TMUX_SHIM: &str = include_str!("../bin/tmux");
 // stale daemon so the new behavior takes effect after an auto-update.
 const DAEMON_PROTO_VERSION: &str = "2";
 
-fn ensure_burrow_bin(app: &AppHandle) -> Option<std::path::PathBuf> {
+// Cached bin dir: written once per app session. Subsequent create_pty calls skip
+// the file writes and chmod (2 writes + 2 fsyncs per tab was measurably slow).
+static BURROW_BIN_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+fn ensure_burrow_bin(app: &AppHandle) -> Option<&'static PathBuf> {
+    if let Some(dir) = BURROW_BIN_DIR.get() {
+        return Some(dir);
+    }
+
     let dir = app.path().app_data_dir().ok()?.join("bin");
     std::fs::create_dir_all(&dir).ok()?;
 
@@ -117,7 +125,8 @@ fn ensure_burrow_bin(app: &AppHandle) -> Option<std::path::PathBuf> {
         let _ = std::fs::set_permissions(&script, perms.clone());
         let _ = std::fs::set_permissions(&tmux, perms);
     }
-    Some(dir)
+
+    Some(BURROW_BIN_DIR.get_or_init(|| dir))
 }
 
 fn burrow_session_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -364,14 +373,16 @@ fn install_status_hooks(app: &AppHandle) {
 
     let dirs = load_config_dirs(app);
 
-    // Claude: status events. (Notification + PermissionRequest ≈ waiting for the user.)
-    let claude_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "Notification", "PermissionRequest"];
+    // Claude: status events. SessionStart fires when a session (re)starts mid-tab.
+    // Notification is telemetry (cmux model: real permission requests come via
+    // PermissionRequest, not Notification), so we no longer hook it.
+    let claude_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionStart", "PermissionRequest"];
     for d in &dirs.claude {
         merge_status_hooks(&Path::new(d).join("settings.json"), &claude_events, &cmd);
     }
 
     // Codex: same hook schema, in <codex-dir>/hooks.json.
-    let codex_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
+    let codex_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionStart"];
     for d in &dirs.codex {
         merge_status_hooks(&Path::new(d).join("hooks.json"), &codex_events, &cmd);
     }

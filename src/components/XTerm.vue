@@ -307,43 +307,44 @@ onMounted(async () => {
     launchArgs = `--settings ${hooksSettingsPath}`;
   }
 
-  // Forward the agent's hook state straight through as ONE semantic event. The
-  // old path emitted busy+needsInput as two separate signals, whose ordering let
-  // a trailing "waiting" clobber a fresh "done" (done → blue bug). A single
-  // running|waiting|done event has no ordering hazard; Terminal.vue owns the
-  // transition. The 2s poll never fabricates agent status, so these hooks are the
-  // sole source of truth for an agent's running/waiting/done.
-  unlistenHook = await listen<string>(`pty-hook-${props.ptyId}`, (event) => {
-    const state = event.payload;
-    if (state === "running" || state === "waiting" || state === "done")
-      emit("agentState", state);
-  });
-
-  // tmux send-keys path: the shim POSTs /write → hook server emits this event →
-  // we forward to the daemon as regular PTY input.
-  unlistenWrite = await listen<string>(`pty-write-${props.ptyId}`, (event) => {
-    const bytes = Array.from(new TextEncoder().encode(event.payload));
-    invoke("write_pty", { id: props.ptyId, data: bytes });
-  });
-
-  // Float-bubble snapshot responder: a floating window mirroring THIS pty asks
-  // for the current screen on expand. SerializeAddon rebuilds the exact visible
-  // state (alt-screen + modes) which the float writes into a fresh xterm. We
-  // never tear this down per-tab visibility — main XTerms stay mounted (v-show),
-  // so a hidden tab still answers. (tauriEmit, not the Vue `emit` above.)
-  unlistenSnapReq = await listen(`float-snap-req-${props.ptyId}`, async () => {
-    try {
-      // Send the grid dims too: the float must use the SAME cols/rows so the
-      // serialized screen (and subsequent live bytes, laid out for this grid)
-      // render identically — it font-scales to fit instead of reflowing.
-      await invoke("send_float_snapshot", {
-        ptyId: props.ptyId,
-        data: serializeAddon.serialize(),
-        cols: term.cols,
-        rows: term.rows,
-      });
-    } catch { /* float falls back to live-only after its timeout */ }
-  });
+  // Register all three listeners in parallel before creating the PTY — they are
+  // independent and each round-trips to the Tauri IPC bridge, so sequencing them
+  // added ~3× the latency for no reason.
+  [unlistenHook, unlistenWrite, unlistenSnapReq] = await Promise.all([
+    // Forward the agent's hook state straight through as ONE semantic event. A
+    // single running|waiting|done event has no ordering hazard; Terminal.vue owns
+    // the transition. The 2s poll never fabricates agent status, so these hooks
+    // are the sole source of truth for an agent's running/waiting/done.
+    listen<string>(`pty-hook-${props.ptyId}`, (event) => {
+      const state = event.payload;
+      if (state === "running" || state === "waiting" || state === "done")
+        emit("agentState", state);
+    }),
+    // tmux send-keys path: the shim POSTs /write → hook server emits this event →
+    // we forward to the daemon as regular PTY input.
+    listen<string>(`pty-write-${props.ptyId}`, (event) => {
+      const bytes = Array.from(new TextEncoder().encode(event.payload));
+      invoke("write_pty", { id: props.ptyId, data: bytes });
+    }),
+    // Float-bubble snapshot responder: a floating window mirroring THIS pty asks
+    // for the current screen on expand. SerializeAddon rebuilds the exact visible
+    // state (alt-screen + modes) which the float writes into a fresh xterm. We
+    // never tear this down per-tab visibility — main XTerms stay mounted (v-show),
+    // so a hidden tab still answers. (tauriEmit, not the Vue `emit` above.)
+    listen(`float-snap-req-${props.ptyId}`, async () => {
+      try {
+        // Send the grid dims too: the float must use the SAME cols/rows so the
+        // serialized screen (and subsequent live bytes, laid out for this grid)
+        // render identically — it font-scales to fit instead of reflowing.
+        await invoke("send_float_snapshot", {
+          ptyId: props.ptyId,
+          data: serializeAddon.serialize(),
+          cols: term.cols,
+          rows: term.rows,
+        });
+      } catch { /* float falls back to live-only after its timeout */ }
+    }),
+  ]);
 
   // Create PTY
   await invoke("create_pty", {

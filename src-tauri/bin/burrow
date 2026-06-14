@@ -207,24 +207,14 @@ case "$sub" in
           done
         fi ;;
       PreToolUse|PostToolUse) state=running ;;
-      Notification)
-        # `Notification` is ambiguous: Claude fires it BOTH for a permission
-        # prompt (genuinely waiting on the user) AND ~60s after a turn ends, idle
-        # at the prompt ("Claude is waiting for your input"). The idle ping is NOT
-        # "blocked on me" — the turn is already over. Don't emit `done` for the
-        # idle ping: Stop already fired that, and a late `done` ~60s later triggers
-        # a duplicate notification (the 4s done-timer already reset the leaf to
-        # idle, defeating the dedup guard). Just no-op it. Anything else (a real
-        # permission prompt) maps to waiting.
-        msg=$(printf '%s' "$json" | sed -n 's/.*"message"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
-        case "$msg" in
-          *waiting\ for\ your\ input*) exit 0 ;;
-          *)                          state=waiting ;;
-        esac ;;
-      PermissionRequest)            state=waiting ;;
-      Stop)                         state=done ;;
-      SessionEnd)                   exit 0 ;;
-      *)                            exit 0 ;;
+      SessionStart)               state=running ;;
+      PermissionRequest)          state=waiting ;;
+      Stop)                       state=done ;;
+      # Notification = telemetry (idle pings, system events). Real permission
+      # requests arrive as PermissionRequest, not Notification — same model as
+      # cmux's FeedEventClassifier (.statusNotification → non-actionable).
+      # SubagentStop is a sub-agent internal event, not a top-level turn end.
+      Notification|SubagentStop|SessionEnd|*) exit 0 ;;
     esac
     burrow status "$state"
     exit 0
