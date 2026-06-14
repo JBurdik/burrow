@@ -34,8 +34,12 @@
         <span class="perm-title">Permission required</span>
         <code class="perm-detail">{{ permissionDetail }}</code>
       </div>
-      <button class="perm-btn perm-allow" @click="respondPermission(true)">Allow</button>
-      <button class="perm-btn perm-deny" @click="respondPermission(false)">Deny</button>
+      <button class="perm-btn perm-allow" @click="respondPermission(true)" title="Allow (Y)">
+        Allow <kbd class="perm-kbd">Y</kbd>
+      </button>
+      <button class="perm-btn perm-deny" @click="respondPermission(false)" title="Deny (N)">
+        Deny <kbd class="perm-kbd">N</kbd>
+      </button>
     </div>
 
     <div ref="scrollEl" class="chat-messages">
@@ -571,7 +575,12 @@ async function respondPermission(allow: boolean) {
   if (!pendingPermission.value) return;
   const { requestId } = pendingPermission.value;
   pendingPermission.value = null;
-  await invoke("claude_respond_permission", { id: props.chatId, requestId, allow }).catch(() => {});
+  try {
+    await invoke("claude_respond_permission", { id: props.chatId, requestId, allow });
+  } catch (e) {
+    messages.value.push({ id: nextMsgId++, role: "assistant", text: `Permission response failed: ${e}` });
+    saveMessages(props.chatId, messages.value);
+  }
 }
 
 async function toggleDangerousMode() {
@@ -638,6 +647,10 @@ function scrollSuggestionIntoView(idx: number) {
 }
 
 function onKeydown(e: KeyboardEvent) {
+  if (pendingPermission.value) {
+    if (e.key === "y" || e.key === "Y") { e.preventDefault(); respondPermission(true); return; }
+    if (e.key === "n" || e.key === "N") { e.preventDefault(); respondPermission(false); return; }
+  }
   if (suggestions.value.length > 0) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -690,7 +703,15 @@ function autoResize() {
   el.style.height = Math.min(el.scrollHeight, 160) + "px";
 }
 
+function onWindowKeydown(e: KeyboardEvent) {
+  if (!pendingPermission.value) return;
+  if (document.activeElement === inputEl.value) return; // handled by onKeydown
+  if (e.key === "y" || e.key === "Y") { e.preventDefault(); respondPermission(true); }
+  if (e.key === "n" || e.key === "N") { e.preventDefault(); respondPermission(false); }
+}
+
 onMounted(async () => {
+  window.addEventListener("keydown", onWindowKeydown);
   const stored = chats.sessions.find((s) => s.id === props.chatId)?.claudeSessionId ?? "";
   if (stored) sessionId.value = stored;
   await invoke("claude_start", {
@@ -722,6 +743,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onWindowKeydown);
   unlisten?.();
   invoke("claude_stop", { id: props.chatId }).catch(() => {});
 });
@@ -951,10 +973,16 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  background: color-mix(in srgb, #f59e0b 12%, var(--bg-panel));
-  border-bottom: 1px solid color-mix(in srgb, #f59e0b 40%, transparent);
+  padding: 9px 12px;
+  background: color-mix(in srgb, #f59e0b 10%, var(--bg-panel));
+  border-bottom: 2px solid color-mix(in srgb, #f59e0b 50%, transparent);
+  border-top: 1px solid color-mix(in srgb, #f59e0b 30%, transparent);
   flex-shrink: 0;
+  animation: perm-slide-in 0.15s ease-out;
+}
+@keyframes perm-slide-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 .perm-icon { color: #f59e0b; flex-shrink: 0; }
 .perm-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -966,20 +994,35 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 .perm-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   border: none;
   border-radius: 5px;
   font-size: 11px;
   font-weight: 600;
-  padding: 4px 10px;
+  font-family: var(--font-ui);
+  padding: 5px 11px;
   cursor: pointer;
   flex-shrink: 0;
-  transition: opacity .12s;
+  transition: filter .1s;
 }
-.perm-btn:hover { opacity: 0.85; }
+.perm-btn:hover { filter: brightness(1.1); }
+.perm-btn:active { filter: brightness(0.9); }
 .perm-allow { background: #16a34a; color: #fff; }
-.perm-deny  { background: #dc2626; color: #fff; }
+.perm-deny  { background: #b91c1c; color: #fff; }
+.perm-kbd {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  background: rgba(255,255,255,0.2);
+  border-radius: 3px;
+  padding: 1px 4px;
+  line-height: 1.4;
+}
 
 .chat-messages {
   flex: 1;
@@ -997,14 +1040,15 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  color: var(--text-muted);
+  gap: 6px;
+  color: var(--text-secondary);
   font-size: 13px;
+  font-weight: 500;
   text-align: center;
-  padding: 40px 20px;
+  padding: 40px 24px;
 }
-.chat-empty-icon { opacity: 0.25; margin-bottom: 4px; }
-.chat-empty-sub { font-size: 11px; font-family: var(--font-mono); opacity: 0.7; }
+.chat-empty-icon { opacity: 0.18; margin-bottom: 8px; }
+.chat-empty-sub { font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); margin-top: 2px; }
 
 .bubble {
   max-width: 90%;
@@ -1070,6 +1114,8 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   line-height: 1.4;
   max-height: 200px;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 .role-tool { display: flex; justify-content: flex-start; }
@@ -1077,19 +1123,24 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 10px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  padding: 3px 9px 3px 7px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
   border-radius: 20px;
   font-size: 11px;
   font-family: var(--font-mono);
   color: var(--text-secondary);
-  max-width: 90%;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: background .1s;
 }
-.tool-icon { color: var(--accent); flex-shrink: 0; }
+.bubble-tool:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text-primary);
+}
+.tool-icon { color: var(--accent); flex-shrink: 0; opacity: 0.8; }
 .tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .chat-thinking {
@@ -1205,8 +1256,10 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   min-height: 36px;
   max-height: 160px;
   overflow-y: auto;
+  scrollbar-width: none;
   transition: border-color .15s;
 }
+.chat-input::-webkit-scrollbar { display: none; }
 .chat-input:focus { border-color: var(--accent); }
 .input-queued { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)) !important; }
 
