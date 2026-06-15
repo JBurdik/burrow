@@ -91,7 +91,7 @@
       <div class="section-label">Nové funkce</div>
       <ul>
         <li><strong>Stav „permission" + zvonkový ikonka</strong> — Claude Code posílá hook <code>PermissionRequest</code> vždy, když potřebuje souhlas uživatele (spustit příkaz, smazat soubor…). Nově se zobrazuje jako <strong>jantarový pulzující bod</strong> + ikona zvonku v postranním panelu — vizuálně odlišný od modrého bodu „čeká na další zprávu". Dřív se obojí promíchalo dohromady a nešlo poznat, co agent potřebuje.</li>
-        <li><strong>Čítač kol (round counter)</strong> — každé odeslání zprávy agentovi navýší čítač. V postranním panelu se u tabu zobrazí číslo (např. <code>3</code>), pokud je kolo &gt; 1 a tab je aktivní. Na první pohled vidíte, kolikátá konverzační výměna právě probíhá.</li>
+        <li><strong>Čítač zpráv ↺N</strong> — každé odeslání zprávy agentovi navýší čítač. V postranním panelu se u tabu zobrazí <code>↺2</code>, <code>↺3</code>… pokud jste poslali víc než jednu zprávu a tab je aktivní. Tooltip ukazuje „N messages sent to agent this session". Na první pohled vidíte, kolikátá konverzační výměna právě probíhá.</li>
         <li><strong>OSC 133 — okamžité detekování příkazů v shellu</strong> — shell (zsh, bash, fish, iTerm2) posílá markery <code>C</code> (příkaz začal) a <code>D</code> (příkaz skončil) přes OSC 133. Burrow je teď čte a okamžitě přepíná stav tabu na „busy/idle" — bez čekání na 2s polling. Funguje jen pro terminálové taby bez agenta; agentské taby řídí stav přes hooky.</li>
         <li><strong>Inline přejmenování tabu v postranním panelu</strong> — dvojklik na název tabu ho otevře jako editovatelné pole přímo na místě. Enter nebo blur potvrdí, Esc zruší.</li>
         <li><strong>Titulek okna OS = aktivní tab</strong> — záhlaví macOS okna teď zobrazuje „popis úkolu — workspace", takže je vidět co agent dělá bez přepnutí do Burrow.</li>
@@ -104,6 +104,8 @@
       <ul>
         <li><strong>SessionStart nespouští stav „running"</strong> — Claude Code posílá hook <code>SessionStart</code> při každém spuštění. Ten se dřív mapoval na <code>running</code>, takže každý nový tab okamžitě dostal oranžový puntík ještě před tím, než uživatel cokoliv napsal. Teď se <code>SessionStart</code> ignoruje.</li>
         <li><strong>Titulek tabu se po dokončení nezamění na „Claude Code"</strong> — Claude Code po skončení úkolu resetuje OSC titulek na „Claude Code" (idle stav). To přepisovalo smysluplný popis úkolu. Nově se titulek po <code>Stop</code> zamkne a nemůže ho přepsat generický idle název — dokud nezačne nové kolo.</li>
+        <li><strong>Titulek tabu neukazuje název adresáře místo popisu úkolu</strong> — shell emituje OSC 2 titulek (např. „work" = basename pracovního adresáře) přes Tauri async event AFTER než <code>trySend</code> vyčistí buffer. Race condition způsobovala, že se název adresáře shellu aplikoval jako titulek tabu místo popisu od agenta. Opraveno: <code>pendingOscTitle</code> se bufferuje jen pokud už víme, že jde o agentskou session.</li>
+        <li><strong>Přejmenování tabu (dvojklik) nefungovalo</strong> — input se zobrazil, ale nefocusoval — Tauri webview vyžaduje explicitní <code>focus()</code> před <code>select()</code>. Opraveno.</li>
       </ul>
     </div>
   </div>
