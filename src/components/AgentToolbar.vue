@@ -17,6 +17,10 @@
       <span v-if="store.agents.length === 0" class="no-agents">No agents configured</span>
     </div>
     <div class="toolbar-end">
+      <button class="browser-btn" title="Open browser tab" @click="$emit('open-browser')">
+        <PhGlobe :size="13" />
+        <span>Browser</span>
+      </button>
       <button class="claude-ui-btn" title="Open Claude chat" @click="$emit('open-chat')">
         <ClaudeIcon :size="13" />
         <span>Claude UI</span>
@@ -30,7 +34,7 @@ import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
 import OpenAIIcon from "@/components/icons/OpenAIIcon.vue";
 import { useAgentsStore, type AgentIcon } from "@/stores/agents";
-import { PhCode, PhGitBranch, PhRobot, PhSparkle, PhTerminal } from "@phosphor-icons/vue";
+import { PhCode, PhGitBranch, PhRobot, PhSparkle, PhTerminal, PhGlobe } from "@phosphor-icons/vue";
 
 const iconMap: Record<AgentIcon, unknown> = {
   sparkle: PhSparkle,
@@ -46,7 +50,7 @@ function iconFor(icon: AgentIcon) {
   return iconMap[icon] ?? PhRobot;
 }
 
-defineEmits<{ launch: [cmd: string]; "open-chat": [] }>();
+defineEmits<{ launch: [cmd: string]; "open-chat": []; "open-browser": [] }>();
 
 const store = useAgentsStore();
 </script>
@@ -111,6 +115,31 @@ const store = useAgentsStore();
   margin-left: auto;
   display: flex;
   align-items: center;
+}
+
+.toolbar-end {
+  gap: 5px;
+}
+
+.browser-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, #60a5fa 18%, var(--border));
+  background: color-mix(in srgb, #60a5fa 6%, transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: var(--font-ui);
+  padding: 4px 9px;
+  transition: background .12s, color .12s;
+}
+.browser-btn :deep(svg) { color: #60a5fa; }
+.browser-btn:hover {
+  background: color-mix(in srgb, #60a5fa 13%, transparent);
+  color: var(--text-primary);
 }
 
 .claude-ui-btn {

@@ -11,6 +11,7 @@ import { ref, onMounted, onBeforeUnmount, watch } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { attachRenderer } from "@/lib/termRenderer";
 import type { ITerminalAddon } from "@xterm/xterm";
@@ -250,7 +251,7 @@ onMounted(async () => {
 
   fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
-  term.loadAddon(new WebLinksAddon());
+  term.loadAddon(new WebLinksAddon((_e, uri) => shellOpen(uri)));
   // SerializeAddon lets a floating-bubble window request a snapshot of THIS
   // terminal's current screen (incl. alt-screen TUIs) to reconstruct it exactly
   // on expand — the daemon ring-buffer replay can't rebuild an alt-screen.
