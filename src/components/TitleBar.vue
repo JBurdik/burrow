@@ -48,21 +48,27 @@
       </div>
     </div>
 
-    <!-- Claude 5h usage widget — visible whenever there's any usage in the window -->
+    <!-- Claude plan-usage strip — real utilization %, same data claude.ai shows.
+         One bar per limit window (5h session, weekly, weekly-Sonnet). -->
     <div
-      v-if="realUsage.outputTokens > 0"
-      class="claude-usage"
-      :class="{ 'usage-empty': realUsage.turnCount === 0 }"
-      :title="realUsage.turnCount > 0
-        ? `${realUsage.turnCount} turns · ${fmtTokens(realUsage.outputTokens)} output tokens in last 5h`
-        : 'No Claude turns in the last 5h'"
+      v-if="usageBars.length"
+      class="usage-strip"
+      :class="{ error: !!usageError }"
+      :title="usageError ? `usage unavailable: ${usageError}` : 'claude plan usage'"
       data-tauri-drag-region
     >
       <ClaudeIcon :size="11" class="usage-icon" />
-      <div class="usage-bar-wrap">
-        <div class="usage-bar-fill" :style="{ width: usagePct + '%' }" :class="{ 'usage-warn': usagePct > 75, 'usage-crit': usagePct > 90 }" />
-      </div>
-      <span class="usage-label">{{ fmtTokens(realUsage.outputTokens) }}<span class="usage-window">/ 5h</span></span>
+      <span
+        v-for="b in usageBars"
+        :key="b.key"
+        class="usage-bar"
+        :class="usageSeverity(b.pct)"
+        :title="usageBarTitle(b)"
+      >
+        <span class="ub-label">{{ b.label }}</span>
+        <span class="ub-track"><span class="ub-fill" :style="{ width: Math.min(b.pct, 100) + '%' }" /></span>
+        <span class="ub-pct">{{ b.pct }}%</span>
+      </span>
     </div>
 
     <div class="titlebar-center" data-tauri-drag-region>
@@ -274,31 +280,74 @@ function navigateToNotif(workspaceId?: number, tabId?: number) {
   notifOpen.value = false;
 }
 
-// ── Claude 5h usage widget ──────────────────────────────────────────────────
-// Real usage from ~/.claude/projects/**/*.jsonl — polled every 60s.
-// Soft cap for the bar: ~2M output tokens is a very heavy 5h session.
-const OUTPUT_TOKENS_SOFT_CAP = 2_000_000;
+// ── Claude plan-usage strip ──────────────────────────────────────────────────
+// Real utilization % from the OAuth usage endpoint (Rust `claude_plan_usage`),
+// the same numbers claude.ai's UI shows. Polled every 60s; Rust caches 60s.
+type UsageWindow = { utilization: number; resets_at?: string };
+type PlanUsage = Record<string, UsageWindow | undefined>;
+type UsageBar = { key: string; label: string; pct: number; resets?: string };
 
-type UsageData = { outputTokens: number; turnCount: number };
-const realUsage = ref<UsageData>({ outputTokens: 0, turnCount: 0 });
+const planUsage = ref<PlanUsage | null>(null);
+const usageError = ref<string | null>(null);
 let usageTimer: number | undefined;
 
 async function refreshUsage() {
   try {
-    realUsage.value = await invoke<UsageData>("claude_usage_5h");
+    const j = await invoke<{ ok: boolean; usage?: PlanUsage; error?: string }>("claude_plan_usage");
+    if (j?.ok && j.usage) {
+      planUsage.value = j.usage;
+      usageError.value = null;
+    } else {
+      usageError.value = j?.error || "unknown";
+    }
   } catch (e) {
-    console.error("claude_usage_5h failed", e);
+    usageError.value = "invoke_failed";
+    console.error("claude_plan_usage failed", e);
   }
 }
 
-const usagePct = computed(() =>
-  Math.min(100, (realUsage.value.outputTokens / OUTPUT_TOKENS_SOFT_CAP) * 100)
-);
+// One bar per limit window. Sonnet/Opus weekly bars only appear once used —
+// they read 0% on plans that don't split per-model, so showing them is noise.
+const usageBars = computed<UsageBar[]>(() => {
+  const u = planUsage.value;
+  if (!u) return [];
+  const out: UsageBar[] = [];
+  const add = (key: string, label: string, hideZero = false) => {
+    const w = u[key];
+    if (!w) return;
+    const pct = Math.round(w.utilization || 0);
+    if (hideZero && pct <= 0) return;
+    out.push({ key, label, pct, resets: w.resets_at });
+  };
+  add("five_hour", "5h");
+  add("seven_day", "wk");
+  add("seven_day_sonnet", "son", true);
+  add("seven_day_opus", "opus", true);
+  return out;
+});
 
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(0) + "k";
-  return String(n);
+function usageSeverity(pct: number): string {
+  if (pct >= 85) return "crit";
+  if (pct >= 60) return "warn";
+  return "";
+}
+
+function relTimeFuture(iso?: string): string {
+  if (!iso) return "";
+  let s = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
+  if (s <= 0) return "now";
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60), mm = m % 60;
+  if (h < 24) return mm ? `${h}h ${mm}m` : `${h}h`;
+  const d = Math.floor(h / 24), hh = h % 24;
+  return hh ? `${d}d ${hh}h` : `${d}d`;
+}
+
+function usageBarTitle(b: UsageBar): string {
+  const reset = b.resets ? ` · resets in ${relTimeFuture(b.resets)}` : "";
+  return `${b.label}: ${b.pct}% used${reset}`;
 }
 
 function toggleNotif() {
@@ -647,12 +696,12 @@ const isDev = import.meta.env.DEV;
   text-align: center;
 }
 
-/* Claude 5h usage widget */
-.claude-usage {
+/* Claude plan-usage strip — one bar per limit window */
+.usage-strip {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 8px 3px 6px;
+  gap: 10px;
+  padding: 3px 9px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg-hover);
@@ -661,40 +710,54 @@ const isDev = import.meta.env.DEV;
   margin-left: 4px;
   -webkit-app-region: no-drag;
 }
-
+.usage-strip.error { opacity: 0.5; }
 .usage-icon { color: #d97706; flex-shrink: 0; }
-.usage-empty { opacity: 0.45; }
 
-.usage-bar-wrap {
-  width: 36px;
-  height: 3px;
-  background: rgba(255,255,255,0.08);
-  border-radius: 2px;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.usage-bar-fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
-  transition: width 0.4s ease, background 0.2s;
-}
-.usage-bar-fill.usage-warn { background: #f59e0b; }
-.usage-bar-fill.usage-crit { background: var(--red); }
-
-.usage-label {
+.usage-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 10px;
   font-family: var(--font-mono);
   color: var(--text-secondary);
-  white-space: nowrap;
+}
+.usage-bar .ub-label {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+.usage-bar .ub-track {
+  display: inline-block;
+  width: 44px;
+  height: 4px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.usage-bar .ub-fill {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--green);
+  transition: width 0.4s ease, background 0.2s;
+}
+.usage-bar .ub-pct {
+  font-variant-numeric: tabular-nums;
+  min-width: 26px;
+  text-align: right;
 }
 
-.usage-window {
-  color: var(--text-muted);
-  font-size: 9px;
-  margin-left: 1px;
-}
+.usage-bar.warn { color: var(--yellow); }
+.usage-bar.warn .ub-label { color: var(--yellow); }
+.usage-bar.warn .ub-fill { background: var(--yellow); }
+
+.usage-bar.crit { color: var(--red); animation: usage-pulse 1.6s ease-in-out infinite; }
+.usage-bar.crit .ub-label { color: var(--red); }
+.usage-bar.crit .ub-fill { background: var(--red); }
+.usage-bar.crit .ub-track { border-color: var(--red); background: rgba(248,81,73,0.18); }
+@keyframes usage-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .usage-bar.crit { animation: none; } }
 
 /* Notification center */
 .titlebar-notif {

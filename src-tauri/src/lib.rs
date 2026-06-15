@@ -2198,6 +2198,18 @@ fn init_db(app: &AppHandle) -> Result<Connection, rusqlite::Error> {
             title        TEXT,
             initial_cmd  TEXT,
             FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS mission_tasks (
+            id           TEXT    PRIMARY KEY,
+            workspace_id INTEGER,
+            pty_id       INTEGER,
+            title        TEXT,
+            cwd          TEXT,
+            model        TEXT,
+            status       TEXT,
+            turns        TEXT,
+            created_at   INTEGER NOT NULL,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
         );",
     )?;
     // Idempotent migrations: add new columns (ignored if already present)
@@ -2463,6 +2475,176 @@ fn notify_float_grid(app: AppHandle, pty_id: u32, cols: u16, rows: u16) {
     let _ = app.emit(&format!("float-grid-{pty_id}"), json!({ "cols": cols, "rows": rows }));
 }
 
+// ── Mission Control (tank-style task dashboard) ──────────────────────────────
+// A separate Tauri window that drives headless `claude` PTYs as disposable
+// "tasks": spawn from a prompt, watch status dots via the global hook server
+// (pty-hook-{id}), attach a live terminal on demand, and read the final
+// assistant response straight from Claude's JSONL transcript on Stop — the
+// same model as the `tank` project, but on Burrow's native PTY instead of tmux.
+
+// Mission Control is now an in-window view (ui.mode === 'mission'), not a
+// separate window — so there's no window-builder command. Tasks persist in the
+// shared workspaces.db (mission_tasks table), keyed to a workspace like every
+// other Burrow feature.
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MissionTask {
+    pub id: String,
+    pub workspace_id: Option<i64>,
+    pub pty_id: Option<i64>,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+    pub model: Option<String>,
+    pub status: Option<String>,
+    /// JSON array of {role,text} turns — stored as text, parsed by the frontend.
+    pub turns: Option<String>,
+    pub created_at: i64,
+}
+
+#[tauri::command]
+fn list_mission_tasks(db: State<DbState>) -> Result<Vec<MissionTask>, String> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT id, workspace_id, pty_id, title, cwd, model, status, turns, created_at FROM mission_tasks ORDER BY created_at ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| Ok(MissionTask {
+            id: row.get(0)?,
+            workspace_id: row.get(1)?,
+            pty_id: row.get(2)?,
+            title: row.get(3)?,
+            cwd: row.get(4)?,
+            model: row.get(5)?,
+            status: row.get(6)?,
+            turns: row.get(7)?,
+            created_at: row.get(8)?,
+        }))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+#[tauri::command]
+fn upsert_mission_task(task: MissionTask, db: State<DbState>) -> Result<(), String> {
+    let conn = db.conn.lock().unwrap();
+    conn.execute(
+        "INSERT INTO mission_tasks (id, workspace_id, pty_id, title, cwd, model, status, turns, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET
+            workspace_id=excluded.workspace_id, pty_id=excluded.pty_id, title=excluded.title,
+            cwd=excluded.cwd, model=excluded.model, status=excluded.status, turns=excluded.turns",
+        rusqlite::params![task.id, task.workspace_id, task.pty_id, task.title, task.cwd, task.model, task.status, task.turns, task.created_at],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_mission_task(id: String, db: State<DbState>) -> Result<(), String> {
+    let conn = db.conn.lock().unwrap();
+    conn.execute("DELETE FROM mission_tasks WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Claude stores each session transcript at
+/// `~/.claude/projects/<slug>/<session_id>.jsonl`, where `<slug>` is the cwd
+/// with `/` and `.` replaced by `-`. Mirror that mapping.
+fn claude_transcript_path(cwd: &str, session_id: &str) -> Option<std::path::PathBuf> {
+    let home = dirs_home()?;
+    let slug: String = cwd
+        .chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect();
+    Some(home.join(".claude").join("projects").join(slug).join(format!("{session_id}.jsonl")))
+}
+
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+/// Read the last assistant text block from a task's Claude transcript — the
+/// task's "result", captured when the Stop hook fires (mirrors tank's
+/// read_last_assistant_text). Returns "" if not found yet.
+#[tauri::command]
+fn read_claude_result(cwd: String, session_id: String) -> String {
+    let Some(path) = claude_transcript_path(&cwd, &session_id) else { return String::new() };
+    let Ok(content) = std::fs::read_to_string(&path) else { return String::new() };
+    for line in content.lines().rev() {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if msg.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        let content = &msg["message"]["content"];
+        if let Some(s) = content.as_str() {
+            return s.to_string();
+        }
+        if let Some(arr) = content.as_array() {
+            for block in arr {
+                if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                    return block.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiError {
+    pub status: Option<i64>,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeOutcome {
+    /// Last assistant text block (the task's result).
+    pub text: String,
+    /// Present when the last assistant message is a synthetic API-error record
+    /// (claude tags `isApiErrorMessage` after exhausting retries on 429/529/etc).
+    /// Mirrors tank's read_last_api_error — lets the UI flag a rate-limited task
+    /// as `error` instead of falsely reporting it `done`.
+    pub error: Option<ApiError>,
+}
+
+/// Read the last assistant message's text AND whether it's an API error — in one
+/// pass over the transcript. Used by Mission Control on a task's `done`.
+#[tauri::command]
+fn read_claude_outcome(cwd: String, session_id: String) -> ClaudeOutcome {
+    let empty = ClaudeOutcome { text: String::new(), error: None };
+    let Some(path) = claude_transcript_path(&cwd, &session_id) else { return empty };
+    let Ok(content) = std::fs::read_to_string(&path) else { return empty };
+    for line in content.lines().rev() {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if msg.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        // Extract the text (string content or first text block).
+        let mut text = String::new();
+        let body = &msg["message"]["content"];
+        if let Some(s) = body.as_str() {
+            text = s.to_string();
+        } else if let Some(arr) = body.as_array() {
+            for block in arr {
+                if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                    text = block.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    break;
+                }
+            }
+        }
+        let error = if msg.get("isApiErrorMessage").and_then(|v| v.as_bool()) == Some(true) {
+            Some(ApiError {
+                status: msg.get("apiErrorStatus").and_then(|v| v.as_i64()),
+                message: text.clone(),
+            })
+        } else {
+            None
+        };
+        return ClaudeOutcome { text, error };
+    }
+    empty
+}
+
 // ── Claude 5h usage ───────────────────────────────────────────────────────────
 
 /// Parse "2026-06-02T07:06:19.987Z" → ms since Unix epoch. No external crates.
@@ -2495,6 +2677,96 @@ fn iso_to_unix_ms(s: &str) -> Option<u64> {
         format!("{:0<3}", trimmed).parse().unwrap_or(0)
     };
     Some(days * 86_400_000 + hour * 3_600_000 + min * 60_000 + sec * 1_000 + frac_ms)
+}
+
+// ── Claude plan usage (real utilization %, the same data claude.ai's UI shows) ─
+// Hits the OAuth usage endpoint with Claude Code's own access token. That token
+// lives in ~/.claude/.credentials.json (Linux/WSL) or, on macOS, the login
+// Keychain as a generic password (service "Claude Code-credentials") with NO
+// file written — so we fall back to the `security` CLI there. Cached 60s: the
+// upstream is rate-limited and only refreshes ~once a minute anyway. We shell
+// out to `curl` to avoid pulling an HTTP-client crate into the build.
+static PLAN_USAGE_CACHE: OnceLock<Mutex<(std::time::Instant, serde_json::Value)>> = OnceLock::new();
+
+fn read_claude_oauth_token(app: &AppHandle) -> Option<String> {
+    let mut raw: Option<String> = app
+        .path()
+        .home_dir()
+        .ok()
+        .and_then(|h| std::fs::read_to_string(h.join(".claude/.credentials.json")).ok());
+    #[cfg(target_os = "macos")]
+    if raw.is_none() {
+        if let Ok(out) = std::process::Command::new("security")
+            .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+            .output()
+        {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !s.is_empty() {
+                    raw = Some(s);
+                }
+            }
+        }
+    }
+    let v: serde_json::Value = serde_json::from_str(&raw?).ok()?;
+    v["claudeAiOauth"]["accessToken"].as_str().map(|s| s.to_string())
+}
+
+/// Returns `{ ok: true, usage: {...} }` where `usage` is the raw upstream blob
+/// (windows like `five_hour`, `seven_day`, `seven_day_sonnet`, each carrying
+/// `utilization` 0..100 and `resets_at`), or `{ ok: false, error }`.
+#[tauri::command]
+fn claude_plan_usage(app: AppHandle) -> serde_json::Value {
+    let cache = PLAN_USAGE_CACHE.get_or_init(|| {
+        Mutex::new((
+            std::time::Instant::now() - std::time::Duration::from_secs(3600),
+            json!(null),
+        ))
+    });
+    if let Ok(guard) = cache.lock() {
+        if guard.0.elapsed().as_secs() < 60 && guard.1.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+            return guard.1.clone();
+        }
+    }
+
+    let token = match read_claude_oauth_token(&app) {
+        Some(t) => t,
+        None => return json!({ "ok": false, "error": "no_credentials" }),
+    };
+
+    let out = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "-m",
+            "10",
+            "-H",
+            &format!("Authorization: Bearer {token}"),
+            "-H",
+            "anthropic-beta: oauth-2025-04-20",
+            "https://api.anthropic.com/api/oauth/usage",
+        ])
+        .output();
+
+    let body = match out {
+        Ok(o) if o.status.success() => o.stdout,
+        Ok(_) => return json!({ "ok": false, "error": "curl_failed" }),
+        Err(e) => return json!({ "ok": false, "error": format!("spawn: {e}") }),
+    };
+
+    let usage: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => return json!({ "ok": false, "error": "bad_json" }),
+    };
+    // A 401/expired token comes back as a JSON error object, not the usage shape.
+    if usage.get("five_hour").is_none() {
+        return json!({ "ok": false, "error": "token_expired" });
+    }
+
+    let payload = json!({ "ok": true, "usage": usage });
+    if let Ok(mut g) = cache.lock() {
+        *g = (std::time::Instant::now(), payload.clone());
+    }
+    payload
 }
 
 /// Scan ~/.claude/projects/**/*.jsonl and aggregate assistant turn data from the
@@ -2709,6 +2981,12 @@ pub fn run() {
             notify_float_grid,
             set_float_corner,
             claude_usage_5h,
+            claude_plan_usage,
+            read_claude_result,
+            read_claude_outcome,
+            list_mission_tasks,
+            upsert_mission_task,
+            delete_mission_task,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

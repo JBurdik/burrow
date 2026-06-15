@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>tank — architecture analysis & clone recipe</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --bg-panel: #111;
+    --border: #222;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --purple: #a78bfa;
+    --mono: "JetBrains Mono", "Fira Code", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.6; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 48px 24px 80px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .back { font-size: 12px; color: var(--muted); margin-bottom: 18px; display: inline-block; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+  .tagline { color: var(--muted); font-size: 15px; margin-bottom: 28px; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 36px 0 14px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; color: var(--text); }
+  p { color: #cbd5e1; margin-bottom: 12px; }
+  ul, ol { padding-left: 20px; color: #cbd5e1; }
+  li { margin-bottom: 6px; }
+  code { font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px; color: #93c5fd; }
+  pre { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; overflow-x: auto; margin-bottom: 14px; }
+  pre code { background: none; padding: 0; color: #cbd5e1; font-size: 12.5px; line-height: 1.5; }
+  .note { background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #bfdbfe; }
+  .warn { background: rgba(234,179,8,0.08); border: 1px solid rgba(234,179,8,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #fde68a; }
+  .good { background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #bbf7d0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 14px; }
+  th { text-align: left; padding: 6px 10px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td { padding: 6px 10px; border-bottom: 1px solid #1a1a1a; vertical-align: top; }
+  td:first-child { font-family: var(--mono); color: #93c5fd; white-space: nowrap; }
+  .ok { color: #4ade80; }
+  .no { color: #f87171; }
+  .pill { display: inline-block; font-size: 10px; font-family: var(--mono); padding: 1px 7px; border-radius: 20px; border: 1px solid var(--border); color: var(--muted); margin-left: 6px; vertical-align: middle; }
+  .flow { font-family: var(--mono); font-size: 12px; color: #cbd5e1; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; white-space: pre; overflow-x: auto; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <a class="back" href="context.html">← Project context</a>
+  <h1>tank <span class="pill">reverse-engineered</span></h1>
+  <div class="tagline">FastAPI mission-control for disposable Claude Code sessions — full architecture analysis and a step-by-step clone recipe. Source lives at <code>/Users/jirkab/Development/tank</code> (separate project, not in this repo).</div>
+
+  <div class="note">
+    <strong>Why this doc exists.</strong> tank is the design tank's Mission Control POC was modelled on. This page captures how tank works so any agent can re-derive or extend the pattern later without re-reading tank's 5k-line <code>api.py</code>. For the Burrow port, see <a href="mission-control.html">Mission Control →</a>.
+  </div>
+
+  <h2>What tank is</h2>
+  <p>
+    A single-box web app that runs <strong>Claude Code as a fleet of disposable tasks</strong>. You type a prompt in a browser
+    dashboard; tank spins up a fresh <code>claude</code> process in its own sandbox, streams its status back to the GUI, lets you
+    attach a live terminal, and captures the final answer when the turn ends — then disposes the session.
+  </p>
+  <ul>
+    <li><strong>Backend:</strong> one file, <code>api.py</code> — FastAPI + SQLite (<code>rusqlite</code>-free, stdlib <code>sqlite3</code>) + <code>httpx</code>.</li>
+    <li><strong>Frontend:</strong> one file, <code>static/index.html</code> — ~5k lines, no framework, no build step. xterm.js from a CDN.</li>
+    <li><strong>Process model:</strong> every task is a <strong>tmux session</strong> running <code>claude --session-id &lt;uuid&gt;</code>.</li>
+    <li><strong>Deploy:</strong> systemd service (<code>tank.service</code>) as a dedicated unprivileged user; <code>install.sh</code> / <code>deploy.sh</code>.</li>
+  </ul>
+
+  <h2>The three channels</h2>
+  <p>tank never invents an AI protocol. Claude is a plain CLI in tmux; three independent channels move data between it and the browser:</p>
+  <table>
+    <tr><th>Channel</th><th>Direction</th><th>Carries</th></tr>
+    <tr><td>tmux + PTY</td><td>app → claude</td><td>The prompt (typed in as claude's CLI arg) + live keystrokes on attach.</td></tr>
+    <tr><td>hook.sh → REST</td><td>claude → app</td><td>Lifecycle events (start / stop / etc.) via Claude Code hooks.</td></tr>
+    <tr><td>SSE / WebSocket</td><td>app → browser</td><td>SSE = state patches; WebSocket = live terminal bytes.</td></tr>
+  </table>
+
+  <h2>1 · Spawning a task <span class="pill">prompt → claude</span></h2>
+  <p>Key functions: <code>_spawn_claude()</code>, <code>spawn_first_turn()</code>, <code>tmux_new_session()</code>.</p>
+  <div class="flow">browser POST /tasks  { prompt, project, model }
+   │
+   ├─ task_id = uuid4()                       ← also becomes claude --session-id
+   ├─ write prompt to /tmp/tank-prompts/&lt;id&gt;  ← tmux command string caps at ~16KB
+   ├─ build settings.json with per-task hooks
+   └─ tmux new-session -d -s &lt;name&gt; -c &lt;cwd&gt; \
+        'P=$(cat promptfile); rm promptfile; exec claude --session-id &lt;id&gt; "$P"'
+                                              ← exec → the pane *is* claude</div>
+  <ul>
+    <li>Prompt rides in a <strong>file</strong>, not the tmux command (tmux truncates long <code>new-session</code> strings). The shell reads it into claude's argv (bounded by ARG_MAX ~2MB) then deletes it.</li>
+    <li><code>exec claude</code> replaces the shell so the tmux pane <em>is</em> the claude process — a clean <code>pkill</code> / attach target.</li>
+    <li>Continuations reuse the session: <code>claude --resume &lt;uuid&gt;</code>.</li>
+    <li>Model is fixed at spawn (<code>--model</code>); a resumed session pins to the model it was saved with.</li>
+  </ul>
+
+  <h2>2 · Status &amp; results <span class="pill">claude → app</span></h2>
+  <p>tank installs a hook bridge at user level in <code>~/.claude/settings.json</code>. Claude calls it on every lifecycle event.</p>
+  <h3>hook.sh</h3>
+  <pre><code>KIND="${1:-unknown}"                 # event kind from argv (Stop, SessionStart…)
+PAYLOAD="$(cat)"                     # full event JSON on stdin
+TASK_ID=$(echo "$PAYLOAD" | jq -r '.session_id')   # == the --session-id we set
+BODY=$(jq -nc --arg k "$KIND" --argjson p "$PAYLOAD" '{kind:$k, payload:$p}')
+curl -sfm 5 -X POST "http://127.0.0.1:${PORT}/tasks/${TASK_ID}/events" \
+     --data-binary "$BODY" || true   # never block claude on hook delivery</code></pre>
+  <div class="good">
+    <strong>The crux:</strong> <code>session_id</code> in the payload equals the <code>task_id</code> tank passed via <code>claude --session-id &lt;task-id&gt;</code>. So the hook knows which task it belongs to with zero extra wiring. Hooks for sessions tank didn't spawn POST to an unknown id and silently fail at the FK layer — harmless.
+  </div>
+  <h3>Server side — <code>handle_event()</code></h3>
+  <ul>
+    <li><code>SessionStart</code> → DB status = <code>running</code>.</li>
+    <li><code>Stop</code> → read the JSONL transcript, extract the last assistant message (<code>read_last_assistant_text()</code>), save it as the task result, then kill the tmux session.</li>
+    <li>Every event calls <code>broadcast()</code> → pushes to per-task SSE queues.</li>
+    <li><code>read_last_api_error()</code> detects synthetic API-error messages (claude tags <code>isApiErrorMessage</code>) so a 429/529 surfaces as an error, not a result.</li>
+  </ul>
+  <h3>The transcript</h3>
+  <p>Claude writes every session to <code>~/.claude/projects/&lt;slug&gt;/&lt;session_id&gt;.jsonl</code>, where <code>&lt;slug&gt;</code> is the cwd with <code>/</code> and <code>.</code> replaced by <code>-</code>. Each line is a JSON record; assistant text lives in <code>message.content[].text</code> for <code>type=="assistant"</code> blocks. tank reads it bottom-up for the last one.</p>
+
+  <h2>3 · The GUI <span class="pill">app → browser</span></h2>
+  <h3>SSE — state</h3>
+  <pre><code>// global re-list when anything happens anywhere
+const globalEvents = new EventSource('/stream');
+// per-task detail (status, result) patched in-place
+detailEvents = new EventSource(`/tasks/${id}/stream`);</code></pre>
+  <p>Server holds a set of <code>asyncio.Queue</code>s per task (<code>sse_subscribers</code>); <code>broadcast()</code> fans an event to all of them; <code>EventSourceResponse</code> drains the queue to the browser. The dashboard re-renders dynamic regions in place rather than reloading.</p>
+  <h3>WebSocket — live terminal</h3>
+  <p>Endpoint <code>@app.websocket("/tasks/{task_id}/terminal/{turn_num}")</code> → <code>terminal_ws()</code>. It bridges an xterm.js client to the tmux pane via a forked PTY:</p>
+  <div class="flow">browser xterm.js  ⇄  WS /tasks/&lt;id&gt;/terminal/&lt;turn&gt;  ⇄  pty.fork() → tmux attach -t &lt;sess&gt;</div>
+  <ol>
+    <li><code>pty.fork()</code>; child does <code>os.execvpe("tmux", ["tmux","attach","-t",sess], env)</code> with <code>TERM=xterm-256color</code> (systemd has no TERM).</li>
+    <li>Parent: <code>loop.add_reader(fd, …)</code> → <code>os.read(fd)</code> → <code>ws.send_text()</code> → xterm renders.</li>
+    <li>Keystrokes: <code>ws.receive()</code> → <code>os.write(fd, data)</code> → tmux → claude.</li>
+    <li>Resize: xterm sends a custom frame <code>\x1b__RESIZE__{cols,rows}</code> → <code>fcntl.ioctl(fd, TIOCSWINSZ, …)</code>.</li>
+  </ol>
+  <div class="note">tmux attach gives the full pane buffer for free, so re-attaching shows existing scrollback. A native-PTY clone (Burrow) must replay its own buffer — see the port doc.</div>
+
+  <h2>Beyond the core</h2>
+  <table>
+    <tr><th>Feature</th><th>How</th></tr>
+    <tr><td>Queue</td><td>Per-project ordered prompt list; runs sequentially as tasks finish. Endpoints under <code>/projects/{id}/queue</code>.</td></tr>
+    <tr><td>Schedules</td><td>Cron (<code>croniter</code> + <code>cron-descriptor</code>) → fire prompts automatically. <code>/projects/{id}/schedules</code>.</td></tr>
+    <tr><td>Image attachments</td><td><code>multipart</code> upload to <code>/tmp/tank-uploads</code>, passed as <code>--image &lt;path&gt;</code>; swept after TTL.</td></tr>
+    <tr><td>AI titles/todos</td><td>After Stop, POST recent turns to an OpenAI-compatible endpoint → short title. Off by default.</td></tr>
+    <tr><td>Dev preview</td><td>Run the project's <code>dev_command</code> from the task's worktree on an allocated port (<code>start_preview</code>).</td></tr>
+    <tr><td>Forgejo PR/merge</td><td>One-click PR after a task; <code>git_provider="forgejo"</code>.</td></tr>
+    <tr><td>Worktree isolation</td><td><code>isolate_tasks=1</code> → each task gets its own git worktree under <code>~/tank-worktrees</code>.</td></tr>
+  </table>
+
+  <h2>Clone recipe — minimum viable tank</h2>
+  <p>To rebuild the core on any stack, you need exactly these five moving parts:</p>
+  <ol>
+    <li><strong>An id you control end-to-end.</strong> Generate <code>session_id = uuid</code>; pass it as <code>claude --session-id</code>. It re-appears in every hook payload and names the transcript file — your single join key.</li>
+    <li><strong>A PTY host for claude.</strong> tmux, or a native PTY. Type <code>claude --session-id &lt;id&gt; [--model X] '&lt;prompt&gt;'</code> into it. Long prompts → file, not the command line.</li>
+    <li><strong>A lifecycle hook.</strong> Register a hook in <code>~/.claude/settings.json</code> that ships <code>{kind, payload}</code> to your backend (HTTP, file, socket — anything). Map <code>SessionStart→running</code>, <code>Stop→done</code>.</li>
+    <li><strong>A result reader.</strong> On Stop, read <code>~/.claude/projects/&lt;slug&gt;/&lt;id&gt;.jsonl</code> bottom-up for the last <code>assistant</code> text block.</li>
+    <li><strong>Two browser channels.</strong> Push channel for state (SSE/events). Bidirectional channel for the live terminal (WebSocket ↔ PTY master fd ↔ xterm.js, with a resize frame).</li>
+  </ol>
+  <div class="good">Everything else — queue, cron, previews, AI titles, PR buttons — is independent product surface layered on top. The five parts above are the irreducible engine.</div>
+
+  <h2>What to keep vs change when porting</h2>
+  <table>
+    <tr><th>tank</th><th>Verdict for a native-PTY host</th></tr>
+    <tr><td>tmux session per task</td><td class="no">Replace — native PTY is faster, no tmux dep. But lose free scrollback-on-reattach → replay a buffer yourself.</td></tr>
+    <tr><td>hook.sh → curl → REST</td><td class="ok">Keep the idea; the channel can be whatever the host already has (Burrow: hook server → <code>pty-hook-{id}</code> event).</td></tr>
+    <tr><td>Transcript reading</td><td class="ok">Keep verbatim — it's a Claude Code contract, host-independent.</td></tr>
+    <tr><td>SSE for state</td><td class="ok">Keep, or use the host's reactive store (Burrow: Vue/Pinia, no SSE needed in-process).</td></tr>
+    <tr><td>pty.fork + tmux attach for terminal</td><td class="no">Replace with the host's existing PTY data stream + xterm replay.</td></tr>
+    <tr><td>5k-line single HTML</td><td class="no">Replace with components if the host has a framework.</td></tr>
+  </table>
+
+</div>
+</body>
+</html>
