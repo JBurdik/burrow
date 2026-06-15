@@ -474,6 +474,11 @@ const isDev = import.meta.env.DEV;
   display: flex;
   align-items: center;
   flex-shrink: 0;
+  /* backdrop-filter makes this a stacking context; without an explicit
+     z-index its dropdowns paint *below* .ide-body's positioned children
+     (resize handles, panels) and become unreachable. Lift the whole bar. */
+  position: relative;
+  z-index: 100;
   /* macOS Overlay titlebar sits on top — match its height so native buttons line up */
   padding-top: env(titlebar-area-y, 0px);
 }
