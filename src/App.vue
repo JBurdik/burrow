@@ -239,6 +239,7 @@ async function openNewWorkspace() {
 // browser-only dev (no Tauri) are swallowed.
 let updateTimer: number | undefined;
 let unlistenFloat: UnlistenFn | null = null;
+let unlistenMenuUpdate: UnlistenFn | null = null;
 
 onMounted(async () => {
   ws.load();
@@ -247,6 +248,10 @@ onMounted(async () => {
   window.addEventListener('mouseup', onResizeUp);
   setTimeout(() => update.check({ silent: true }), 3000);
   updateTimer = window.setInterval(() => update.check({ silent: true }), 6 * 60 * 60 * 1000);
+
+  unlistenMenuUpdate = await listen("menu-check-update", () => {
+    update.check({ silent: false });
+  });
 
   // Float bubble "focus main" — switch to the right workspace + leaf
   unlistenFloat = await listen<{ ptyId: number; wsId: number }>(
@@ -267,6 +272,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('mousemove', onResizeMove);
   window.removeEventListener('mouseup', onResizeUp);
   if (updateTimer) clearInterval(updateTimer);
+  unlistenMenuUpdate?.();
   unlistenFloat?.();
 });
 

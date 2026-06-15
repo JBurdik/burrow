@@ -2866,6 +2866,39 @@ fn claude_usage_5h(app: AppHandle) -> serde_json::Value {
     json!({ "outputTokens": output_tokens, "turnCount": turn_count })
 }
 
+// ── Native menu ───────────────────────────────────────────────────────────────
+
+fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let check_update = MenuItem::with_id(app, "check-update", "Check for Updates…", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let about = PredefinedMenuItem::about(app, Some("About Burrow"), None)?;
+    let hide = PredefinedMenuItem::hide(app, Some("Hide Burrow"))?;
+    let hide_others = PredefinedMenuItem::hide_others(app, Some("Hide Others"))?;
+    let show_all = PredefinedMenuItem::show_all(app, Some("Show All"))?;
+    let quit = PredefinedMenuItem::quit(app, Some("Quit Burrow"))?;
+
+    let app_menu = Submenu::with_items(
+        app,
+        "Burrow",
+        true,
+        &[
+            &about,
+            &separator,
+            &check_update,
+            &PredefinedMenuItem::separator(app)?,
+            &hide,
+            &hide_others,
+            &show_all,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+
+    Menu::with_items(app, &[&app_menu])
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2881,6 +2914,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
+            if let Ok(menu) = build_menu(app.handle()) {
+                let _ = app.set_menu(menu);
+            }
             let conn = init_db(app.handle()).expect("DB init failed");
             app.manage(DbState { conn: Mutex::new(conn) });
             app.manage(FloatParamsState { map: Mutex::new(std::collections::HashMap::new()) });
@@ -2923,6 +2959,11 @@ pub fn run() {
             ensure_burrow_bin(app.handle());
             install_status_hooks(app.handle());
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "check-update" {
+                let _ = app.emit("menu-check-update", ());
+            }
         })
         .invoke_handler(tauri::generate_handler![
             create_pty,
