@@ -2219,6 +2219,7 @@ fn init_db(app: &AppHandle) -> Result<Connection, rusqlite::Error> {
     let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN worktree_branch TEXT");
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN default_title TEXT");
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN session_id TEXT");
+    let _ = conn.execute_batch("ALTER TABLE mission_tasks ADD COLUMN handed_off INTEGER");
     Ok(conn)
 }
 
@@ -2499,13 +2500,17 @@ pub struct MissionTask {
     /// JSON array of {role,text} turns — stored as text, parsed by the frontend.
     pub turns: Option<String>,
     pub created_at: i64,
+    /// 1 if the task's live PTY was handed off to a real terminal tab (the tab now
+    /// owns input; Mission Control keeps tracking status read-only). NULL/0 = no.
+    #[serde(default)]
+    pub handed_off: Option<i64>,
 }
 
 #[tauri::command]
 fn list_mission_tasks(db: State<DbState>) -> Result<Vec<MissionTask>, String> {
     let conn = db.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT id, workspace_id, pty_id, title, cwd, model, status, turns, created_at FROM mission_tasks ORDER BY created_at ASC")
+        .prepare("SELECT id, workspace_id, pty_id, title, cwd, model, status, turns, created_at, handed_off FROM mission_tasks ORDER BY created_at ASC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| Ok(MissionTask {
@@ -2518,6 +2523,7 @@ fn list_mission_tasks(db: State<DbState>) -> Result<Vec<MissionTask>, String> {
             status: row.get(6)?,
             turns: row.get(7)?,
             created_at: row.get(8)?,
+            handed_off: row.get(9)?,
         }))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -2529,12 +2535,13 @@ fn list_mission_tasks(db: State<DbState>) -> Result<Vec<MissionTask>, String> {
 fn upsert_mission_task(task: MissionTask, db: State<DbState>) -> Result<(), String> {
     let conn = db.conn.lock().unwrap();
     conn.execute(
-        "INSERT INTO mission_tasks (id, workspace_id, pty_id, title, cwd, model, status, turns, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO mission_tasks (id, workspace_id, pty_id, title, cwd, model, status, turns, created_at, handed_off)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET
             workspace_id=excluded.workspace_id, pty_id=excluded.pty_id, title=excluded.title,
-            cwd=excluded.cwd, model=excluded.model, status=excluded.status, turns=excluded.turns",
-        rusqlite::params![task.id, task.workspace_id, task.pty_id, task.title, task.cwd, task.model, task.status, task.turns, task.created_at],
+            cwd=excluded.cwd, model=excluded.model, status=excluded.status, turns=excluded.turns,
+            handed_off=excluded.handed_off",
+        rusqlite::params![task.id, task.workspace_id, task.pty_id, task.title, task.cwd, task.model, task.status, task.turns, task.created_at, task.handed_off],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }

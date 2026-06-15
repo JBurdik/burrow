@@ -71,6 +71,7 @@
             >
               <em class="dot" :class="t.status" />
               <span class="row-title">{{ t.title }}</span>
+              <PhArrowSquareOut v-if="t.handedOff" class="row-handoff" :size="12" weight="bold" title="handed off to a terminal tab" />
               <span class="row-meta">{{ statusLabel(t) }}</span>
             </li>
           </ul>
@@ -87,9 +88,11 @@
           <span class="model" v-if="selected.model && selected.model !== 'default'">{{ selected.model }}</span>
           <span class="cwd-hint">{{ shortCwd(selected.cwd) }}</span>
           <span class="status-text">· {{ statusLabel(selected) }}</span>
+          <span class="handoff-badge" v-if="selected.handedOff" title="this task's live session was handed off to a terminal tab"><PhArrowSquareOut :size="11" weight="bold" /> in tab</span>
           <span class="spacer" />
-          <button class="btn tiny" @click="openTerminal(selected)" :disabled="!selected.alive" title="attach live terminal"><PhTerminal :size="12" /> Terminal</button>
-          <button class="btn tiny" @click="sendToTab(selected)" title="continue in a real Burrow terminal tab (claude --resume)"><PhArrowRight :size="12" /> Tab</button>
+          <button class="btn tiny" @click="openTerminal(selected)" :disabled="!selected.alive || selected.handedOff" title="attach live terminal"><PhTerminal :size="12" /> Terminal</button>
+          <button v-if="selected.handedOff" class="btn tiny" @click="focusHandoff(selected)" title="jump to the terminal tab running this task"><PhArrowSquareOut :size="12" /> Focus tab</button>
+          <button v-else class="btn tiny" @click="handoffToTab(selected)" :disabled="!selected.alive" title="hand this live session off to a real terminal tab (keeps tracking here)"><PhArrowRight :size="12" /> Hand off</button>
           <button class="btn tiny danger" @click="deleteTask(selected)" title="kill + remove"><PhTrash :size="12" /> Delete</button>
         </header>
 
@@ -102,8 +105,15 @@
           <div v-if="selected.turns.length === 1 && selected.status !== 'running'" class="no-result">no result captured yet</div>
         </div>
 
+        <!-- Handed off → a terminal tab owns input; lock the bar to avoid two writers. -->
+        <div class="continue-bar handed" v-if="selected.handedOff">
+          <PhArrowSquareOut :size="13" />
+          <span>Handed off to a terminal tab — input lives there now.</span>
+          <span class="spacer" />
+          <button class="btn primary" @click="focusHandoff(selected)"><PhArrowSquareOut :size="13" /> Focus tab</button>
+        </div>
         <!-- Persistent continue bar (tank's "send & continue") -->
-        <div class="continue-bar" v-if="selected.alive">
+        <div class="continue-bar" v-else-if="selected.alive">
           <textarea
             v-model="selected.followup"
             rows="2"
@@ -116,7 +126,7 @@
             <button class="btn primary" :disabled="selected.status === 'running' || !selected.followup.trim()" @click="sendFollowup(selected)">send &amp; continue</button>
           </div>
         </div>
-        <div class="continue-bar dead" v-else>
+        <div class="continue-bar dead" v-else-if="!selected.alive">
           <span>PTY finished — this task is read-only.</span>
           <span class="spacer" />
           <button class="btn primary" @click="resumeTask(selected)" title="respawn claude --resume and continue"><PhArrowClockwise :size="13" /> Resume</button>
@@ -241,7 +251,7 @@ import "@xterm/xterm/css/xterm.css";
 import {
   PhCrosshair, PhPlus, PhFolder, PhGitBranch, PhRobot, PhTerminal,
   PhArrowRight, PhArrowLeft, PhArrowClockwise, PhTrash, PhImage, PhX, PhWarning,
-  PhCaretRight, PhCaretDown, PhCheck,
+  PhCaretRight, PhCaretDown, PhCheck, PhArrowSquareOut,
 } from "@phosphor-icons/vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
@@ -253,7 +263,11 @@ const wsStore = useWorkspaceStore();
 const ui = useUIStore();
 const notifStore = useNotificationsStore();
 // App.vue provides the active workspace's Terminal component (for "send to tab").
-const activeTerm = inject<() => { spawnAgent: (cmd: string) => void } | undefined>("activeTerm", () => undefined);
+const activeTerm = inject<() => {
+  spawnAgent: (cmd: string) => void;
+  adoptPty: (opts: { ptyId: number; cwd: string; title: string; sessionId?: string }) => void;
+  focusLeaf: (ptyId: number) => void;
+} | undefined>("activeTerm", () => undefined);
 
 type Status = "running" | "waiting" | "done" | "error" | "idle";
 type Role = "user" | "assistant";
@@ -272,6 +286,8 @@ interface Task {
   followup: string;  // draft text for the in-card follow-up input
   expanded: boolean; // show all turns vs last 4
   alive: boolean;
+  handedOff: boolean; // PTY adopted by a real terminal tab — that tab owns input,
+                      // MC keeps tracking status read-only (no double-input).
   createdAt: number;
 }
 
@@ -286,6 +302,7 @@ interface TaskRow {
   status: string | null;
   turns: string | null;       // JSON-encoded Turn[]
   created_at: number;
+  handed_off: number | null;  // 1 = handed off to a terminal tab
 }
 
 const MODELS = [
@@ -445,6 +462,7 @@ async function spawnTask(prompt: string, cwd: string, model: string, images: str
     followup: "",
     expanded: false,
     alive: true,
+    handedOff: false,
     createdAt: Date.now(),
   };
   tasks.value.push(task);
@@ -701,22 +719,33 @@ function removeImage(i: number) {
   draft.images.splice(i, 1);
 }
 
-// Feature 4 — "send to tab": hand the task off to a real Burrow terminal tab.
-// We kill the headless mission PTY (so two processes don't fight over one session)
-// then open a tab that `claude --resume`s the same session — the conversation
-// continues in a normal tab, with full Burrow terminal UX.
-function sendToTab(t: Task) {
-  if (t.alive) {
-    invoke("kill_pty", { id: t.ptyId }).catch(() => {});
-    teardown(t.ptyId);
-    t.alive = false;
-    saveTask(t);
-  }
+// Feature 4 — hand the task off to a real Burrow terminal tab WITHOUT killing it.
+// The same daemon PTY is *adopted* by a terminal tab (create_pty reattaches the live
+// session — no `--resume`, no new process). The terminal tab now owns input; Mission
+// Control flips `handedOff` so its follow-up bar + embedded-terminal attach lock out
+// (no two writers on one PTY), but keeps its status listeners — the dot stays live,
+// since `pty-hook-{id}` broadcasts to every listener. Re-handing-off just focuses the
+// existing tab. The flag persists (DB), so input stays locked across an app restart.
+function handoffToTab(t: Task) {
+  if (!t.alive) return;
+  // Drop the in-MC embedded terminal if it's attached to this task — that's another
+  // input path into the same PTY, and the tab is taking over.
+  if (termTaskId.value === t.id) closeTerminal();
+  t.handedOff = true;
+  saveTask(t);
   ui.setMode("terminal");
   const wsRow = wsStore.workspaces.find((w) => w.id === t.workspaceId) || wsStore.active;
   if (wsRow) wsStore.open(wsRow);
-  // Defer until the workspace's Terminal is mounted/active, then spawn the resume.
-  setTimeout(() => activeTerm()?.spawnAgent(`claude --resume ${t.id}`), 80);
+  // Defer until the workspace's Terminal is mounted/active, then adopt the live PTY.
+  setTimeout(() => activeTerm()?.adoptPty({ ptyId: t.ptyId, cwd: t.cwd, title: t.title, sessionId: t.id }), 80);
+}
+
+// Jump back to the terminal tab that owns a handed-off task's PTY.
+function focusHandoff(t: Task) {
+  ui.setMode("terminal");
+  const wsRow = wsStore.workspaces.find((w) => w.id === t.workspaceId) || wsStore.active;
+  if (wsRow) wsStore.open(wsRow);
+  setTimeout(() => activeTerm()?.adoptPty({ ptyId: t.ptyId, cwd: t.cwd, title: t.title, sessionId: t.id }), 80);
 }
 
 // Feature A — resume a dead (read-only) task in place. Spawn a fresh mission PTY
@@ -833,12 +862,17 @@ async function openTerminal(t: Task) {
   });
   termInputOff = () => onData.dispose();
 
-  // The replay buffer can end on a partial TUI frame (attached mid-render), so
-  // the first live bytes interleave with stale cells → transient scramble. Force
-  // the agent to fully repaint by nudging a SIGWINCH: a same-size resize is a
-  // kernel no-op, so toggle 119→120 cols (back to native geometry) to guarantee
-  // the kernel delivers it. Claude/TUIs redraw the whole screen on SIGWINCH.
+  // The raw replay is a *stack* of every past TUI frame, ending on a partial one.
+  // Claude repaints its box IN PLACE (relative cursor moves), so a bare SIGWINCH
+  // redraws on top of those stale rows → spinner/status cells interleave with the
+  // leftovers → permanent garble (the bug). Fix: blank the VIEWPORT first (ED2 +
+  // home, written locally into xterm — scrollback above stays intact), THEN nudge
+  // a SIGWINCH so the agent's full repaint lands on a clean screen. The same-size
+  // resize is a kernel no-op, so toggle 119→120 (back to native geometry) to
+  // guarantee delivery. The PTY is owned solely by this modal (no other xterm
+  // mounts it), so resizing it is safe — no geometry fight.
   if (t.alive) {
+    termInstance.write("\x1b[2J\x1b[H");
     invoke("resize_pty", { id: t.ptyId, cols: 119, rows: 34 }).catch(() => {});
     setTimeout(() => invoke("resize_pty", { id: t.ptyId, cols: 120, rows: 34 }).catch(() => {}), 60);
   }
@@ -870,6 +904,7 @@ function saveTask(t: Task) {
       status: t.status,
       turns: JSON.stringify(t.turns),
       created_at: t.createdAt,
+      handed_off: t.handedOff ? 1 : 0,
     },
   }).catch(() => {});
 }
@@ -890,6 +925,7 @@ async function loadTasks() {
     followup: "",
     expanded: false,
     alive: false,   // restored: PTY gone → read-only
+    handedOff: r.handed_off === 1,
     createdAt: r.created_at,
   }));
   // Keep new PTY ids above any restored one (they share the daemon's id map).
@@ -1082,6 +1118,9 @@ onBeforeUnmount(() => {
 .detail-head { display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--border); }
 .detail-head h2 { margin: 0; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
 .detail-head .status-text { font-size: 12px; color: var(--text-muted); }
+.handoff-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 5px; padding: 2px 7px; }
+.row-handoff { color: var(--accent); flex-shrink: 0; }
+.continue-bar.handed { flex-direction: row; align-items: center; gap: 8px; color: var(--accent); font-size: 12px; }
 .cwd-hint { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
 .model { font-size: 10px; background: color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 5px; padding: 2px 6px; color: var(--accent); }
 .spacer { flex: 1; }

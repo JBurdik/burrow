@@ -886,6 +886,31 @@ function spawnAgent(cmd: string) {
   addTab(cmd);
 }
 
+// Adopt an already-running daemon PTY (e.g. a Mission Control task handed off to a
+// real terminal tab). The leaf's id IS the existing ptyId, so XTerm's create_pty
+// hits the daemon's idempotent "session alive → reattach" path: no new process, the
+// ring buffer replays, and the live agent continues here. No initialCmd — nothing is
+// typed; we're attaching, not launching. If a tab already owns this PTY, just focus
+// it (re-handoff is a no-op rather than a double-attach).
+function adoptPty(opts: { ptyId: number; cwd: string; title: string; sessionId?: string }): Leaf {
+  for (const tab of tabs.value) {
+    const existing = findLeaf(tab.root, opts.ptyId);
+    if (existing) { focusLeaf(opts.ptyId); return existing; }
+  }
+  const leaf = makeLeaf(undefined, { cwd: opts.cwd, id: opts.ptyId });
+  leaf.isAgent = true;
+  leaf.title = opts.title;
+  leaf.defaultTitle = opts.title;
+  leaf.sessionId = opts.sessionId;
+  const tab: Tab = { id: leaf.id, root: leaf };
+  tabs.value.push(tab);
+  activeTabId.value = tab.id;
+  focusedLeafId.value = leaf.id;
+  registerLeafListeners(leaf.id);
+  nextTick(() => xtermRefs.get(leaf.id)?.focus());
+  return leaf;
+}
+
 // Move a tab from one position to another (shared by the top tab-bar drag and the
 // reorder request coming back from the Sidebar). syncStore (deep watch on tabs)
 // mirrors the new order to the store, so the Sidebar list follows automatically.
@@ -1342,7 +1367,7 @@ function focusLeaf(ptyId: number) {
   }
 }
 
-defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, focusLeaf, openClaudeChat, openBrowserTab });
+defineExpose({ addTab, spawnAgent, adoptPty, openDiffInTab, openFileInTab, insertContext, focusLeaf, openClaudeChat, openBrowserTab });
 </script>
 
 <style scoped>
