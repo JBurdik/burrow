@@ -40,6 +40,7 @@
       @new-terminal="activeTerm()?.addTab()"
       @new-workspace="openNewWorkspace"
       @open-settings="ui.openSettings()"
+      @open-browser="activeTerm()?.openBrowserTab()"
     />
     <ToastStack />
     <UpdateBanner />

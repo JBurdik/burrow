@@ -21,6 +21,10 @@
       @dirty="(d: boolean) => $emit('dirty', (node as Leaf).id, d)"
       @saved="() => $emit('saved', (node as Leaf).id)"
     />
+    <BrowserPane
+      v-else-if="(node as Leaf).leafType === 'browser'"
+      :initial-url="(node as Leaf).browserUrl"
+    />
     <XTerm
       v-else
       :pty-id="(node as Leaf).id"
@@ -65,6 +69,7 @@ import { inject } from "vue";
 import XTerm from "./XTerm.vue";
 import DiffTab from "./DiffTab.vue";
 import CodeEditor from "./CodeEditor.vue";
+import BrowserPane from "./BrowserPane.vue";
 import TerminalSplitView from "./TerminalSplitView.vue";
 
 export interface Leaf {
@@ -78,7 +83,8 @@ export interface Leaf {
   initialCmd?: string;
   cwd?: string;          // per-tab cwd override (else workspace cwd)
   resultToken?: string;  // set on tabs spawned via `burrow spawn --token`
-  leafType?: "terminal" | "diff" | "editor" | "chat";  // default "terminal"
+  leafType?: "terminal" | "diff" | "editor" | "chat" | "browser";  // default "terminal"
+  browserUrl?: string; // set when leafType === "browser"
   statusText?: string;  // set by `burrow set-status`; shown next to status dot
   progress?: number;    // 0.0–1.0; set by `burrow set-progress`
   progressLabel?: string;

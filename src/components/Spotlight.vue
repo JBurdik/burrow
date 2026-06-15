@@ -73,7 +73,7 @@
 import { ref, computed, watch, nextTick } from "vue";
 import {
   PhTerminal, PhSparkle, PhCode, PhGitBranch, PhRobot,
-  PhFolderOpen, PhGear, PhPlus, PhColumns, PhPalette, PhKeyboard,
+  PhFolderOpen, PhGear, PhPlus, PhColumns, PhPalette, PhKeyboard, PhGlobe,
 } from "@phosphor-icons/vue";
 import { useAgentsStore } from "@/stores/agents";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -84,6 +84,7 @@ const emit = defineEmits<{
   newTerminal: [];
   newWorkspace: [];
   openSettings: [];
+  openBrowser: [];
 }>();
 
 const isOpen = ref(false);
@@ -161,6 +162,7 @@ const sections = computed(() => {
     ...([
       { id: "cmd-settings", title: "Settings → Agents", icon: PhGear as Component, color: "#555555", shortcut: undefined, action: () => { emit("openSettings"); close(); } },
       { id: "cmd-newterm", title: "New Terminal", icon: PhTerminal as Component, color: "#34d399", shortcut: "⌃`", action: () => { emit("newTerminal"); close(); } },
+      { id: "cmd-browser", title: "Open Browser Tab", icon: PhGlobe as Component, color: "#60a5fa", shortcut: undefined, action: () => { emit("openBrowser"); close(); } },
     ] as const)
       .filter(({ title }) => !q || title.toLowerCase().includes(q))
       .map((c) => ({

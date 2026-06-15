@@ -1,6 +1,6 @@
 <template>
   <div class="terminal-pane" @click="focusActive">
-    <AgentToolbar @launch="spawnAgent" @open-chat="openClaudeChat()" />
+    <AgentToolbar @launch="spawnAgent" @open-chat="openClaudeChat()" @open-browser="openBrowserTab()" />
 
     <TransitionGroup v-if="tabs.length > 0" name="tab-move" tag="div" class="terminal-tabs">
       <button
@@ -19,6 +19,7 @@
       >
         <PhFileCode v-if="tabIsEditor(tab)" :size="12" class="tab-term-icon" />
         <ClaudeIcon v-else-if="tabIsChat(tab)" :size="12" class="tab-chat-icon" />
+        <PhGlobe v-else-if="tabIsBrowser(tab)" :size="12" class="tab-term-icon" />
         <PhRobot v-else-if="tabIsAgent(tab)" :size="12" class="tab-agent-icon" />
         <PhTerminal v-else :size="12" class="tab-term-icon" />
         <span v-if="tabIsEditor(tab) && tabDirty(tab)" class="dirty-dot" />
@@ -97,6 +98,7 @@
         >
           <div v-if="isTabSplit(tab)" class="pane-titlebar" @mousedown.stop>
             <PhFileCode v-if="pane.leaf.leafType === 'editor'" :size="10" class="pane-title-icon" />
+            <PhGlobe v-else-if="pane.leaf.leafType === 'browser'" :size="10" class="pane-title-icon" />
             <PhRobot v-else-if="pane.leaf.isAgent" :size="10" class="pane-title-icon agent" />
             <PhTerminal v-else :size="10" class="pane-title-icon" />
             <span v-if="pane.leaf.leafType === 'editor' && pane.leaf.dirty" class="dirty-dot" />
@@ -132,6 +134,10 @@
             :chat-id="pane.leaf.chatId!"
             :workspace-id="workspaceId"
             :cwd="pane.leaf.cwd ?? cwd"
+          />
+          <BrowserPane
+            v-else-if="pane.leaf.leafType === 'browser'"
+            :initial-url="pane.leaf.browserUrl"
           />
           <XTerm
             v-else
@@ -185,7 +191,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
-import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut, PhFileCode } from "@phosphor-icons/vue";
+import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut, PhFileCode, PhGlobe } from "@phosphor-icons/vue";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { invoke } from "@tauri-apps/api/core";
@@ -194,6 +200,7 @@ import XTerm from "./XTerm.vue";
 import DiffTab from "./DiffTab.vue";
 import CodeEditor from "./CodeEditor.vue";
 import ClaudeChat from "./ClaudeChat.vue";
+import BrowserPane from "./BrowserPane.vue";
 import AgentToolbar from "./AgentToolbar.vue";
 import { type Leaf, type TreeNode, type SplitNode } from "./TerminalSplitView.vue";
 import { nextPtyId, initPtyCounter } from "@/lib/ptyId";
@@ -454,6 +461,10 @@ function tabIsEditor(tab: Tab): boolean {
 
 function tabIsChat(tab: Tab): boolean {
   return tab.root.type === "leaf" && tab.root.leafType === "chat";
+}
+
+function tabIsBrowser(tab: Tab): boolean {
+  return tab.root.type === "leaf" && tab.root.leafType === "browser";
 }
 
 function tabDirty(tab: Tab): boolean {
@@ -803,6 +814,24 @@ function openClaudeChat(chatId?: number) {
     status: "idle",
     leafType: "chat",
     chatId: session.id,
+  };
+  const tab: Tab = { id: leaf.id, root: leaf };
+  tabs.value.push(tab);
+  activateTab(tab.id);
+}
+
+function openBrowserTab(url?: string) {
+  const id = nextPtyId();
+  const leaf: Leaf = {
+    type: "leaf",
+    id,
+    title: (() => { try { return url ? new URL(url.startsWith("http") ? url : `https://${url}`).hostname : "Browser"; } catch { return url ?? "Browser"; } })(),
+    defaultTitle: "Browser",
+    isAgent: false,
+    busy: false,
+    status: "idle",
+    leafType: "browser",
+    browserUrl: url,
   };
   const tab: Tab = { id: leaf.id, root: leaf };
   tabs.value.push(tab);
@@ -1255,7 +1284,7 @@ function focusLeaf(ptyId: number) {
   }
 }
 
-defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, focusLeaf, openClaudeChat });
+defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, focusLeaf, openClaudeChat, openBrowserTab });
 </script>
 
 <style scoped>
