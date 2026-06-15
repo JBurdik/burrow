@@ -207,7 +207,7 @@ case "$sub" in
           done
         fi ;;
       PreToolUse|PostToolUse) state=running ;;
-      SessionStart)               state=running ;;
+      SessionStart)               exit 0 ;;
       PermissionRequest)          state=waiting ;;
       Stop)                       state=done ;;
       # Notification = telemetry (idle pings, system events). Real permission

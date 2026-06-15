@@ -391,13 +391,13 @@ fn install_status_hooks(app: &AppHandle) {
     // Claude: status events. SessionStart fires when a session (re)starts mid-tab.
     // Notification is telemetry (cmux model: real permission requests come via
     // PermissionRequest, not Notification), so we no longer hook it.
-    let claude_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionStart", "PermissionRequest"];
+    let claude_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "PermissionRequest"];
     for d in &dirs.claude {
         merge_status_hooks(&Path::new(d).join("settings.json"), &claude_events, &cmd);
     }
 
     // Codex: same hook schema, in <codex-dir>/hooks.json.
-    let codex_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionStart"];
+    let codex_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
     for d in &dirs.codex {
         merge_status_hooks(&Path::new(d).join("hooks.json"), &codex_events, &cmd);
     }

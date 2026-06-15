@@ -17,11 +17,12 @@ export interface TabSummary {
 
 type TabRequest = {
   wsId: number;
-  action: "activate" | "add" | "close" | "reorder" | "openChat";
+  action: "activate" | "add" | "close" | "reorder" | "openChat" | "rename";
   tabId?: number;
   chatId?: number;
   fromIdx?: number;
   toIdx?: number;
+  title?: string;
   nonce: number;
 };
 
@@ -57,6 +58,9 @@ export const useTerminalTabsStore = defineStore("terminalTabs", () => {
   function openChat(wsId: number, chatId?: number) {
     request.value = { wsId, action: "openChat", chatId, nonce: ++nonce };
   }
+  function rename(wsId: number, tabId: number, title: string) {
+    request.value = { wsId, action: "rename", tabId, title, nonce: ++nonce };
+  }
 
-  return { tabsByWs, activeByWs, request, setTabs, setActive, clear, activate, add, close, reorder, openChat };
+  return { tabsByWs, activeByWs, request, setTabs, setActive, clear, activate, add, close, reorder, openChat, rename };
 });

@@ -22,7 +22,7 @@ import { useUIStore } from "@/stores/ui";
 import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{ ptyId: number; cwd: string; initialCmd?: string; resultToken?: string; initiallyTitled?: boolean }>();
-const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string]; agent: [b: boolean]; interrupt: [] }>();
+const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string]; agent: [b: boolean]; interrupt: []; cwd: [p: string] }>();
 
 const ui = useUIStore();
 
@@ -126,6 +126,10 @@ const NEEDS_INPUT_RE = /[›❯]|(\(y\/n\)|\[y\/n\]|\(Y\/n\)|\[Y\/n\])/i;
 const ANSI_RE = /\x1b(?:\[[0-9;?]*[A-Za-z]|[^[])/g;
 // OSC 9999 from the `burrow` CLI: \x1b]9999;spawn;<b64cmd>;<b64token>;<b64cwd>\x07
 const SPAWN_RE = /\x1b\]9999;spawn;([A-Za-z0-9+/=]*);([A-Za-z0-9+/=]*);([A-Za-z0-9+/=]*)\x07/g;
+// OSC 7: shell CWD hint — \e]7;file://hostname/path\a. Emitted by zsh/fish/bash
+// after each `cd` when the user's shell config includes the osc7 hook. Lets us
+// track live CWD without polling so `burrow spawn --cwd` always gets the right dir.
+const OSC7_RE = /\x1b\]7;file:\/\/[^/]*(\/?[^\x07\x1b]*)\x07/g;
 const b64decode = (s: string) =>
   s ? new TextDecoder().decode(Uint8Array.from(atob(s), (c) => c.charCodeAt(0))) : "";
 
@@ -137,6 +141,14 @@ let foreground = "";
 // Seeded from `initiallyTitled` on mount so a restored meaningful title is never
 // overwritten by the initial "Claude" seed on reattach.
 let agentTitled = false; // set in onMounted after props are available
+// OSC title that arrived before the first poll set `foreground`. Buffered here
+// so the `!foreground` guard doesn't silently drop Claude's startup title.
+// Cleared when shell foreground is detected (shell cwd titles are noise) and
+// when the initial command is injected (pre-injection shell titles are discarded).
+let pendingOscTitle: string | null = null;
+// Last hook state — used to freeze the tab title after a turn ends so Claude's
+// "Claude Code" idle-state title can't overwrite the task description.
+let hookState: "idle" | "running" | "waiting" | "done" = "idle";
 
 // Strip control/non-printable chars (mid-OSC replay garbage), trim, cap length.
 function sanitizeTitle(s: string): string {
@@ -277,9 +289,20 @@ onMounted(async () => {
   term.onTitleChange((raw) => {
     const title = sanitizeTitle(raw);
     if (!title) return;
-    if (!foreground) return;
+    if (!foreground) {
+      // Foreground not yet known (first poll still in flight): buffer the title
+      // instead of dropping it. The poll will apply it when it detects an agent.
+      pendingOscTitle = title;
+      return;
+    }
     if (SHELL_RE.test(foreground)) return;   // shell prompt cwd/cmd junk
-    if (CLAUDE_RE.test(foreground) || CODEX_RE.test(foreground) || COPILOT_RE.test(foreground)) agentTitled = true;
+    if (CLAUDE_RE.test(foreground) || CODEX_RE.test(foreground) || COPILOT_RE.test(foreground)) {
+      // After Stop, Claude resets its title to "Claude Code" (idle). Don't let
+      // that overwrite the task description — freeze the title until the next
+      // turn starts (hookState transitions back to running/waiting).
+      if (hookState === "done") return;
+      agentTitled = true;
+    }
     emit("title", title);
   });
 
@@ -318,8 +341,10 @@ onMounted(async () => {
     // are the sole source of truth for an agent's running/waiting/done.
     listen<string>(`pty-hook-${props.ptyId}`, (event) => {
       const state = event.payload;
-      if (state === "running" || state === "waiting" || state === "done")
+      if (state === "running" || state === "waiting" || state === "done") {
+        hookState = state as typeof hookState;
         emit("agentState", state);
+      }
     }),
     // tmux send-keys path: the shim POSTs /write → hook server emits this event →
     // we forward to the daemon as regular PTY input.
@@ -374,6 +399,13 @@ onMounted(async () => {
       } catch { /* ignore malformed payload */ }
     }
 
+    // OSC 7: shell CWD hint. Passive — no-op if the user's shell doesn't emit it.
+    OSC7_RE.lastIndex = 0;
+    while ((m = OSC7_RE.exec(text)) !== null) {
+      const p = decodeURIComponent(m[1]);
+      if (p) emit("cwd", p);
+    }
+
     outputBuffer = (outputBuffer + text).slice(-500);
     lastDataAt = performance.now();
   });
@@ -396,6 +428,10 @@ onMounted(async () => {
       const now = performance.now();
       const ready = lastDataAt > 0 && now - lastDataAt >= QUIET_MS;
       if (ready || now - startedAt >= MAX_WAIT_MS) {
+        // Discard any OSC title the shell set during its startup (cwd, last
+        // command, etc.) — those arrived before the agent command was injected
+        // and are noise for the tab name.
+        pendingOscTitle = null;
         const bytes = Array.from(new TextEncoder().encode(cmd + "\n"));
         invoke("write_pty", { id: props.ptyId, data: bytes });
       } else {
@@ -520,6 +556,7 @@ onMounted(async () => {
       // no done hook). Names are fully sticky — do NOT reset the title here, so
       // a tab keeps its last meaningful name across turn boundaries and on restart.
       isAgentSession = false;
+      pendingOscTitle = null;   // discard any pre-shell-exit buffered title
       // Keep agentTitled as-is: if an agent set a meaningful title, it persists.
       emit("agent", false);
       emit("busy", false);
@@ -530,9 +567,15 @@ onMounted(async () => {
       // running/waiting/done come ONLY from the agent's hooks (listener above).
       isAgentSession = true;
       emit("agent", true);        // mark the tab as an agent (robot icon)
-      // Only SEED a name until the agent sets its own OSC title; after that don't
-      // override it (that was the "title keeps reverting to Claude" bug).
-      if (!agentTitled) emit("title", isClaude ? "Claude" : proc);
+      // Apply any OSC title buffered before foreground was known (early-start
+      // race). Otherwise fall back to seeding "Claude" until the agent sets its own.
+      if (!agentTitled && pendingOscTitle) {
+        agentTitled = true;
+        emit("title", pendingOscTitle);
+        pendingOscTitle = null;
+      } else if (!agentTitled) {
+        emit("title", isClaude ? "Claude" : proc);
+      }
     } else if (isAgentSession) {
       // A non-shell child process INSIDE a live agent session (the agent opened a
       // pager, ran git, spawned node…). Keep the agent's title and don't flip to

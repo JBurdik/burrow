@@ -161,6 +161,7 @@
             @needs-input="(b) => onLeafNeedsInput(pane.leaf.id, b)"
             @interrupt="() => onLeafInterrupt(pane.leaf.id)"
             @spawn="(req) => addTab(req.cmd, { cwd: req.cwd || undefined, resultToken: req.token || undefined })"
+            @cwd="(p) => onLeafCwd(pane.leaf.id, p)"
           />
         </div>
         <div
@@ -643,6 +644,17 @@ function onLeafAgent(id: number, isAgent: boolean) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
     leaf.isAgent = isAgent;
+    break;
+  }
+}
+
+// OSC 7 CWD update: shell emits \e]7;file://host/path\a after each `cd`.
+// Update the leaf's live cwd so `burrow spawn` and restore get accurate paths.
+function onLeafCwd(id: number, cwd: string) {
+  for (const tab of tabs.value) {
+    const leaf = findLeaf(tab.root, id);
+    if (!leaf) continue;
+    leaf.cwd = cwd;
     break;
   }
 }
@@ -1192,6 +1204,10 @@ watch(
       reorderTabs(req.fromIdx, req.toIdx);
     }
     else if (req.action === "openChat") openClaudeChat(req.chatId);
+    else if (req.action === "rename" && req.tabId != null && req.title != null) {
+      const tab = tabs.value.find((t) => t.id === req.tabId);
+      if (tab) getAllLeaves(tab.root).forEach((l) => { l.title = req.title!; });
+    }
   },
 );
 

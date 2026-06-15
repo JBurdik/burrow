@@ -72,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, computed, provide } from "vue";
+import { ref, onMounted, onBeforeUnmount, computed, provide, watch } from "vue";
 import { PhFolderOpen, PhX } from "@phosphor-icons/vue";
 import TitleBar from "@/components/TitleBar.vue";
 import Sidebar from "@/components/Sidebar.vue";
@@ -145,6 +145,27 @@ const git = useGitStore();
 const agents = useAgentsStore();
 const update = useUpdateStore();
 const tabsStore = useTerminalTabsStore();
+
+// Sync OS window title: "<tab title> — <workspace>" so macOS Mission Control /
+// Alt+Tab shows meaningful context. Lazy Tauri import so browser dev doesn't crash.
+watch(
+  () => {
+    const wsId = ws.active?.id;
+    if (!wsId) return ws.active?.name ?? "Burrow";
+    const activeTabId = tabsStore.activeByWs[wsId];
+    const tab = tabsStore.tabsByWs[wsId]?.find((t) => t.id === activeTabId);
+    const tabTitle = tab?.title ?? "";
+    const wsName = ws.active?.name ?? "";
+    return tabTitle && tabTitle !== wsName ? `${tabTitle} — ${wsName}` : (wsName || "Burrow");
+  },
+  (title) => {
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(title))
+      .catch(() => {});
+  },
+  { immediate: true },
+);
+
 const spotlightRef = ref<InstanceType<typeof Spotlight> | null>(null);
 const cheatsheetOpen = ref(false);
 

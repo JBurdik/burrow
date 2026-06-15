@@ -100,7 +100,21 @@
           >
             <PhRobot v-if="tab.isAgent" :size="11" class="ws-term-icon agent" />
             <PhTerminal v-else :size="11" class="ws-term-icon" />
-            <span class="ws-term-label">{{ tab.title }}</span>
+            <input
+              v-if="editingTab?.wsId === item.id && editingTab?.tabId === tab.id"
+              v-model="editingTabTitle"
+              class="ws-term-rename-input"
+              @blur="commitTabRename"
+              @keydown.enter.prevent="commitTabRename"
+              @keydown.esc.prevent="cancelTabRename"
+              @click.stop
+              @pointerdown.stop
+            />
+            <span
+              v-else
+              class="ws-term-label"
+              @dblclick.stop="startTabRename(item, tab)"
+            >{{ tab.title }}</span>
             <span
               v-if="(tab.leafCount ?? 1) > 1"
               class="ws-term-split-count"
@@ -552,6 +566,30 @@ function selectTab(ws: Workspace, tabId: number) {
   nextTick(() => termTabs.activate(ws.id, tabId));
 }
 
+// ── tab inline rename ───────────────────────────────────────────────────────
+const editingTab = ref<{ wsId: number; tabId: number } | null>(null);
+const editingTabTitle = ref("");
+
+function startTabRename(ws: Workspace, tab: { id: number; title: string }) {
+  editingTab.value = { wsId: ws.id, tabId: tab.id };
+  editingTabTitle.value = tab.title;
+  nextTick(() => {
+    const el = document.querySelector<HTMLInputElement>(".ws-term-rename-input");
+    el?.select();
+  });
+}
+
+function commitTabRename() {
+  if (!editingTab.value) return;
+  const title = editingTabTitle.value.trim();
+  if (title) termTabs.rename(editingTab.value.wsId, editingTab.value.tabId, title);
+  editingTab.value = null;
+}
+
+function cancelTabRename() {
+  editingTab.value = null;
+}
+
 // ── context menu ───────────────────────────────────────────────────────────
 const ctxMenu = ref<{ wsId: number; x: number; y: number } | null>(null);
 
@@ -994,6 +1032,21 @@ function shortPath(p: string): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ws-term-rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--accent, #4ade80);
+  outline: none;
+  color: inherit;
+  padding: 0;
+  margin: 0;
+  width: 100%;
 }
 
 .ws-term-split-count {
