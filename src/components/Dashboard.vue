@@ -29,6 +29,7 @@
         <h2>Agent activity</h2>
         <div class="summary">
           <span class="chip" :class="{ on: counts.running }"><em class="dot running" />{{ counts.running }}<small>running</small></span>
+          <span class="chip" :class="{ on: counts.permission }"><em class="dot permission" />{{ counts.permission }}<small>permission</small></span>
           <span class="chip" :class="{ on: counts.waiting }"><em class="dot waiting" />{{ counts.waiting }}<small>waiting</small></span>
           <span class="chip" :class="{ on: counts.review }"><em class="dot review" />{{ counts.review }}<small>review</small></span>
           <span class="chip" :class="{ on: counts.done }"><em class="dot done" />{{ counts.done }}<small>done</small></span>
@@ -148,7 +149,7 @@ const allTabs = computed(() =>
 );
 
 const counts = computed(() => {
-  const c = { running: 0, waiting: 0, review: 0, done: 0 };
+  const c = { running: 0, permission: 0, waiting: 0, review: 0, done: 0 };
   for (const t of allTabs.value) {
     if (t.status in c) (c as Record<string, number>)[t.status]++;
   }

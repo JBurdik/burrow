@@ -677,6 +677,7 @@ function onLeafBusy(id: number, busy: boolean) {
 // visible one, this tab is the active tab, and the window has OS focus.
 function isWatching(tab: Tab): boolean {
   return (
+    uiStore.mode === "terminal" &&
     wsStore.active?.id === props.workspaceId &&
     activeTabId.value === tab.id &&
     document.hasFocus()
@@ -1224,6 +1225,17 @@ watch(
   },
 );
 
+// Returning to terminal mode (from dashboard/git/mission) counts as seeing the
+// active tab — clear any "review" badge it earned while a non-terminal mode was up.
+watch(
+  () => uiStore.mode,
+  (m) => {
+    if (m !== "terminal" || wsStore.active?.id !== props.workspaceId || !document.hasFocus()) return;
+    const tab = tabs.value.find((t) => t.id === activeTabId.value);
+    if (tab) markTabSeen(tab);
+  },
+);
+
 watch(
   () => tabsStore.request,
   (req) => {
@@ -1367,7 +1379,13 @@ function focusLeaf(ptyId: number) {
   }
 }
 
-defineExpose({ addTab, spawnAgent, adoptPty, openDiffInTab, openFileInTab, insertContext, focusLeaf, openClaudeChat, openBrowserTab });
+// Refit every mounted xterm — called when the pane is re-shown after a mode
+// switch, where a hidden (display:none) fit could have settled at 0 size.
+function refitAll() {
+  xtermRefs.forEach((x) => x?.refit?.());
+}
+
+defineExpose({ addTab, spawnAgent, adoptPty, openDiffInTab, openFileInTab, insertContext, focusLeaf, openClaudeChat, openBrowserTab, refitAll });
 </script>
 
 <style scoped>

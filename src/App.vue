@@ -15,10 +15,11 @@
       <Sidebar class="panel-sidebar" />
       <div class="resize-handle panel-resize-left" @mousedown="startResize('left', $event)" />
       <div class="ide-main">
-        <Dashboard v-if="ui.mode === 'dashboard'" class="dashboard-main-panel" @new-workspace="openNewWorkspace" />
-        <GitPanel v-else-if="ui.mode === 'git'" class="git-main-panel" />
-        <MissionControl v-else-if="ui.mode === 'mission'" class="mission-main-panel" />
-        <template v-else>
+        <!-- Terminals stay MOUNTED across every mode (v-show, not v-if). Unmounting
+             them on a mode switch ran XTerm.onBeforeUnmount → detach_pty + dispose;
+             returning replayed the daemon ring-buffer into a fresh fit → scrambled
+             buffer. Keeping them mounted avoids the detach/reattach entirely. -->
+        <div v-show="ui.mode === 'terminal'" class="terminal-host">
           <div v-show="!ws.active" class="no-workspace">
             <PhFolderOpen :size="32" weight="thin" />
             <span>Select a workspace</span>
@@ -31,7 +32,10 @@
             :cwd="w.path"
             :ref="(el) => setTermRef(w.id, el)"
           />
-        </template>
+        </div>
+        <Dashboard v-if="ui.mode === 'dashboard'" class="dashboard-main-panel" @new-workspace="openNewWorkspace" />
+        <GitPanel v-else-if="ui.mode === 'git'" class="git-main-panel" />
+        <MissionControl v-else-if="ui.mode === 'mission'" class="mission-main-panel" />
       </div>
       <div v-show="ui.rightPanelVisible" class="resize-handle panel-resize-right" @mousedown="startResize('right', $event)" />
       <RightPanel v-show="ui.rightPanelVisible" class="panel-right" :cwd="ws.active?.path ?? ''" />
@@ -74,7 +78,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, computed, provide, watch } from "vue";
+import { ref, onMounted, onBeforeUnmount, computed, provide, watch, nextTick } from "vue";
 import { PhFolderOpen, PhX } from "@phosphor-icons/vue";
 import TitleBar from "@/components/TitleBar.vue";
 import Sidebar from "@/components/Sidebar.vue";
@@ -168,6 +172,16 @@ watch(
       .catch(() => {});
   },
   { immediate: true },
+);
+
+// Terminals are display:none while another mode is active; a ResizeObserver tick
+// can settle a 0-size fit. Refit the active terminal when we return to it so the
+// PTY matches the real pane geometry.
+watch(
+  () => ui.mode,
+  (m) => {
+    if (m === "terminal") nextTick(() => activeTerm()?.refitAll());
+  },
 );
 
 const spotlightRef = ref<InstanceType<typeof Spotlight> | null>(null);
@@ -397,6 +411,14 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.terminal-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .git-main-panel {
