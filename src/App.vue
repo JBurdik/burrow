@@ -16,6 +16,7 @@
       <div class="resize-handle panel-resize-left" @mousedown="startResize('left', $event)" />
       <div class="ide-main">
         <GitPanel v-if="ui.mode === 'git'" class="git-main-panel" />
+        <MissionControl v-else-if="ui.mode === 'mission'" class="mission-main-panel" />
         <template v-else>
           <div v-show="!ws.active" class="no-workspace">
             <PhFolderOpen :size="32" weight="thin" />
@@ -80,6 +81,7 @@ import ActivityBar from "@/components/ActivityBar.vue";
 import Terminal from "@/components/Terminal.vue";
 import RightPanel from "@/components/RightPanel.vue";
 import GitPanel from "@/components/GitPanel.vue";
+import MissionControl from "@/components/MissionControl.vue";
 import Settings from "@/components/Settings.vue";
 import Spotlight from "@/components/Spotlight.vue";
 import ToastStack from "@/components/ToastStack.vue";
@@ -390,6 +392,11 @@ body {
 }
 
 .git-main-panel {
+  flex: 1;
+  overflow: hidden;
+}
+
+.mission-main-panel {
   flex: 1;
   overflow: hidden;
 }

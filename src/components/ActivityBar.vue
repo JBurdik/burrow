@@ -22,11 +22,19 @@
     >
       <PhGitBranch :size="18" />
     </button>
+    <button
+      class="ab-btn"
+      :class="{ active: ui.mode === 'mission' }"
+      title="Mission Control (task dashboard)"
+      @click="toggleMission()"
+    >
+      <PhRocketLaunch :size="18" />
+    </button>
   </nav>
 </template>
 
 <script setup lang="ts">
-import { PhTerminal, PhGitBranch } from "@phosphor-icons/vue";
+import { PhTerminal, PhGitBranch, PhRocketLaunch } from "@phosphor-icons/vue";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
@@ -44,6 +52,10 @@ function newTerminal() {
 function newChat() {
   if (ui.mode === 'git') { ui.setMode('terminal'); return; }
   if (ws.active) termTabs.openChat(ws.active.id);
+}
+
+function toggleMission() {
+  ui.setMode(ui.mode === "mission" ? "terminal" : "mission");
 }
 </script>
 

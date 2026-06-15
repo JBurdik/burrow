@@ -176,9 +176,10 @@
     <div class="card">
       <h3>Mission Control — tank-style task dashboard <span style="font-size:10px;color:var(--muted)">POC</span></h3>
       <ul>
-        <li>Separate Tauri window (label <code>mission</code>) that runs headless <code>claude</code> PTYs as disposable tasks — spawn from a prompt, status dots, live-attach xterm, result capture, sequential queue</li>
-        <li>Reuses Burrow's native PTY + global hook server (no new wiring); 🚀 button in the ActivityBar opens it</li>
-        <li><code>src/components/MissionControl.vue</code> + Rust <code>open_mission_window</code> / <code>read_claude_result</code></li>
+        <li>In-window view (<code>ui.mode === 'mission'</code>, 🚀 in the ActivityBar) running headless <code>claude</code> PTYs as disposable tasks — spawn, status dots, follow-up conversation, live-attach xterm, result capture, sequential queue</li>
+        <li>Reuses Burrow's native PTY + global hook server (no new wiring); tasks persist in the shared <code>workspaces.db</code> (<code>mission_tasks</code> table), grouped by workspace</li>
+        <li>Scope = the sidebar's active workspace (<code>wsStore.active</code>), mirrored read-only in the rail; no active workspace → centered <q>pick a workspace</q> blank state. Chrome uses Phosphor icons (no emoji)</li>
+        <li><code>src/components/MissionControl.vue</code> + Rust <code>read_claude_result</code> / <code>list|upsert|delete_mission_task</code></li>
         <li><a href="mission-control.html" style="color:var(--accent)">Mission Control →</a> · <a href="tank-analysis.html" style="color:var(--accent)">tank analysis &amp; clone recipe →</a></li>
       </ul>
     </div>

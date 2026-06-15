@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Burrow — Mission Control (tank-style task dashboard)</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --bg-panel: #111;
+    --border: #222;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --purple: #a78bfa;
+    --mono: "JetBrains Mono", "Fira Code", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.6; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 48px 24px 80px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .back { font-size: 12px; color: var(--muted); margin-bottom: 18px; display: inline-block; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+  .tagline { color: var(--muted); font-size: 15px; margin-bottom: 28px; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 36px 0 14px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; color: var(--text); }
+  p { color: #cbd5e1; margin-bottom: 12px; }
+  ul, ol { padding-left: 20px; color: #cbd5e1; }
+  li { margin-bottom: 6px; }
+  code { font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px; color: #93c5fd; }
+  pre { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; overflow-x: auto; margin-bottom: 14px; }
+  pre code { background: none; padding: 0; color: #cbd5e1; font-size: 12.5px; line-height: 1.5; }
+  .note { background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #bfdbfe; }
+  .warn { background: rgba(234,179,8,0.08); border: 1px solid rgba(234,179,8,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #fde68a; }
+  .good { background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 13px; color: #bbf7d0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 14px; }
+  th { text-align: left; padding: 6px 10px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td { padding: 6px 10px; border-bottom: 1px solid #1a1a1a; vertical-align: top; }
+  td:first-child { font-family: var(--mono); color: #93c5fd; white-space: nowrap; }
+  .ok { color: #4ade80; }
+  .no { color: #f87171; }
+  .pill { display: inline-block; font-size: 10px; font-family: var(--mono); padding: 1px 7px; border-radius: 20px; border: 1px solid var(--border); color: var(--muted); margin-left: 6px; vertical-align: middle; }
+  .flow { font-family: var(--mono); font-size: 12px; color: #cbd5e1; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; white-space: pre; overflow-x: auto; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <a class="back" href="context.html">← Project context</a>
+  <h1>Mission Control <span class="pill">POC</span></h1>
+  <div class="tagline">A tank-style task dashboard inside Burrow — an <strong>in-window view</strong> (not a separate window) that drives headless <code>claude</code> PTYs as disposable tasks. Same model as <a href="tank-analysis.html">tank</a>, but on Burrow's native Rust PTY instead of tmux, with tasks persisted in the shared <code>workspaces.db</code>.</div>
+
+  <div class="note">
+    <strong>Status: proof of concept.</strong> Scope: spawn + list + live terminal + result capture + sequential queue + follow-up conversation + SQLite persistence + live PTY reconciliation + image attachments + send-to-tab + per-task git worktree. Remaining backlog (AI titles, live streaming, schedules, PR button, notifications) lives in <code>docs/plans/mission-control.todo.md</code>. Read <a href="tank-analysis.html">the tank analysis</a> first — this doc assumes you know tank's three-channel model and only describes how Burrow realises it.
+  </div>
+
+  <h2>How to use it</h2>
+  <ol>
+    <li>Click the 🚀 button in the <strong>ActivityBar</strong> (left rail, below the git icon) — it toggles <code>ui.mode</code> between <code>'mission'</code> and <code>'terminal'</code>, swapping the center pane in place (same mechanism as the Git panel). No new window.</li>
+    <li><strong>Scope = the active workspace</strong>, chosen in Burrow's sidebar (no picker of its own). The rail mirrors it read-only (icon + name + cwd). With <em>no</em> active workspace the whole view is a centered blank state (<q>Pick a workspace</q>) — nothing to scope a task to, so <strong>＋ New task</strong> can't fire.</li>
+    <li>Hit <strong>＋ New task</strong> → a composer modal: prompt + model. Working dir is implied by the active workspace (shown as a cwd line, not an editable field) → <strong>Run now</strong> (or ⌘↵), or <strong>Add to queue</strong>. Switching workspace in the sidebar re-targets the composer at the new cwd (<code>watch(activeWs)</code>).</li>
+    <li>The new task is selected automatically; its conversation shows in the center panel and is grouped under its workspace in the left rail.</li>
+    <li>Type in the <strong>send &amp; continue</strong> bar at the bottom to follow up; <strong>stop</strong> interrupts the current turn (Ctrl+C).</li>
+    <li><strong>Terminal</strong> attaches a live xterm; <strong>Delete</strong> kills + removes the task. (Chrome uses Phosphor icons throughout, the same set as the rest of Burrow — no emoji glyphs.)</li>
+    <li>Tasks survive restarts (stored in SQLite). A restored task is read-only — its PTY died with the previous app session, so live attach &amp; follow-up are gone, but the conversation persists.</li>
+  </ol>
+
+  <h2>Layout <span class="pill">tank-style</span></h2>
+  <p>Three zones, matching tank's dashboard:</p>
+  <div class="flow">┌──────────────┬─────────────────────────────────────┐
+│  LEFT RAIL   │  CENTER — selected task detail       │
+│              │                                      │
+│ ＋ New        │  ● title · model · status   ⌗ 🗑     │
+│ ●3 ◐1 ✓2     │  ┌────────────────────────────────┐  │
+│ ─ queue ─    │  │ › user prompt                  │  │
+│ PROJECT cwd  │  │ 🤖 assistant reply             │  │
+│  ● task A ◄  │  │ › follow-up                    │  │
+│  ● task B    │  │ 🤖 …                           │  │
+│ PROJECT cwd2 │  └────────────────────────────────┘  │
+│  ● task C    │  ┌ send & continue ──────┐ stop  ▶  │
+└──────────────┴─────────────────────────────────────┘</div>
+  <ul>
+    <li><strong>Left rail:</strong> tasks grouped by working dir (= "project"), each row a status dot + title; click to select. Status summary + queue on top.</li>
+    <li><strong>Center:</strong> the selected task's full conversation (<code>turns[]</code>), auto-scrolled to the newest turn.</li>
+    <li><strong>Bottom bar:</strong> persistent <em>send &amp; continue</em> (the follow-up), with <em>stop</em> = interrupt the current turn without killing the session.</li>
+  </ul>
+
+  <h2>Files touched</h2>
+  <table>
+    <tr><th>File</th><th>Role</th></tr>
+    <tr><td>src-tauri/src/lib.rs</td><td>Commands: <code>read_claude_result</code> + the <code>mission_tasks</code> CRUD trio <code>list_mission_tasks</code> / <code>upsert_mission_task</code> / <code>delete_mission_task</code> (+ <code>MissionTask</code> struct). The <code>mission_tasks</code> table is created in <code>init_db</code>. Registered in <code>invoke_handler</code>.</td></tr>
+    <tr><td>src/stores/ui.ts</td><td><code>mode</code> union gains <code>'mission'</code> — the persisted active-pane mode.</td></tr>
+    <tr><td>src/App.vue</td><td>Renders <code>&lt;MissionControl&gt;</code> in <code>.ide-main</code> when <code>ui.mode === 'mission'</code> (next to the GitPanel branch).</td></tr>
+    <tr><td>src/components/MissionControl.vue</td><td><strong>The whole dashboard</strong> — rail (scope card mirroring <code>wsStore.active</code> + tasks grouped by workspace), center detail conversation, continue bar, composer modal, terminal modal, and a blank <q>pick a workspace</q> state when <code>!wsStore.active</code>. Scope is driven by the sidebar's active workspace, not a local picker. SQLite-backed.</td></tr>
+    <tr><td>src/components/ActivityBar.vue</td><td>🚀 button → <code>ui.setMode(...)</code> toggle.</td></tr>
+  </table>
+  <div class="note"><strong>Earlier POC iteration</strong> opened a separate Tauri window (label <code>mission</code>, mounted from <code>main.ts</code>, gated by a <code>capabilities</code> entry). That was replaced by the in-window view — simpler, shares the main window's reactive stores, and no cross-window event plumbing.</div>
+
+  <h2>tank → Burrow channel mapping</h2>
+  <table>
+    <tr><th>tank</th><th>Burrow Mission Control</th></tr>
+    <tr><td>tmux session per task</td><td>Headless native PTY via <code>create_pty(ptyId, cwd)</code> — a shell, no UI attached.</td></tr>
+    <tr><td>type prompt into tmux</td><td><code>write_pty</code>: <code>claude --session-id &lt;id&gt; [--model X] '&lt;prompt&gt;'\n</code></td></tr>
+    <tr><td>hook.sh → curl → REST</td><td>Global Claude hook → <code>burrow status</code> → hook server → <code>pty-hook-{ptyId}</code> Tauri event.</td></tr>
+    <tr><td>Stop → read transcript</td><td><code>read_claude_result(cwd, session_id)</code> — same JSONL bottom-up read, in Rust.</td></tr>
+    <tr><td>SSE state patches</td><td>Vue reactivity — the task array <em>is</em> the state; no SSE needed in-process.</td></tr>
+    <tr><td>WebSocket ↔ pty.fork ↔ tmux attach</td><td><code>pty-data-{ptyId}</code> stream → in-memory replay buffer → xterm modal; input → <code>write_pty</code>.</td></tr>
+  </table>
+
+  <h2>Spawn flow</h2>
+  <div class="flow">Run prompt
+   │
+   ├─ id     = crypto.randomUUID()          ← also Claude --session-id
+   ├─ ptyId  = PTY_BASE(2_000_000) + counter ← own id-space, never collides
+   │                                            with the main window's PTYs
+   ├─ wireTask(task)                         ← attach pty-data + pty-hook listeners
+   ├─ create_pty(ptyId, cwd, 120, 34)        ← headless shell (Rust daemon)
+   └─ setTimeout(450ms):                     ← wait out the shell rc
+        write_pty(ptyId, "claude --session-id &lt;id&gt; --model X '&lt;prompt&gt;'\n")</div>
+  <div class="warn">
+    <strong>Why <code>PTY_BASE = 2_000_000</code>.</strong> PTY ids come from a per-window counter (<code>src/lib/ptyId.ts</code>) starting at 0, and the Rust daemon keys its PTY map by a single global id. The mission window is a separate webview = separate JS context = its own counter from 0 → it would collide with the main window's tabs. Offsetting into a high range keeps the id-spaces disjoint.
+  </div>
+  <div class="warn">
+    <strong>Why the 450 ms delay.</strong> <code>create_pty</code> spawns the user's login shell; writing the <code>claude</code> line before the rc finishes can get the line swallowed. A short delay is the POC's pragmatic fix (tank sidesteps this entirely by <code>exec</code>-ing claude as the tmux command).
+  </div>
+
+  <h2>Status — reusing Burrow's hook server</h2>
+  <p>This is the cleanest win over tank: <strong>no new hook wiring</strong>. <code>create_pty</code> already exports <code>BURROW_PTY_ID=ptyId</code> into the PTY env, and Burrow globally installs a status hook into <code>~/.claude/settings.json</code>. So a mission-spawned claude reports status through the exact same path as a hand-launched Burrow tab:</p>
+  <div class="flow">claude lifecycle event
+   → global hook: burrow hook   (maps event → running|waiting|done)
+   → burrow status &lt;state&gt;       (POST to the tiny_http hook server)
+   → start_hook_server re-emits  → Tauri event  pty-hook-{ptyId}
+   → MissionControl.vue listener → task.status = state</div>
+  <p>On <code>done</code> the listener schedules <code>captureResult()</code> ~600 ms later (transcript flushes a beat after Stop) and calls <code>pumpQueue()</code> to start the next queued prompt.</p>
+
+  <h2>Follow-up — continuing a task <span class="pill">conversation</span></h2>
+  <p>
+    Each task is a <strong>conversation</strong>, not a one-shot. <code>task.turns[]</code> holds alternating
+    <code>user</code> / <code>assistant</code> entries; the card renders them and shows a <em>Follow up…</em> input at the bottom while the PTY is alive.
+  </p>
+  <div class="good">
+    <strong>Simpler than tank.</strong> tank kills the tmux session on Stop, so a follow-up needs <code>claude --resume &lt;id&gt;</code> (a fresh process). Mission Control <em>never kills</em> the PTY on done — claude is still sitting interactively at its input prompt. So a follow-up is just <code>write_pty(ptyId, text + "\r")</code>. The global <code>UserPromptSubmit</code> hook flips the status dot back to <code>running</code> automatically; the next <code>Stop</code> appends the new assistant turn.
+  </div>
+  <pre><code>function sendFollowup(t) {
+  t.turns.push({ role: 'user', text });
+  t.status = 'running';
+  const line = text.replace(/\r?\n/g, ' ') + '\r';   // REPL submits on Enter
+  write_pty(t.ptyId, bytes(line));
+}</code></pre>
+  <div class="warn"><strong>Newline caveat:</strong> claude's REPL submits on Enter, so a raw <code>\n</code> in a follow-up would split the message into several submits. The POC collapses newlines to spaces. A faithful multi-line input would send each newline as the REPL's "insert newline" key (Shift+Enter equivalent) instead.</div>
+
+  <h2>Result capture — <code>read_claude_result</code></h2>
+  <pre><code>// Rust — src-tauri/src/lib.rs
+fn claude_transcript_path(cwd, session_id) -> PathBuf {
+    // slug = cwd with '/' and '.' replaced by '-'
+    HOME/.claude/projects/&lt;slug&gt;/&lt;session_id&gt;.jsonl
+}
+#[tauri::command]
+fn read_claude_result(cwd, session_id) -> String {
+    // read the .jsonl, scan bottom-up for the last type=="assistant"
+    // record, return its first text block (or message.content if a string)
+}</code></pre>
+  <p>Identical contract to tank's <code>read_last_assistant_text</code> — it's a Claude Code storage convention, not a tank invention, so it ports verbatim.</p>
+
+  <h2>Live terminal — attach on demand</h2>
+  <p>tank gets free scrollback from <code>tmux attach</code>. A headless native PTY has no pane to re-read, so Mission Control keeps its own replay buffer:</p>
+  <ul>
+    <li>From spawn, the <code>pty-data-{ptyId}</code> listener appends decoded output into <code>buffers[ptyId]</code> (capped at 256 KB).</li>
+    <li>Opening the modal creates a fresh <code>xterm.js</code> + <code>FitAddon</code>, <strong>writes the buffer</strong>, then streams live bytes.</li>
+    <li>Keystrokes → <code>write_pty</code>; resize → <code>resize_pty</code>; a ^C button sends <code>0x03</code>.</li>
+  </ul>
+
+  <h2>Queue — sequential runner</h2>
+  <pre><code>function activeCount() {            // running | waiting tasks that are alive
+  return tasks.filter(t =&gt; t.alive &amp;&amp; (t.status==='running'||t.status==='waiting')).length;
+}
+function pumpQueue() {              // fill up to maxConcurrent slots
+  while (queue.length &amp;&amp; activeCount() &lt; max(1, maxConcurrent))
+    spawnTask(queue.shift());
+}</code></pre>
+  <p><code>pumpQueue()</code> is called on enqueue, on a task's <code>done</code>, and on manual stop. Default <code>maxConcurrent = 1</code> (true sequential); bump it for parallel fan-out.</p>
+
+  <h2>Persistence — shared <code>workspaces.db</code></h2>
+  <p>Tasks live in the same SQLite DB as workspaces and terminal tabs — the <code>mission_tasks</code> table (<code>id</code>, <code>workspace_id</code> FK, <code>pty_id</code>, <code>title</code>, <code>cwd</code>, <code>model</code>, <code>status</code>, <code>turns</code> as JSON, <code>created_at</code>). The frontend upserts a row on every state change (<code>saveTask</code>) and loads all rows on mount (<code>loadTasks</code>).</p>
+  <pre><code>// per-task save — snake_case keys match the serde struct
+upsert_mission_task({ task: { id, workspace_id, pty_id, title, cwd,
+                              model, status, turns: JSON.stringify(turns),
+                              created_at } })</code></pre>
+  <ul>
+    <li><strong>Workspace-scoped:</strong> each task records the workspace whose <code>path === cwd</code> (else the active workspace). The rail groups tasks under their workspace name — Burrow workspaces <em>are</em> tank's "projects".</li>
+    <li><strong>Restored = read-only:</strong> live PTYs aren't serialisable, so a task loaded from DB is <code>alive: false</code> — conversation persists, but live-attach &amp; follow-up are gone (the daemon PTY died with the previous app session).</li>
+    <li><strong>PTY id continuity:</strong> on load, <code>ptyCounter</code> is bumped past the max restored <code>pty_id</code> so new tasks never collide in the daemon's global PTY map.</li>
+  </ul>
+
+  <h2>Known POC limits</h2>
+  <table>
+    <tr><th>Limit</th><th>Why / fix later</th></tr>
+    <tr><td>450 ms write delay</td><td>Race against shell rc. Proper fix: have the daemon <code>exec claude</code> directly as the PTY command (like tank).</td></tr>
+    <tr><td>Single-quote prompt escaping</td><td><code>shquote()</code> handles <code>'</code> only; fine for POC. Long prompts could move to a temp file like tank.</td></tr>
+    <tr><td>No live PTY reconciliation</td><td>Restored tasks are read-only even if the daemon still holds their PTY. A future pass could rebind via <code>list_pty_sessions</code> (tank does this with <code>reconcile_previews</code>).</td></tr>
+    <tr><td>No image attachments / AI titles / PR buttons</td><td>Independent surface, not wired yet. See tank's feature list for the recipes.</td></tr>
+  </table>
+
+  <h2>Implemented since the first POC</h2>
+  <table>
+    <tr><th>Feature</th><th>How</th></tr>
+    <tr><td>Live PTY reconciliation</td><td><code>reconcileLive()</code> on mount: <code>list_pty_sessions</code> → for each restored task whose PTY is still <code>alive</code>, re-stream via <code>create_pty</code> (XTerm's restore path) + re-wire listeners → mark <code>alive</code>. Attach &amp; follow-up survive an app reload. Also seeds the PTY-id sequence past every live id.</td></tr>
+    <tr><td>Image attachments</td><td>Paste/drop into the composer → <code>FileReader</code> base64 → <code>save_temp_image</code> → temp path. On spawn, paths ride as positional args after the prompt (<code>claude … 'prompt' &lt;img1&gt; &lt;img2&gt;</code>). Chips with remove in the modal.</td></tr>
+    <tr><td>Send to tab</td><td><code>sendToTab()</code>: kill the headless mission PTY (so two processes don't fight one session), switch to <code>terminal</code> mode, open the task's workspace, then <code>spawnAgent('claude --resume &lt;id&gt;')</code> in a real Burrow tab. The task goes read-only; the conversation continues with full terminal UX.</td></tr>
+    <tr><td>Per-task git worktree</td><td>Composer checkbox "Isolate in a git worktree". <code>resolveCwd()</code> creates a worktree off the active repo (<code>wsStore.createWorktree</code>, branch <code>mission/&lt;slug&gt;-&lt;rand&gt;</code>, path <code>&lt;worktreesDir&gt;/&lt;repo&gt;/&lt;branch&gt;</code>) and spawns there. Queued isolated tasks create their worktree at spawn time, not enqueue time.</td></tr>
+  </table>
+
+  <h2>Backlog</h2>
+  <p>The remaining tank-parity features live in <code>docs/plans/mission-control.todo.md</code>: AI auto-titles, live streaming into the detail, schedules (cron), PR button, and notifications.</p>
+
+</div>
+</body>
+</html>
