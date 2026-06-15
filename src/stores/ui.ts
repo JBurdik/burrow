@@ -58,7 +58,7 @@ interface Prefs {
   debugOverlay: boolean; // show the per-terminal diagnostic overlay (XTerm.vue)
   floatCorner: string; // which screen corner floating windows snap+stack to
   worktreesDir: string; // parent dir for git worktrees: <dir>/<repo>/<branch>
-  mode: "terminal" | "claude" | "git" | "mission"; // active main-pane mode, switched via activity bar
+  mode: "terminal" | "claude" | "git" | "mission" | "dashboard"; // active main-pane mode, switched via activity bar
   bgImagePath: string; // absolute path to user wallpaper (empty = none)
   bgOpacity: number; // 0–1 opacity of panels/terminal over the wallpaper
 }
@@ -133,7 +133,7 @@ export const useUIStore = defineStore("ui", () => {
   const debugOverlay = ref(loaded.debugOverlay);
   const floatCorner = ref(loaded.floatCorner);
   const worktreesDir = ref(loaded.worktreesDir);
-  const mode = ref<"terminal" | "claude" | "git" | "mission">(loaded.mode);
+  const mode = ref<"terminal" | "claude" | "git" | "mission" | "dashboard">(loaded.mode);
   const bgImagePath = ref(loaded.bgImagePath);
   const bgOpacity = ref(loaded.bgOpacity);
   // In-memory blob URL for the current wallpaper (not persisted).
@@ -319,8 +319,12 @@ export const useUIStore = defineStore("ui", () => {
     theme.value = key;
   }
 
-  function setMode(m: "terminal" | "claude" | "git" | "mission") {
+  function setMode(m: "terminal" | "claude" | "git" | "mission" | "dashboard") {
     mode.value = m;
+  }
+
+  function toggleDashboard() {
+    mode.value = mode.value === "dashboard" ? "terminal" : "dashboard";
   }
 
   function toggleGitPanel() {
@@ -368,6 +372,7 @@ export const useUIStore = defineStore("ui", () => {
     worktreesDir,
     mode,
     setMode,
+    toggleDashboard,
     toggleGitPanel,
     openSettings,
     closeSettings,

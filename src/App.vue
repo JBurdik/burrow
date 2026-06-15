@@ -15,7 +15,8 @@
       <Sidebar class="panel-sidebar" />
       <div class="resize-handle panel-resize-left" @mousedown="startResize('left', $event)" />
       <div class="ide-main">
-        <GitPanel v-if="ui.mode === 'git'" class="git-main-panel" />
+        <Dashboard v-if="ui.mode === 'dashboard'" class="dashboard-main-panel" @new-workspace="openNewWorkspace" />
+        <GitPanel v-else-if="ui.mode === 'git'" class="git-main-panel" />
         <MissionControl v-else-if="ui.mode === 'mission'" class="mission-main-panel" />
         <template v-else>
           <div v-show="!ws.active" class="no-workspace">
@@ -82,6 +83,7 @@ import Terminal from "@/components/Terminal.vue";
 import RightPanel from "@/components/RightPanel.vue";
 import GitPanel from "@/components/GitPanel.vue";
 import MissionControl from "@/components/MissionControl.vue";
+import Dashboard from "@/components/Dashboard.vue";
 import Settings from "@/components/Settings.vue";
 import Spotlight from "@/components/Spotlight.vue";
 import ToastStack from "@/components/ToastStack.vue";
@@ -397,6 +399,11 @@ body {
 }
 
 .mission-main-panel {
+  flex: 1;
+  overflow: hidden;
+}
+
+.dashboard-main-panel {
   flex: 1;
   overflow: hidden;
 }

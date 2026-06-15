@@ -2,6 +2,15 @@
   <nav class="activity-bar">
     <button
       class="ab-btn"
+      :class="{ active: ui.mode === 'dashboard' }"
+      title="Dashboard"
+      @click="ui.toggleDashboard()"
+    >
+      <PhSquaresFour :size="18" />
+    </button>
+    <div class="ab-sep" />
+    <button
+      class="ab-btn"
       title="New terminal (⌘T)"
       @click="newTerminal()"
     >
@@ -35,7 +44,7 @@
 </template>
 
 <script setup lang="ts">
-import { PhTerminal, PhGitBranch, PhRocketLaunch } from "@phosphor-icons/vue";
+import { PhTerminal, PhGitBranch, PhRocketLaunch, PhSquaresFour } from "@phosphor-icons/vue";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
@@ -89,6 +98,12 @@ function toggleMission() {
   border-radius: 8px;
   transition: color .12s, background .12s;
   position: relative;
+}
+.ab-sep {
+  width: 22px;
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
 }
 .ab-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
 .ab-btn.active {
