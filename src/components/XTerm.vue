@@ -118,6 +118,9 @@ let pollTimer: ReturnType<typeof setInterval>;
 let dbgTimer: ReturnType<typeof setInterval>;
 
 const CLAUDE_RE = /^claude$/i;
+// Claude Code emits this exact OSC 0 title when idle/done (startup + after Stop).
+// Block only THIS to prevent post-task idle reset. Allow all other titles (e.g. /rename).
+const CLAUDE_IDLE_TITLE_RE = /^✳?\s*Claude\s+Code$/i;
 const CODEX_RE = /^codex$/i;
 const COPILOT_RE = /^copilot$/i;
 const SHELL_RE = /^(zsh|bash|sh|fish|csh|tcsh|dash)$/;
@@ -305,10 +308,10 @@ onMounted(async () => {
     }
     if (SHELL_RE.test(foreground)) return;   // shell prompt cwd/cmd junk
     if (CLAUDE_RE.test(foreground) || CODEX_RE.test(foreground) || COPILOT_RE.test(foreground)) {
-      // After Stop, Claude resets its title to "Claude Code" (idle). Don't let
-      // that overwrite the task description — freeze the title until the next
-      // turn starts (hookState transitions back to running/waiting).
-      if (hookState === "done") return;
+      // After Stop, Claude resets its OSC title to "✳ Claude Code" (idle state).
+      // Block ONLY that specific idle reset — not all titles — so /rename still works
+      // and future Claude versions that emit task-specific titles aren't blocked.
+      if (hookState === "done" && CLAUDE_IDLE_TITLE_RE.test(title)) return;
       agentTitled = true;
     }
     emit("title", title);
