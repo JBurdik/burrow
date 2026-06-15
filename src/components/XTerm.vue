@@ -148,10 +148,9 @@ let foreground = "";
 // Seeded from `initiallyTitled` on mount so a restored meaningful title is never
 // overwritten by the initial "Claude" seed on reattach.
 let agentTitled = false; // set in onMounted after props are available
-// OSC title that arrived before the first poll set `foreground`. Buffered here
-// so the `!foreground` guard doesn't silently drop Claude's startup title.
-// Cleared when shell foreground is detected (shell cwd titles are noise) and
-// when the initial command is injected (pre-injection shell titles are discarded).
+// OSC title buffered before the first poll sets `foreground`. Non-cwd-like titles
+// (agent titles with spaces/Unicode) take priority over shell cwd noise (bare words).
+// Cleared on shell-returns and at trySend (pre-injection shell titles are discarded).
 let pendingOscTitle: string | null = null;
 // Last hook state — used to freeze the tab title after a turn ends so Claude's
 // "Claude Code" idle-state title can't overwrite the task description.
@@ -297,13 +296,17 @@ onMounted(async () => {
     const title = sanitizeTitle(raw);
     if (!title) return;
     if (!foreground) {
-      // Foreground not yet known (first poll still in flight). Only buffer if we
-      // already know this is an agent session — that way shell precmd/preexec OSC
-      // titles (which arrive async AFTER trySend and can race the first poll) are
-      // dropped instead of being applied as the tab name. A pre-detection Claude
-      // title is lost here but Claude re-emits its title often enough that the tab
-      // will settle on the right name once the first poll sets `foreground`.
-      if (isAgentSession) pendingOscTitle = title;
+      // Foreground not yet known (first poll still in flight). Always buffer so
+      // Claude's startup OSC title isn't lost, but don't let shell precmd/preexec
+      // cwd noise (e.g. "work", "agentic-ide") overwrite a meaningful title that
+      // arrived first. Shell cwd strings are bare single words; agent titles have
+      // spaces or Unicode. Priority: non-cwd > cwd (last cwd still wins over cwd).
+      const cwdBase = props.cwd?.replace(/.*\//, '') ?? '';
+      const isCwdNoise = (t: string) =>
+        t === cwdBase || /^[\w.-]+$/.test(t) || t.startsWith('/') || t.startsWith('~');
+      if (!pendingOscTitle || isCwdNoise(pendingOscTitle) || !isCwdNoise(title)) {
+        pendingOscTitle = title;
+      }
       return;
     }
     if (SHELL_RE.test(foreground)) return;   // shell prompt cwd/cmd junk
@@ -591,10 +594,16 @@ onMounted(async () => {
       // Apply any OSC title buffered before foreground was known (early-start
       // race). Otherwise fall back to seeding "Claude" until the agent sets its own.
       if (!agentTitled && pendingOscTitle) {
-        agentTitled = true;
-        emit("title", pendingOscTitle);
+        const cwdBase = props.cwd?.replace(/.*\//, '') ?? '';
+        const isCwdNoise = (t: string) =>
+          t === cwdBase || /^[\w.-]+$/.test(t) || t.startsWith('/') || t.startsWith('~');
+        if (!isCwdNoise(pendingOscTitle)) {
+          agentTitled = true;
+          emit("title", pendingOscTitle);
+        }
         pendingOscTitle = null;
-      } else if (!agentTitled) {
+      }
+      if (!agentTitled) {
         emit("title", isClaude ? "Claude" : proc);
       }
     } else if (isAgentSession) {
