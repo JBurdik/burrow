@@ -20,9 +20,13 @@ import { ref } from "vue";
 //  - a cloned "ghost" of the row follows the cursor; the source row dims
 //    (`dragIdx`) and the hovered slot highlights (`overIdx`)
 const THRESHOLD = 5; // px the pointer must travel before a drag begins
+const ESCAPE_DOWN = 30; // px below drag-start to trigger split-mode escape
 
 export function usePointerReorder(
   commit: (from: number, to: number, group: string | null) => void,
+  options?: {
+    onEscape?: (fromIdx: number, e: PointerEvent) => void;
+  },
 ) {
   const dragIdx = ref<number | null>(null);
   const overIdx = ref<number | null>(null);
@@ -37,6 +41,7 @@ export function usePointerReorder(
   let offX = 0, offY = 0;     // pointer offset inside the grabbed row (keeps the ghost under the cursor)
   let active = false;         // true once the drag has actually started
   let pointerId = -1;
+  let escaped = false;        // true once the pointer escapes into split-drop mode
 
   function targetAt(x: number, y: number): number | null {
     // The ghost is pointer-events:none, so elementFromPoint sees through it.
@@ -89,6 +94,14 @@ export function usePointerReorder(
       if (Math.hypot(e.clientX - startX, e.clientY - startY) < THRESHOLD) return;
       begin(e.clientX, e.clientY);
     }
+    // Detect downward escape: pointer dragged well below the source row → hand off to split-drop mode.
+    if (!escaped && options?.onEscape && e.clientY > startY + ESCAPE_DOWN) {
+      escaped = true;
+      const idx = pendingIdx;
+      finish(e, true);
+      options.onEscape(idx!, e);
+      return;
+    }
     e.preventDefault();
     if (ghost) ghost.style.transform = `translate(${e.clientX - offX}px, ${e.clientY - offY}px)`;
     overIdx.value = targetAt(e.clientX, e.clientY);
@@ -112,6 +125,7 @@ export function usePointerReorder(
     pendingGroup = null;
     srcEl = null;
     active = false;
+    escaped = false;
     dragIdx.value = null;
     overIdx.value = null;
     dragGroup.value = null;
@@ -135,6 +149,7 @@ export function usePointerReorder(
     startY = e.clientY;
     pointerId = e.pointerId;
     active = false;
+    escaped = false;
     // Kill text selection for the whole gesture (restored in finish()).
     document.body.style.userSelect = "none";
     document.body.style.cursor = "grabbing";
