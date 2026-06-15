@@ -123,8 +123,8 @@
             <span
               v-if="tab.isAgent && (tab.round ?? 0) > 1 && tab.status !== 'idle'"
               class="ws-term-round"
-              :title="`Round ${tab.round}`"
-            >{{ tab.round }}</span>
+              :title="`${tab.round} messages sent to agent this session`"
+            >↺{{ tab.round }}</span>
             <PhBell
               v-if="tab.status === 'permission'"
               :size="11"
@@ -587,6 +587,7 @@ function startTabRename(ws: Workspace, tab: { id: number; title: string }) {
   editingTabTitle.value = tab.title;
   nextTick(() => {
     const el = document.querySelector<HTMLInputElement>(".ws-term-rename-input");
+    el?.focus();
     el?.select();
   });
 }

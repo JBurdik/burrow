@@ -294,9 +294,13 @@ onMounted(async () => {
     const title = sanitizeTitle(raw);
     if (!title) return;
     if (!foreground) {
-      // Foreground not yet known (first poll still in flight): buffer the title
-      // instead of dropping it. The poll will apply it when it detects an agent.
-      pendingOscTitle = title;
+      // Foreground not yet known (first poll still in flight). Only buffer if we
+      // already know this is an agent session — that way shell precmd/preexec OSC
+      // titles (which arrive async AFTER trySend and can race the first poll) are
+      // dropped instead of being applied as the tab name. A pre-detection Claude
+      // title is lost here but Claude re-emits its title often enough that the tab
+      // will settle on the right name once the first poll sets `foreground`.
+      if (isAgentSession) pendingOscTitle = title;
       return;
     }
     if (SHELL_RE.test(foreground)) return;   // shell prompt cwd/cmd junk
