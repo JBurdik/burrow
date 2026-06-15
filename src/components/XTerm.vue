@@ -21,6 +21,15 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useUIStore } from "@/stores/ui";
 import "@xterm/xterm/css/xterm.css";
 
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace("#", "");
+  if (h.length !== 6) return hex;
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 const props = defineProps<{ ptyId: number; cwd: string; initialCmd?: string; resultToken?: string; initiallyTitled?: boolean }>();
 const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string]; agent: [b: boolean]; interrupt: []; cwd: [p: string] }>();
 
@@ -253,8 +262,12 @@ onMounted(async () => {
   // the agent as "already titled" so the poll doesn't re-seed "Claude" over it.
   agentTitled = props.initiallyTitled ?? false;
 
+  const initXtermTheme = ui.bgImageUrl
+    ? { ...ui.activeTheme.xterm, background: hexToRgba(ui.activeTheme.xterm.background ?? "#0a0a0a", ui.bgOpacity) }
+    : ui.activeTheme.xterm;
+
   term = new Terminal({
-    theme: ui.activeTheme.xterm,
+    theme: initXtermTheme,
     fontFamily: ui.terminalFont,
     fontSize: scaledFontSize(),
     lineHeight: 1.4,
@@ -660,7 +673,22 @@ watch(
 watch(
   () => ui.activeTheme,
   (t) => {
-    if (term) term.options.theme = t.xterm;
+    if (!term) return;
+    term.options.theme = ui.bgImageUrl
+      ? { ...t.xterm, background: hexToRgba(t.xterm.background ?? "#0a0a0a", ui.bgOpacity) }
+      : t.xterm;
+  },
+);
+
+// When wallpaper or opacity changes, re-tint the xterm canvas background.
+watch(
+  () => [ui.bgImageUrl, ui.bgOpacity] as const,
+  ([url, op]) => {
+    if (!term) return;
+    const base = ui.activeTheme.xterm;
+    term.options.theme = url
+      ? { ...base, background: hexToRgba(base.background ?? "#0a0a0a", op) }
+      : base;
   },
 );
 

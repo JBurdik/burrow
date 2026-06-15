@@ -3,6 +3,15 @@ import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { THEMES, DEFAULT_THEME_KEY, findTheme } from "@/themes";
 
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace("#", "");
+  if (h.length !== 6) return hex;
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 const PREFS_KEY = "agentic-ide.prefs";
 
 // Font family presets. `value` is the CSS font-family stack applied.
@@ -50,6 +59,8 @@ interface Prefs {
   floatCorner: string; // which screen corner floating windows snap+stack to
   worktreesDir: string; // parent dir for git worktrees: <dir>/<repo>/<branch>
   mode: "terminal" | "claude" | "git" | "mission"; // active main-pane mode, switched via activity bar
+  bgImagePath: string; // absolute path to user wallpaper (empty = none)
+  bgOpacity: number; // 0–1 opacity of panels/terminal over the wallpaper
 }
 
 // The px sizes in the stylesheets are authored at this baseline. `zoom` scales
@@ -79,6 +90,8 @@ const DEFAULT_PREFS: Prefs = {
   floatCorner: "top-right",
   worktreesDir: "~/burrow-worktrees",
   mode: "terminal",
+  bgImagePath: "",
+  bgOpacity: 0.82,
 };
 
 function loadPrefs(): Prefs {
@@ -121,6 +134,10 @@ export const useUIStore = defineStore("ui", () => {
   const floatCorner = ref(loaded.floatCorner);
   const worktreesDir = ref(loaded.worktreesDir);
   const mode = ref<"terminal" | "claude" | "git" | "mission">(loaded.mode);
+  const bgImagePath = ref(loaded.bgImagePath);
+  const bgOpacity = ref(loaded.bgOpacity);
+  // In-memory blob URL for the current wallpaper (not persisted).
+  const bgImageUrl = ref<string>("");
 
   // Push the float-window corner to Rust whenever it changes (and on load), so
   // every floating window snaps + stacks at the chosen corner.
@@ -165,6 +182,86 @@ export const useUIStore = defineStore("ui", () => {
     // sets this — transparent/vibrancy themes were removed for causing lag.)
     root.style.setProperty("--backdrop-blur", t.backdropBlur ?? "none");
     root.style.colorScheme = t.isDark ? "dark" : "light";
+    // When user has a wallpaper, make panels semi-transparent so it shows through.
+    if (bgImageUrl.value) {
+      const op = bgOpacity.value;
+      root.style.setProperty("--bg-base", hexToRgba(t.vars["bg-base"], op));
+      root.style.setProperty("--bg-panel", hexToRgba(t.vars["bg-panel"], op));
+      root.style.setProperty("--bg-hover", hexToRgba(t.vars["bg-hover"], Math.min(1, op + 0.08)));
+      root.style.setProperty("--terminal-bg", hexToRgba(t.xterm.background ?? t.vars["bg-base"], op));
+    }
+  }
+
+  // Load a wallpaper from disk (base64 → blob URL) and apply it.
+  async function loadAndApplyBg(path: string) {
+    if (!path) {
+      bgImageUrl.value = "";
+      document.body.style.backgroundImage = "none";
+      document.body.style.backgroundSize = "";
+      document.body.style.backgroundPosition = "";
+      applyTheme();
+      return;
+    }
+    try {
+      const b64 = await invoke<string>("read_file_base64", { path });
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const ext = path.split(".").pop()?.toLowerCase() ?? "jpg";
+      const mime = ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/jpeg";
+      const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+      bgImageUrl.value = url;
+      document.body.style.backgroundImage = `url("${url}")`;
+      document.body.style.backgroundSize = "cover";
+      document.body.style.backgroundPosition = "center";
+      applyTheme();
+    } catch {
+      bgImageUrl.value = "";
+      document.body.style.backgroundImage = "none";
+      applyTheme();
+    }
+  }
+
+  // Reload the image when the path changes; just re-apply CSS when opacity changes.
+  watch(bgImagePath, (path) => { loadAndApplyBg(path); saveBgPrefs(); });
+  watch(bgOpacity, () => { applyTheme(); saveBgPrefs(); });
+
+  // Load wallpaper on store init (path already in prefs).
+  if (bgImagePath.value) loadAndApplyBg(bgImagePath.value);
+
+  function savePrefs() {
+    localStorage.setItem(
+      PREFS_KEY,
+      JSON.stringify({
+        uiFont: uiFont.value,
+        uiFontSize: uiFontSize.value,
+        uiScale: uiScale.value,
+        terminalFont: terminalFont.value,
+        terminalFontSize: terminalFontSize.value,
+        swapPanels: swapPanels.value,
+        rightPanelVisible: rightPanelVisible.value,
+        theme: theme.value,
+        soundEnabled: soundEnabled.value,
+        soundDoneEnabled: soundDoneEnabled.value,
+        soundWaitingEnabled: soundWaitingEnabled.value,
+        soundDoneId: soundDoneId.value,
+        soundDoneCustomPath: soundDoneCustomPath.value,
+        soundWaitingId: soundWaitingId.value,
+        soundWaitingCustomPath: soundWaitingCustomPath.value,
+        soundVolume: soundVolume.value,
+        maxAgents: maxAgents.value,
+        debugOverlay: debugOverlay.value,
+        floatCorner: floatCorner.value,
+        worktreesDir: worktreesDir.value,
+        mode: mode.value,
+        bgImagePath: bgImagePath.value,
+        bgOpacity: bgOpacity.value,
+      } satisfies Prefs),
+    );
+  }
+
+  function saveBgPrefs() {
+    savePrefs();
   }
 
   // Persist + apply UI font, base font size and overall scale (zoom).
@@ -173,32 +270,7 @@ export const useUIStore = defineStore("ui", () => {
      soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
      soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir, mode],
     () => {
-      localStorage.setItem(
-        PREFS_KEY,
-        JSON.stringify({
-          uiFont: uiFont.value,
-          uiFontSize: uiFontSize.value,
-          uiScale: uiScale.value,
-          terminalFont: terminalFont.value,
-          terminalFontSize: terminalFontSize.value,
-          swapPanels: swapPanels.value,
-          rightPanelVisible: rightPanelVisible.value,
-          theme: theme.value,
-          soundEnabled: soundEnabled.value,
-          soundDoneEnabled: soundDoneEnabled.value,
-          soundWaitingEnabled: soundWaitingEnabled.value,
-          soundDoneId: soundDoneId.value,
-          soundDoneCustomPath: soundDoneCustomPath.value,
-          soundWaitingId: soundWaitingId.value,
-          soundWaitingCustomPath: soundWaitingCustomPath.value,
-          soundVolume: soundVolume.value,
-          maxAgents: maxAgents.value,
-          debugOverlay: debugOverlay.value,
-          floatCorner: floatCorner.value,
-          worktreesDir: worktreesDir.value,
-          mode: mode.value,
-        } satisfies Prefs),
-      );
+      savePrefs();
       applyTheme();
       document.documentElement.style.setProperty("--font-ui", uiFont.value);
       // The UI uses fixed px sizes, so the effective scale combines the explicit
@@ -261,6 +333,10 @@ export const useUIStore = defineStore("ui", () => {
     terminalFontSize.value = DEFAULT_PREFS.terminalFontSize;
   }
 
+  function clearBgImage() {
+    bgImagePath.value = "";
+  }
+
   return {
     settingsOpen,
     uiFont,
@@ -295,5 +371,9 @@ export const useUIStore = defineStore("ui", () => {
     closeSettings,
     toggleSettings,
     resetFonts,
+    bgImagePath,
+    bgOpacity,
+    bgImageUrl,
+    clearBgImage,
   };
 });
