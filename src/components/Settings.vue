@@ -722,6 +722,23 @@
                     class="bg-opacity-slider"
                     @input="ui.bgOpacity = parseFloat(($event.target as HTMLInputElement).value)"
                   />
+
+                  <span class="blur-section-label">Backdrop blur</span>
+                  <div class="blur-grid">
+                    <label v-for="b in blurControls" :key="b.key" class="blur-row">
+                      <span class="blur-name">{{ b.label }}</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="40"
+                        step="1"
+                        :value="(ui as any)[b.key]"
+                        class="bg-opacity-slider"
+                        @input="(ui as any)[b.key] = parseInt(($event.target as HTMLInputElement).value)"
+                      />
+                      <span class="blur-val">{{ (ui as any)[b.key] }}px</span>
+                    </label>
+                  </div>
                 </template>
               </div>
             </div>
@@ -1048,6 +1065,14 @@ async function pickBgImage() {
 function bgFileName(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
+
+// Per-element backdrop-blur sliders (keys map to ui store refs).
+const blurControls = [
+  { key: "blurPanels", label: "Panels (sidebar, bars)" },
+  { key: "blurContent", label: "Mission Control & Dashboard" },
+  { key: "blurTerminal", label: "Terminal" },
+  { key: "blurOverlay", label: "Overlays (spotlight, settings)" },
+] as const;
 
 const active = ref("general");
 const flagEditId = ref<string | null>(null);
@@ -1428,8 +1453,8 @@ const SHORTCUT_GROUPS = [
   flex-direction: column;
   overflow: hidden;
   background: var(--bg-base);
-  backdrop-filter: var(--backdrop-blur, none);
-  -webkit-backdrop-filter: var(--backdrop-blur, none);
+  backdrop-filter: var(--blur-overlay, none);
+  -webkit-backdrop-filter: var(--blur-overlay, none);
   z-index: 1000;
 }
 
@@ -1988,6 +2013,33 @@ const SHORTCUT_GROUPS = [
   width: 100%;
   accent-color: var(--accent);
   cursor: pointer;
+}
+.blur-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+.blur-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.blur-row {
+  display: grid;
+  grid-template-columns: 1fr 120px 38px;
+  align-items: center;
+  gap: 8px;
+}
+.blur-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.blur-val {
+  font-size: 11px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .placeholder {

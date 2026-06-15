@@ -296,8 +296,8 @@ onBeforeUnmount(() => {
   width: var(--right-panel-width, 300px);
   flex: 0 0 var(--right-panel-width, 300px);
   background: var(--bg-panel);
-  backdrop-filter: var(--backdrop-blur, none);
-  -webkit-backdrop-filter: var(--backdrop-blur, none);
+  backdrop-filter: var(--blur-panels, none);
+  -webkit-backdrop-filter: var(--blur-panels, none);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;

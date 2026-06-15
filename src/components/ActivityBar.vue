@@ -77,6 +77,8 @@ function toggleMission() {
   flex: 0 0 44px;
   flex-shrink: 0;
   background: var(--bg-panel);
+  backdrop-filter: var(--blur-panels, none);
+  -webkit-backdrop-filter: var(--blur-panels, none);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;

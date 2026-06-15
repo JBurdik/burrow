@@ -61,6 +61,12 @@ interface Prefs {
   mode: "terminal" | "claude" | "git" | "mission" | "dashboard"; // active main-pane mode, switched via activity bar
   bgImagePath: string; // absolute path to user wallpaper (empty = none)
   bgOpacity: number; // 0–1 opacity of panels/terminal over the wallpaper
+  // Per-element backdrop-blur radius in px (0 = off). Separate so each surface
+  // tunes its own frosted-glass strength over the wallpaper.
+  blurPanels: number; // sidebar, activity bar, right panel, title bar
+  blurContent: number; // Mission Control rail + Dashboard cards
+  blurTerminal: number; // terminal panes
+  blurOverlay: number; // spotlight, settings, modal composers
 }
 
 // The px sizes in the stylesheets are authored at this baseline. `zoom` scales
@@ -92,6 +98,10 @@ const DEFAULT_PREFS: Prefs = {
   mode: "terminal",
   bgImagePath: "",
   bgOpacity: 0.82,
+  blurPanels: 20,
+  blurContent: 20,
+  blurTerminal: 0,
+  blurOverlay: 20,
 };
 
 function loadPrefs(): Prefs {
@@ -136,6 +146,10 @@ export const useUIStore = defineStore("ui", () => {
   const mode = ref<"terminal" | "claude" | "git" | "mission" | "dashboard">(loaded.mode);
   const bgImagePath = ref(loaded.bgImagePath);
   const bgOpacity = ref(loaded.bgOpacity);
+  const blurPanels = ref(loaded.blurPanels);
+  const blurContent = ref(loaded.blurContent);
+  const blurTerminal = ref(loaded.blurTerminal);
+  const blurOverlay = ref(loaded.blurOverlay);
   // In-memory blob URL for the current wallpaper (not persisted).
   const bgImageUrl = ref<string>("");
   const missionActiveCount = ref(0);
@@ -182,6 +196,12 @@ export const useUIStore = defineStore("ui", () => {
     // Frosted-glass backdrop for translucent themes; else none. (No bundled theme
     // sets this — transparent/vibrancy themes were removed for causing lag.)
     root.style.setProperty("--backdrop-blur", t.backdropBlur ?? "none");
+    // Per-element blur vars — each surface reads its own, independent of theme.
+    const mkBlur = (n: number) => (n > 0 ? `blur(${n}px)` : "none");
+    root.style.setProperty("--blur-panels", mkBlur(blurPanels.value));
+    root.style.setProperty("--blur-content", mkBlur(blurContent.value));
+    root.style.setProperty("--blur-terminal", mkBlur(blurTerminal.value));
+    root.style.setProperty("--blur-overlay", mkBlur(blurOverlay.value));
     root.style.colorScheme = t.isDark ? "dark" : "light";
     // When user has a wallpaper, make panels semi-transparent and enable blur.
     if (bgImageUrl.value) {
@@ -227,6 +247,7 @@ export const useUIStore = defineStore("ui", () => {
   // Reload the image when the path changes; just re-apply CSS when opacity changes.
   watch(bgImagePath, (path) => { loadAndApplyBg(path); saveBgPrefs(); });
   watch(bgOpacity, () => { applyTheme(); saveBgPrefs(); });
+  watch([blurPanels, blurContent, blurTerminal, blurOverlay], () => { applyTheme(); savePrefs(); });
 
   // Load wallpaper on store init (path already in prefs).
   if (bgImagePath.value) loadAndApplyBg(bgImagePath.value);
@@ -258,6 +279,10 @@ export const useUIStore = defineStore("ui", () => {
         mode: mode.value,
         bgImagePath: bgImagePath.value,
         bgOpacity: bgOpacity.value,
+        blurPanels: blurPanels.value,
+        blurContent: blurContent.value,
+        blurTerminal: blurTerminal.value,
+        blurOverlay: blurOverlay.value,
       } satisfies Prefs),
     );
   }
@@ -382,6 +407,10 @@ export const useUIStore = defineStore("ui", () => {
     bgOpacity,
     bgImageUrl,
     clearBgImage,
+    blurPanels,
+    blurContent,
+    blurTerminal,
+    blurOverlay,
     missionActiveCount,
   };
 });

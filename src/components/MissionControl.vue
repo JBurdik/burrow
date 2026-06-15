@@ -1143,6 +1143,8 @@ onBeforeUnmount(() => {
 .rail {
   border-right: 1px solid var(--border);
   background: var(--bg-panel);
+  backdrop-filter: var(--blur-content, none);
+  -webkit-backdrop-filter: var(--blur-content, none);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -1298,7 +1300,7 @@ onBeforeUnmount(() => {
 
 /* ── Composer modal ── */
 .composer-modal { position: fixed; inset: 0; background: #000b; display: flex; align-items: center; justify-content: center; z-index: 90; }
-.composer-box { width: 520px; max-width: 92vw; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; backdrop-filter: var(--backdrop-blur, none); -webkit-backdrop-filter: var(--backdrop-blur, none); }
+.composer-box { width: 520px; max-width: 92vw; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; backdrop-filter: var(--blur-overlay, none); -webkit-backdrop-filter: var(--blur-overlay, none); }
 .cm-head { display: flex; align-items: center; font-size: 14px; font-weight: 600; }
 .cm-head span { flex: 1; }
 .composer-actions { display: flex; gap: 8px; align-items: center; }
@@ -1327,7 +1329,7 @@ onBeforeUnmount(() => {
 
 /* ── Terminal modal ── */
 .term-modal { position: fixed; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; z-index: 100; }
-.term-box { width: auto; max-width: 94vw; max-height: 90vh; background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; backdrop-filter: var(--backdrop-blur, none); -webkit-backdrop-filter: var(--backdrop-blur, none); }
+.term-box { width: auto; max-width: 94vw; max-height: 90vh; background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; backdrop-filter: var(--blur-overlay, none); -webkit-backdrop-filter: var(--blur-overlay, none); }
 .term-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border); font-size: 13px; }
 .term-host { flex: 1; padding: 8px; overflow: auto; }
 

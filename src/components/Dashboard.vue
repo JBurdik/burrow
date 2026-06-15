@@ -302,6 +302,8 @@ watch(() => ws.workspaces.length, () => refreshGit());
 
 .card {
   background: var(--bg-panel);
+  backdrop-filter: var(--blur-content, none);
+  -webkit-backdrop-filter: var(--blur-content, none);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 16px;
