@@ -1376,8 +1376,6 @@ defineExpose({ addTab, spawnAgent, adoptPty, openDiffInTab, openFileInTab, inser
   display: flex;
   flex-direction: column;
   background: var(--terminal-bg);
-  backdrop-filter: var(--backdrop-blur, none);
-  -webkit-backdrop-filter: var(--backdrop-blur, none);
   overflow: hidden;
   min-width: 0;
 }
