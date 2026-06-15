@@ -85,6 +85,7 @@ export interface Leaf {
   resultToken?: string;  // set on tabs spawned via `burrow spawn --token`
   leafType?: "terminal" | "diff" | "editor" | "chat" | "browser";  // default "terminal"
   browserUrl?: string; // set when leafType === "browser"
+  round?: number;       // increments on each new user prompt submission (UserPromptSubmit)
   statusText?: string;  // set by `burrow set-status`; shown next to status dot
   progress?: number;    // 0.0–1.0; set by `burrow set-progress`
   progressLabel?: string;

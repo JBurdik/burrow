@@ -130,6 +130,10 @@ const SPAWN_RE = /\x1b\]9999;spawn;([A-Za-z0-9+/=]*);([A-Za-z0-9+/=]*);([A-Za-z0
 // after each `cd` when the user's shell config includes the osc7 hook. Lets us
 // track live CWD without polling so `burrow spawn --cwd` always gets the right dir.
 const OSC7_RE = /\x1b\]7;file:\/\/[^/]*(\/?[^\x07\x1b]*)\x07/g;
+// OSC 133 shell integration markers — precise command boundary tracking without polling.
+//   A=prompt-start  B=prompt-end  C=command-start  D;N=command-done(exit N)
+// Supported by zsh (precmd/preexec hooks), bash (PS0/PROMPT_COMMAND), fish, iTerm2, etc.
+const OSC133_RE = /\x1b\]133;([A-D])(?:;[^\x07]*)?\x07/g;
 const b64decode = (s: string) =>
   s ? new TextDecoder().decode(Uint8Array.from(atob(s), (c) => c.charCodeAt(0))) : "";
 
@@ -148,7 +152,7 @@ let agentTitled = false; // set in onMounted after props are available
 let pendingOscTitle: string | null = null;
 // Last hook state — used to freeze the tab title after a turn ends so Claude's
 // "Claude Code" idle-state title can't overwrite the task description.
-let hookState: "idle" | "running" | "waiting" | "done" = "idle";
+let hookState: "idle" | "running" | "waiting" | "permission" | "done" = "idle";
 
 // Strip control/non-printable chars (mid-OSC replay garbage), trim, cap length.
 function sanitizeTitle(s: string): string {
@@ -404,6 +408,16 @@ onMounted(async () => {
     while ((m = OSC7_RE.exec(text)) !== null) {
       const p = decodeURIComponent(m[1]);
       if (p) emit("cwd", p);
+    }
+
+    // OSC 133 shell integration: C=command-start → busy, D=command-done → idle.
+    // Only drives plain-shell busy; agent sessions ignore it (hooks are authoritative).
+    if (!isAgentSession) {
+      OSC133_RE.lastIndex = 0;
+      while ((m = OSC133_RE.exec(text)) !== null) {
+        if (m[1] === "C") emit("busy", true);
+        else if (m[1] === "D") emit("busy", false);
+      }
     }
 
     outputBuffer = (outputBuffer + text).slice(-500);

@@ -208,7 +208,7 @@ case "$sub" in
         fi ;;
       PreToolUse|PostToolUse) state=running ;;
       SessionStart)               exit 0 ;;
-      PermissionRequest)          state=waiting ;;
+      PermissionRequest)          state=permission ;;
       Stop)                       state=done ;;
       # Notification = telemetry (idle pings, system events). Real permission
       # requests arrive as PermissionRequest, not Notification — same model as

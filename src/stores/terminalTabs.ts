@@ -13,6 +13,7 @@ export interface TabSummary {
   busy: boolean;
   status: TermStatus;
   leafCount?: number;
+  round?: number;
 }
 
 type TabRequest = {

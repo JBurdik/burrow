@@ -11,11 +11,12 @@
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type TermStatus = "idle" | "running" | "waiting" | "done" | "review";
+export type TermStatus = "idle" | "running" | "waiting" | "permission" | "done" | "review";
 
 /** Priority high→low. Single definition consumed by Terminal.tabStatus, Sidebar.aggStatus,
  *  and FloatBubble — no more separate hard-coded priority lists. */
 export const STATUS_PRIORITY: readonly TermStatus[] = [
+  "permission",
   "waiting",
   "running",
   "review",
@@ -24,7 +25,7 @@ export const STATUS_PRIORITY: readonly TermStatus[] = [
 ] as const;
 
 /** Semantic agent hook event forwarded from XTerm.vue → Terminal.vue → here. */
-export type AgentEvent = "running" | "waiting" | "done";
+export type AgentEvent = "running" | "waiting" | "permission" | "done";
 
 /** Minimal leaf view the reducer needs. The full Leaf type from TerminalSplitView.vue
  *  satisfies this — no cast needed. */
@@ -84,6 +85,11 @@ export function applyAgentEvent(
     leaf.busy = true;
     leaf.status = "waiting";
     if (enteringWait) ctx.playSound("waiting");
+  } else if (ev === "permission") {
+    const entering = leaf.status !== "permission";
+    leaf.busy = true;
+    leaf.status = "permission";
+    if (entering) ctx.playSound("waiting");
   } else if (ev === "done") {
     _settle(leaf, ctx);
   }
@@ -130,7 +136,7 @@ export function applyNeedsInput(
  * No sound, no review badge.
  */
 export function applyInterrupt(leaf: StatusLeaf, ctx: ReducerCtx): void {
-  if (leaf.status !== "running" && leaf.status !== "waiting") return;
+  if (leaf.status !== "running" && leaf.status !== "waiting" && leaf.status !== "permission") return;
   ctx.clearDoneTimer(leaf.id);
   leaf.busy = false;
   leaf.status = "idle";

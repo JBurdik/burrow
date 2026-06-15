@@ -121,6 +121,18 @@
               :title="`${tab.leafCount} panes`"
             >{{ tab.leafCount }}</span>
             <span
+              v-if="tab.isAgent && (tab.round ?? 0) > 1 && tab.status !== 'idle'"
+              class="ws-term-round"
+              :title="`Round ${tab.round}`"
+            >{{ tab.round }}</span>
+            <PhBell
+              v-if="tab.status === 'permission'"
+              :size="11"
+              weight="fill"
+              class="ws-term-permission-bell"
+              title="Permission required"
+            />
+            <span
               v-if="tab.status && tab.status !== 'idle'"
               class="status-dot"
               :class="`status-${tab.status}`"
@@ -1063,6 +1075,22 @@ function shortPath(p: string): string {
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.08);
   color: var(--text-muted);
+}
+
+.ws-term-round {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-muted);
+  opacity: 0.7;
+  min-width: 10px;
+  text-align: right;
+}
+
+.ws-term-permission-bell {
+  flex-shrink: 0;
+  color: #f59e0b;
+  opacity: 0.9;
 }
 
 /* Status dot styles in status-dots.css — no local overrides needed. */

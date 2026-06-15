@@ -224,6 +224,7 @@ import {
   deriveTabTitle,
   isDefaultTitle,
   type TermStatus,
+  type AgentEvent,
   type ReducerCtx,
 } from "@/lib/terminalStatus";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -698,8 +699,12 @@ function onAgentState(id: number, s: string) {
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
-    if (s === "running" || s === "waiting" || s === "done") {
-      applyAgentEvent(leaf, s as "running" | "waiting" | "done", makeCtx(tab));
+    if (s === "running" || s === "waiting" || s === "permission" || s === "done") {
+      // New round = a distinct "running" episode (UserPromptSubmit or first launch).
+      if (s === "running" && leaf.status !== "running") {
+        leaf.round = (leaf.round ?? 0) + 1;
+      }
+      applyAgentEvent(leaf, s as AgentEvent, makeCtx(tab));
     }
     break;
   }
@@ -1175,6 +1180,7 @@ function syncStore() {
       busy: getAllLeaves(t.root).some((l) => l.busy),
       status: tabStatus(t),
       leafCount: getAllLeaves(t.root).length,
+      round: Math.max(0, ...getAllLeaves(t.root).map((l) => l.round ?? 0)),
     })),
   );
   tabsStore.setActive(props.workspaceId, activeTabId.value);

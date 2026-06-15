@@ -121,6 +121,9 @@
         <li>Multi-tab: <span class="kbd">⌘T</span> new tab, <span class="kbd">⌘W</span> close</li>
         <li>Split panes H/V: <span class="kbd">⌘D</span> / <span class="kbd">⌘⇧D</span></li>
         <li>Tabs persist across workspace switches</li>
+        <li>Double-click tab label in Sidebar to rename inline</li>
+        <li>OSC 7 live CWD tracking — no polling</li>
+        <li>Window title bar reflects active tab title</li>
       </ul>
     </div>
     <div class="card">
@@ -259,6 +262,99 @@
     </tbody>
   </table>
   <p style="color:var(--muted);font-size:13px">Agent status flows: globally-installed hooks → <code>burrow hook</code> → <code>burrow status</code> → HTTP server → <code>pty-hook-{id}</code> event → <code>XTerm.vue</code>. Hooks+docs install into every dir from <code>get_config_dirs</code> — editable in Settings → Agents → Config directories, for per-project <code>CLAUDE_CONFIG_DIR</code> setups. See <a href="burrow.html">burrow.html</a> for the full mechanism.</p>
+
+  <h2>What's New — v2.3.x</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Fix: SessionStart no longer triggers "running"</h3>
+      <p>Claude Code fires a <code>SessionStart</code> hook on every launch. Previously <code>burrow hook</code>
+      mapped this to <code>running</code>, so fresh tabs opened with an orange/working dot before any prompt
+      was sent. Fix: <code>SessionStart</code> now <code>exit 0</code>s in the burrow script and is removed
+      from the registered hook event arrays in <code>lib.rs</code>. The burrow script is re-written to disk
+      on every PTY spawn, so existing installs get the fix automatically.</p>
+    </div>
+    <div class="card">
+      <h3>Fix: Agent tab title no longer reverts to "Claude Code"</h3>
+      <p>After a task finishes, Claude Code resets its OSC 2 title to <em>"Claude Code"</em> (idle state),
+      which overwrote the meaningful task description in the tab. Fix: <code>XTerm.vue</code> tracks a local
+      <code>hookState</code> (<code>idle | running | waiting | done</code>). Once <code>done</code> arrives,
+      <code>onTitleChange</code> ignores agent OSC titles until a new task starts (<code>running</code> or
+      <code>waiting</code> state arrives). A second fix buffers early OSC titles in <code>pendingOscTitle</code>
+      — previously they were dropped by the <code>if (!foreground) return</code> guard before the first poll
+      returned; now they are applied as soon as the foreground process is confirmed to be an agent.</p>
+    </div>
+    <div class="card">
+      <h3>Feat: OSC 7 live CWD tracking</h3>
+      <p>Shells (zsh, bash, fish) emit <code>OSC 7;file://host/path</code> on every directory change.
+      <code>XTerm.vue</code> now parses this sequence and emits a <code>cwd</code> event;
+      <code>Terminal.vue</code> updates <code>leaf.cwd</code> immediately — no polling required.
+      This keeps <code>burrow spawn --cwd</code> routing accurate when an agent <code>cd</code>s into
+      a sub-directory mid-session.</p>
+    </div>
+    <div class="card">
+      <h3>Feat: Double-click inline tab rename</h3>
+      <p>Double-click any tab label in the Sidebar to rename it in-place. An inline <code>&lt;input&gt;</code>
+      replaces the label (transparent background, accent-colored underline). Press <span class="kbd">Enter</span>
+      or blur to commit; <span class="kbd">Esc</span> to cancel. Implemented via a store-based request
+      (<code>terminalTabs.rename(wsId, tabId, title)</code>) — same pattern as activate/add/close.
+      <code>Terminal.vue</code> watches the request and sets <code>leaf.title</code> on all leaves of
+      the affected tab.</p>
+    </div>
+    <div class="card">
+      <h3>Feat: OSC 133 shell command boundary tracking</h3>
+      <p>Shells (zsh, bash, fish, iTerm2-compatible) emit <code>OSC 133;C</code> on command-start
+      and <code>OSC 133;D</code> on command-done. <code>XTerm.vue</code> now parses these markers
+      and immediately emits <code>busy(true/false)</code> for non-agent sessions — no more waiting
+      2 s for the foreground poll to detect that <code>npm install</code> finished. No-op for agent
+      tabs (hooks remain authoritative). Shell integration opt-in: users need the standard precmd/preexec
+      hooks in their shell config (same hooks that power iTerm2/Warp shell integration).</p>
+    </div>
+    <div class="card">
+      <h3>Feat: Agent round counter</h3>
+      <p>Each distinct "running" episode — i.e. each time the user sends a new prompt —
+      increments a <code>round</code> counter on the leaf. The highest round across all leaves
+      of a tab is published to the <code>terminalTabs</code> store and shown as a compact number
+      (<code>3</code>) next to the status dot in the Sidebar, but only when &gt; 1 and the tab is
+      active. Lets you glance at the sidebar and know "this agent is on its third message exchange"
+      without opening the terminal.</p>
+    </div>
+    <div class="card">
+      <h3>Feat: Permission request state + bell icon</h3>
+      <p>Claude Code's <code>PermissionRequest</code> hook event now maps to a distinct
+      <code>"permission"</code> agent state (previously collapsed into <code>"waiting"</code>).
+      Surfaces as an <strong>amber pulsing dot</strong> (highest-priority status) + a
+      <strong>bell icon</strong> in the Sidebar tab row — visually distinct from the blue
+      "waiting for prompt" dot. The burrow script maps <code>PermissionRequest → burrow status
+      permission</code>; <code>terminalStatus.ts</code> handles it like <code>waiting</code>
+      (busy=true, plays waiting sound) but with its own <code>TermStatus</code> value so the UI
+      can style it differently. Ctrl+C clears permission state (same as running/waiting).</p>
+    </div>
+    <div class="card">
+      <h3>Feat: OS window title syncs to active tab</h3>
+      <p>The macOS window title bar now reflects the active tab: <em>"task description — workspace name"</em>
+      when the tab has a distinct title, falling back to just the workspace name or <em>"Burrow"</em>.
+      Implemented as a <code>watch</code> in <code>App.vue</code> that calls
+      <code>getCurrentWindow().setTitle()</code> via a lazy <code>import()</code> (so browser-only
+      <code>pnpm dev</code> doesn't crash).</p>
+    </div>
+  </div>
+
+  <h2>OSC Escape Sequences</h2>
+  <table class="file-table">
+    <thead><tr><th>Sequence</th><th>Direction</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>OSC 2 ; title BEL</code></td><td>PTY → app</td><td>Tab title update (xterm standard). Frozen after agent <code>done</code> to prevent "Claude Code" idle revert</td></tr>
+      <tr><td><code>OSC 7 ; file://host/path BEL</code></td><td>PTY → app</td><td>Shell CWD hint — updates <code>leaf.cwd</code> live, no polling</td></tr>
+      <tr><td><code>OSC 133 ; C BEL</code></td><td>PTY → app</td><td>Shell: command started (non-agent tabs) → immediate busy=true, no poll wait</td></tr>
+      <tr><td><code>OSC 133 ; D BEL</code></td><td>PTY → app</td><td>Shell: command done → immediate busy=false</td></tr>
+      <tr><td><code>OSC 9998 ; running BEL</code></td><td>PTY → app</td><td>Agent processing (UserPromptSubmit / PreToolUse / PostToolUse hook)</td></tr>
+      <tr><td><code>OSC 9998 ; waiting BEL</code></td><td>PTY → app</td><td>Agent waiting for user input (Stop hook + idle Notification)</td></tr>
+      <tr><td><code>OSC 9998 ; permission BEL</code></td><td>PTY → app</td><td>Agent needs permission decision (PermissionRequest hook) — amber bell</td></tr>
+      <tr><td><code>OSC 9998 ; done BEL</code></td><td>PTY → app</td><td>Agent turn complete (Stop / SessionEnd hook)</td></tr>
+      <tr><td><code>OSC 9999 ; spawn ; … BEL</code></td><td>PTY → app</td><td>Legacy direct-PTY spawn (latent parser — burrow CLI no longer emits this)</td></tr>
+    </tbody>
+  </table>
+  <p style="color:var(--muted);font-size:13px">Note: OSC 9998 writes go via <code>burrow hook</code> → <code>burrow status</code> → HTTP server → <code>pty-hook-{id}</code> Tauri event → <code>XTerm.vue</code>. The OSC channel itself is only used internally by the old path; the HTTP path is primary.</p>
 
   <h2>Tech Stack</h2>
   <div style="margin-bottom:8px;">
