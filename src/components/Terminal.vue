@@ -93,8 +93,15 @@
           class="pane"
           :class="{ focused: focusedLeafId === pane.leaf.id && isTabSplit(tab) }"
           :style="rectStyle(pane.rect)"
+          :data-leaf-id="pane.leaf.id"
           @mousedown.capture="onLeafFocus(pane.leaf.id)"
         >
+          <template v-if="splitDragActive">
+            <div class="drop-zone dz-left"   :class="{ 'dz-active': hoveredZone?.leafId === pane.leaf.id && hoveredZone?.dir === 'h' && hoveredZone?.side === 'first' }" />
+            <div class="drop-zone dz-right"  :class="{ 'dz-active': hoveredZone?.leafId === pane.leaf.id && hoveredZone?.dir === 'h' && hoveredZone?.side === 'second' }" />
+            <div class="drop-zone dz-top"    :class="{ 'dz-active': hoveredZone?.leafId === pane.leaf.id && hoveredZone?.dir === 'v' && hoveredZone?.side === 'first' }" />
+            <div class="drop-zone dz-bottom" :class="{ 'dz-active': hoveredZone?.leafId === pane.leaf.id && hoveredZone?.dir === 'v' && hoveredZone?.side === 'second' }" />
+          </template>
           <div v-if="isTabSplit(tab)" class="pane-titlebar" @mousedown.stop>
             <PhFileCode v-if="pane.leaf.leafType === 'editor'" :size="10" class="pane-title-icon" />
             <PhRobot v-else-if="pane.leaf.isAgent" :size="10" class="pane-title-icon agent" />
@@ -217,6 +224,7 @@ import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useGitStore } from "@/stores/git";
 import { usePointerReorder } from "@/composables/usePointerReorder";
+import { useDragSplit, type SplitZone } from "@/composables/useDragSplit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 
 const props = defineProps<{ cwd: string; workspaceId: number }>();
@@ -415,18 +423,26 @@ function insertSplit(
   node: TreeNode,
   targetId: number,
   direction: "h" | "v",
-  newLeaf: Leaf,
+  newNode: TreeNode,
+  side: "first" | "second" = "second",
 ): TreeNode {
   if (node.type === "leaf") {
     if (node.id === targetId)
-      return { type: "split", direction, first: node, second: newLeaf, ratio: 0.5 };
+      return side === "second"
+        ? { type: "split", direction, first: node, second: newNode, ratio: 0.5 }
+        : { type: "split", direction, first: newNode, second: node, ratio: 0.5 };
     return node;
   }
   return {
     ...node,
-    first: insertSplit(node.first, targetId, direction, newLeaf),
-    second: insertSplit(node.second, targetId, direction, newLeaf),
+    first: insertSplit(node.first, targetId, direction, newNode, side),
+    second: insertSplit(node.second, targetId, direction, newNode, side),
   };
+}
+
+function containsLeaf(node: TreeNode, id: number): boolean {
+  if (node.type === "leaf") return node.id === id;
+  return containsLeaf(node.first, id) || containsLeaf(node.second, id);
 }
 
 // ── tab helpers ─────────────────────────────────────────────────────────────
@@ -833,14 +849,34 @@ function reorderTabs(from: number, to: number) {
   if (moved) tabs.value.splice(to, 0, moved);
 }
 
+function onSplit(fromIdx: number, zone: SplitZone) {
+  const srcTab = tabs.value[fromIdx];
+  if (!srcTab) return;
+  const targetTab = tabs.value.find((t) => containsLeaf(t.root, zone.leafId));
+  if (!targetTab || srcTab === targetTab) return;
+
+  targetTab.root = insertSplit(targetTab.root, zone.leafId, zone.dir, srcTab.root, zone.side);
+  tabs.value.splice(fromIdx, 1);
+  if (activeTabId.value === srcTab.id) activeTabId.value = targetTab.id;
+}
+
+const {
+  active: splitDragActive,
+  hoveredZone,
+  activate: activateSplitDrag,
+} = useDragSplit({ onSplit });
+
 // Pointer-based drag reorder for the top tab bar (HTML5 DnD is swallowed by
 // Tauri's native handler — see usePointerReorder). Group "tab" so a drag can only
-// land on another tab button.
+// land on another tab button. Dragging downward past the tab bar switches to
+// split-drop mode via onEscape.
 const {
   dragIdx: tabDragIdx,
   overIdx: tabOverIdx,
   down: tabDragDown,
-} = usePointerReorder((from, to) => reorderTabs(from, to));
+} = usePointerReorder((from, to) => reorderTabs(from, to), {
+  onEscape: (idx, e) => activateSplitDrag(idx, e, tabTitle(tabs.value[idx])),
+});
 
 // Inject a file/folder path from the explorer into the focused leaf's PTY as an
 // "@path " context reference (relative to the workspace cwd when possible) so the
@@ -1443,6 +1479,21 @@ defineExpose({ addTab, spawnAgent, openDiffInTab, openFileInTab, insertContext, 
   background: transparent;
 }
 .pane-divider:hover { background: var(--accent); opacity: 0.4; }
+
+.drop-zone {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  transition: background 0.12s, opacity 0.12s;
+}
+.dz-left   { left: 0;   top: 0; width: 25%; height: 100%; }
+.dz-right  { right: 0;  top: 0; width: 25%; height: 100%; }
+.dz-top    { left: 0;   top: 0; width: 100%; height: 25%; }
+.dz-bottom { left: 0; bottom: 0; width: 100%; height: 25%; }
+.drop-zone.dz-active {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
 
 .pane.focused::after {
   content: "";
