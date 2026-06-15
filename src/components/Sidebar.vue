@@ -59,8 +59,8 @@
           @contextmenu.prevent.stop="openCtxMenu(item, $event)"
         >
           <button class="ws-caret" :title="isCollapsed(item.id) ? 'Expand' : 'Collapse'" data-no-drag @click.stop="toggleCollapse(item.id)">
-            <PhCaretRight v-if="isCollapsed(item.id)" :size="11" weight="bold" />
-            <PhCaretDown v-else :size="11" weight="bold" />
+            <PhCaretRight v-if="isCollapsed(item.id)" :size="14" weight="bold" />
+            <PhCaretDown v-else :size="14" weight="bold" />
           </button>
           <div class="ws-icon-wrap" title="Change icon via right-click menu">
             <img v-if="store.icons[item.id]" :src="store.icons[item.id]" class="ws-custom-icon" />
@@ -430,11 +430,12 @@ function toggleCollapse(id: number) {
   if (!next) { const w = store.workspaces.find((x) => x.id === id); if (w) store.open(w); mountWorktrees(id); }
 }
 
-// Item click: toggle collapse. Expanding also opens the workspace.
+// Item click: activate + expand the workspace. Never collapses — collapse is the
+// caret's job only (clicking the row to select shouldn't fold the tab list shut).
 function openWs(item: Workspace) {
-  const next = !isCollapsed(item.id);
-  setCollapsed(item.id, next);
-  if (!next) { store.open(item); mountWorktrees(item.id); }
+  if (isCollapsed(item.id)) setCollapsed(item.id, false);
+  store.open(item);
+  mountWorktrees(item.id);
 }
 
 // Worktree row click: just open/activate it (its terminals are already mounted
@@ -897,16 +898,23 @@ function shortPath(p: string): string {
   cursor: pointer;
   display: flex;
   align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  margin: 0 -2px 0 -3px;
+  margin: 0 1px 0 -4px;
   flex-shrink: 0;
-  border-radius: 3px;
-  opacity: 0;
-  transition: opacity .12s, color .12s;
+  border-radius: 4px;
+  opacity: 0.55;
+  transition: opacity .12s, color .12s, background .12s;
 }
 .ws-item:hover .ws-caret,
-.ws-item.active .ws-caret { opacity: 0.7; }
-.ws-caret:hover { opacity: 1 !important; color: var(--text-primary); }
+.ws-item.active .ws-caret { opacity: 0.85; }
+.ws-caret:hover {
+  opacity: 1 !important;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
+}
 
 /* ── Workspace icon box ────────────────────────────────────────── */
 .ws-icon-wrap {

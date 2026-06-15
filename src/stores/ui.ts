@@ -182,13 +182,14 @@ export const useUIStore = defineStore("ui", () => {
     // sets this — transparent/vibrancy themes were removed for causing lag.)
     root.style.setProperty("--backdrop-blur", t.backdropBlur ?? "none");
     root.style.colorScheme = t.isDark ? "dark" : "light";
-    // When user has a wallpaper, make panels semi-transparent so it shows through.
+    // When user has a wallpaper, make panels semi-transparent and enable blur.
     if (bgImageUrl.value) {
       const op = bgOpacity.value;
       root.style.setProperty("--bg-base", hexToRgba(t.vars["bg-base"], op));
       root.style.setProperty("--bg-panel", hexToRgba(t.vars["bg-panel"], op));
       root.style.setProperty("--bg-hover", hexToRgba(t.vars["bg-hover"], Math.min(1, op + 0.08)));
       root.style.setProperty("--terminal-bg", hexToRgba(t.xterm.background ?? t.vars["bg-base"], op));
+      if (!t.backdropBlur) root.style.setProperty("--backdrop-blur", "blur(20px)");
     }
   }
 

@@ -45,12 +45,14 @@ const termTabs = useTerminalTabsStore();
 const ui = useUIStore();
 
 function newTerminal() {
-  if (ui.mode === 'git') { ui.setMode('terminal'); return; }
+  // From any non-terminal view (git/mission), the terminal icon returns to the
+  // terminal first instead of silently adding a hidden tab.
+  if (ui.mode !== 'terminal') { ui.setMode('terminal'); return; }
   if (ws.active) termTabs.add(ws.active.id);
 }
 
 function newChat() {
-  if (ui.mode === 'git') { ui.setMode('terminal'); return; }
+  if (ui.mode !== 'terminal') { ui.setMode('terminal'); return; }
   if (ws.active) termTabs.openChat(ws.active.id);
 }
 

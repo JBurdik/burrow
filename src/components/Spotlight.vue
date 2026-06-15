@@ -259,7 +259,7 @@ defineExpose({ show, close });
 .s-modal {
   width: 680px;
   max-height: 600px;
-  background: #111111;
+  background: var(--bg-panel);
   border: 1px solid #2a2a2a;
   border-radius: 12px;
   display: flex;
@@ -267,6 +267,8 @@ defineExpose({ show, close });
   overflow: hidden;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.08);
   align-self: flex-start;
+  backdrop-filter: var(--backdrop-blur, none);
+  -webkit-backdrop-filter: var(--backdrop-blur, none);
 }
 
 .s-bar {

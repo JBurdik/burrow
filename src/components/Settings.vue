@@ -1428,6 +1428,8 @@ const SHORTCUT_GROUPS = [
   flex-direction: column;
   overflow: hidden;
   background: var(--bg-base);
+  backdrop-filter: var(--backdrop-blur, none);
+  -webkit-backdrop-filter: var(--backdrop-blur, none);
   z-index: 1000;
 }
 

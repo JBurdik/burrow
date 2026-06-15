@@ -194,6 +194,11 @@
           <input type="checkbox" v-model="draft.isolate" />
           <span>Isolate in a git worktree <em>(off the active repo — parallel-safe)</em></span>
         </label>
+        <div v-if="draft.isolate" class="branch-row">
+          <PhGitBranch :size="13" />
+          <span class="branch-prefix">mission/</span>
+          <input v-model="draft.branch" class="branch-input" type="text" placeholder="m-a1b2c3 (auto)" spellcheck="false" />
+        </div>
         <div v-if="worktreeError" class="wt-err">{{ worktreeError }}</div>
 
         <!-- Skip permission prompts — claude runs unattended (no interactive gate) -->
@@ -232,7 +237,6 @@ import { ref, reactive, computed, watch, inject, onMounted, onBeforeUnmount, nex
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
   PhCrosshair, PhPlus, PhFolder, PhGitBranch, PhRobot, PhTerminal,
@@ -317,7 +321,7 @@ function bumpPtySeqPast(ptyId: number) {
 }
 
 const tasks = ref<Task[]>([]);
-const queue = ref<{ qid: string; prompt: string; cwd: string; model: string; isolate: boolean; images: string[]; skipPerms: boolean }[]>([]);
+const queue = ref<{ qid: string; prompt: string; cwd: string; model: string; isolate: boolean; branch: string; images: string[]; skipPerms: boolean }[]>([]);
 const maxConcurrent = ref(1);
 
 const maxConcurrentClamped = computed(() => Math.max(1, maxConcurrent.value));
@@ -342,6 +346,7 @@ const draft = reactive({
   cwd: "",
   model: "default",
   isolate: false,            // spawn in a fresh git worktree off the active repo
+  branch: "",                // optional worktree branch name (else auto mission/m-XXXXXX)
   images: [] as string[],    // temp image paths attached to the first prompt
   skipPerms: false,          // launch claude with --dangerously-skip-permissions
 });
@@ -358,10 +363,24 @@ function projectLabel(wsId: number | null, cwd: string): string {
   if (w) return w.name;
   return cwd.split("/").filter(Boolean).pop() || cwd;
 }
+// Tasks are scoped to the active workspace: only its own tasks + tasks living in
+// a worktree off it (isolate spawns own workspace rows whose parent is the repo).
+// Climb to the repo root first so the scope is the same whether you're sitting on
+// the repo or one of its worktrees.
+const scopeWsIds = computed<Set<number>>(() => {
+  const a = activeWs.value;
+  if (!a) return new Set();
+  const root = a.parent_id != null ? (wsStore.workspaces.find((w) => w.id === a.parent_id) ?? a) : a;
+  const ids = new Set<number>([root.id]);
+  for (const w of wsStore.workspaces) if (w.parent_id === root.id) ids.add(w.id);
+  return ids;
+});
 const projects = computed(() => {
+  const scope = scopeWsIds.value;
   const groups = new Map<string, { label: string; tasks: Task[] }>();
   for (const t of orderedTasks.value) {
-    const key = t.workspaceId != null ? `ws:${t.workspaceId}` : `cwd:${t.cwd}`;
+    if (t.workspaceId == null || !scope.has(t.workspaceId)) continue; // other workspace → hide
+    const key = `ws:${t.workspaceId}`;
     if (!groups.has(key)) groups.set(key, { label: projectLabel(t.workspaceId, t.cwd), tasks: [] });
     groups.get(key)!.tasks.push(t);
   }
@@ -387,7 +406,8 @@ const buffers = new Map<number, string>();      // ptyId → accumulated decoded
 const unlisteners = new Map<number, UnlistenFn[]>();
 
 function countBy(s: Status) {
-  return tasks.value.filter((t) => t.status === s).length;
+  const scope = scopeWsIds.value;
+  return tasks.value.filter((t) => t.status === s && t.workspaceId != null && scope.has(t.workspaceId)).length;
 }
 
 function statusLabel(t: Task): string {
@@ -582,7 +602,7 @@ function scrollConvo() {
 // Feature 5 — optionally spawn the task in a fresh git worktree off the workspace
 // owning `cwd`, so parallel tasks never clobber each other's working tree. Mirrors
 // the New-worktree dialog's path convention: <worktreesDir>/<repo>/<branch>.
-async function resolveCwd(prompt: string, cwd: string, isolate: boolean): Promise<string> {
+async function resolveCwd(branchName: string, cwd: string, isolate: boolean): Promise<string> {
   if (!isolate) return cwd.trim();
   const wid = workspaceIdForCwd(cwd.trim());
   const repo = wsStore.workspaces.find((w) => w.id === wid) ?? wsStore.active;
@@ -591,7 +611,9 @@ async function resolveCwd(prompt: string, cwd: string, isolate: boolean): Promis
     return "";
   }
   const repoName = repo.path.split("/").filter(Boolean).pop() || "repo";
-  const branch = `mission/${slugify(prompt)}-${crypto.randomUUID().slice(0, 4)}`;
+  // A typed name is slugified; otherwise a clean auto name — never the prompt text.
+  const name = branchName.trim() ? slugify(branchName) : `m-${crypto.randomUUID().slice(0, 6)}`;
+  const branch = `mission/${name}`;
   const path = `${ui.worktreesDir}/${repoName}/${branch}`;
   try {
     const wt = await wsStore.createWorktree(repo.id, branch, "HEAD", path);
@@ -611,7 +633,7 @@ const worktreeError = ref("");
 async function runDraft() {
   if (!canRun.value) return;
   worktreeError.value = "";
-  const cwd = await resolveCwd(draft.prompt, draft.cwd, draft.isolate);
+  const cwd = await resolveCwd(draft.branch, draft.cwd, draft.isolate);
   if (!cwd) return;  // worktree creation failed — error shown, keep the modal open
   const images = [...draft.images];
   const t = await spawnTask(draft.prompt, cwd, draft.model, images, draft.skipPerms);
@@ -624,7 +646,7 @@ function enqueueDraft() {
   if (!canRun.value) return;
   // Queued tasks resolve their cwd at spawn time (so worktrees aren't created
   // until they actually run); the isolate flag rides along.
-  queue.value.push({ qid: crypto.randomUUID(), prompt: draft.prompt.trim(), cwd: draft.cwd.trim(), model: draft.model, isolate: draft.isolate, images: [...draft.images], skipPerms: draft.skipPerms });
+  queue.value.push({ qid: crypto.randomUUID(), prompt: draft.prompt.trim(), cwd: draft.cwd.trim(), model: draft.model, isolate: draft.isolate, branch: draft.branch.trim(), images: [...draft.images], skipPerms: draft.skipPerms });
   resetDraft();
   composerOpen.value = false;
   pumpQueue();
@@ -634,6 +656,7 @@ function resetDraft() {
   draft.prompt = "";
   draft.images = [];
   draft.isolate = false;
+  draft.branch = "";
   draft.skipPerms = false;
   worktreeError.value = "";
 }
@@ -726,7 +749,7 @@ function activeCount() {
 async function pumpQueue() {
   while (queue.value.length && activeCount() < maxConcurrentClamped.value) {
     const next = queue.value.shift()!;
-    const cwd = await resolveCwd(next.prompt, next.cwd, next.isolate);
+    const cwd = await resolveCwd(next.branch, next.cwd, next.isolate);
     if (!cwd) continue;  // worktree failed — drop this item, keep draining
     spawnTask(next.prompt, cwd, next.model, next.images, next.skipPerms);
   }
@@ -773,9 +796,7 @@ function clearDead() {
 const termHost = ref<HTMLElement | null>(null);
 const termTaskId = ref<string | null>(null);
 let termInstance: Terminal | null = null;
-let termFit: FitAddon | null = null;
 let termInputOff: (() => void) | null = null;
-let termResizeHandler: (() => void) | null = null;
 
 const termTaskTitle = computed(() => tasks.value.find((t) => t.id === termTaskId.value)?.title ?? "");
 const termTaskStatus = computed(() => tasks.value.find((t) => t.id === termTaskId.value)?.status ?? "idle");
@@ -785,22 +806,26 @@ async function openTerminal(t: Task) {
   await nextTick();
   const css = getComputedStyle(document.documentElement);
   const cssVar = (n: string, fb: string) => css.getPropertyValue(n).trim() || fb;
+  // Render at the PTY's EXACT native geometry (every mission PTY is created at
+  // 120×34 — see create_pty calls). The replay buffer and the live agent both
+  // emit absolute cursor positioning (`[24G` etc.) for that 120-col grid, so a
+  // FitAddon that picks a different width misaligns every redraw → garbled
+  // overlap. Fixing the grid to 120×34 makes replay + live align exactly; no
+  // reflow, no SIGWINCH disruption to the running agent. The dialog is sized to
+  // fit this grid (term-host scrolls if the window is too small).
   termInstance = new Terminal({
+    cols: 120,
+    rows: 34,
     cursorBlink: true,
     fontFamily: cssVar("--font-mono", "ui-monospace, SFMono-Regular, Menlo, monospace"),
-    fontSize: 13,
+    fontSize: 12,
     theme: {
       background: cssVar("--terminal-bg", "#0a0a0a"),
       foreground: cssVar("--text-primary", "#e6edf3"),
     },
     scrollback: 5000,
   });
-  termFit = new FitAddon();
-  termInstance.loadAddon(termFit);
   termInstance.open(termHost.value!);
-  setTimeout(() => { try { termFit?.fit(); resizePty(t); } catch {} }, 0);
-
-  // Replay accumulated scrollback, then go live.
   termInstance.write(buffers.get(t.ptyId) || "");
 
   const onData = termInstance.onData((data) => {
@@ -808,13 +833,15 @@ async function openTerminal(t: Task) {
   });
   termInputOff = () => onData.dispose();
 
-  termResizeHandler = () => { try { termFit?.fit(); resizePty(t); } catch {} };
-  window.addEventListener("resize", termResizeHandler);
-}
-
-function resizePty(t: Task) {
-  if (!termInstance) return;
-  invoke("resize_pty", { id: t.ptyId, cols: termInstance.cols, rows: termInstance.rows }).catch(() => {});
+  // The replay buffer can end on a partial TUI frame (attached mid-render), so
+  // the first live bytes interleave with stale cells → transient scramble. Force
+  // the agent to fully repaint by nudging a SIGWINCH: a same-size resize is a
+  // kernel no-op, so toggle 119→120 cols (back to native geometry) to guarantee
+  // the kernel delivers it. Claude/TUIs redraw the whole screen on SIGWINCH.
+  if (t.alive) {
+    invoke("resize_pty", { id: t.ptyId, cols: 119, rows: 34 }).catch(() => {});
+    setTimeout(() => invoke("resize_pty", { id: t.ptyId, cols: 120, rows: 34 }).catch(() => {}), 60);
+  }
 }
 
 function sendCtrlC() {
@@ -824,9 +851,7 @@ function sendCtrlC() {
 
 function closeTerminal() {
   termInputOff?.(); termInputOff = null;
-  if (termResizeHandler) { window.removeEventListener("resize", termResizeHandler); termResizeHandler = null; }
   termInstance?.dispose(); termInstance = null;
-  termFit = null;
   termTaskId.value = null;
 }
 
@@ -1089,7 +1114,7 @@ onBeforeUnmount(() => {
 
 /* ── Composer modal ── */
 .composer-modal { position: fixed; inset: 0; background: #000b; display: flex; align-items: center; justify-content: center; z-index: 90; }
-.composer-box { width: 520px; max-width: 92vw; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.composer-box { width: 520px; max-width: 92vw; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 12px; backdrop-filter: var(--backdrop-blur, none); -webkit-backdrop-filter: var(--backdrop-blur, none); }
 .cm-head { display: flex; align-items: center; font-size: 14px; font-weight: 600; }
 .cm-head span { flex: 1; }
 .composer-actions { display: flex; gap: 8px; align-items: center; }
@@ -1103,6 +1128,10 @@ onBeforeUnmount(() => {
 .iso code { font-size: 11px; }
 .danger-toggle em { color: color-mix(in srgb, var(--red) 70%, var(--text-muted)); }
 .wt-err { font-size: 12px; color: var(--red); }
+.branch-row { display: flex; align-items: center; gap: 6px; margin-left: 24px; color: var(--text-muted); font-size: 12px; }
+.branch-prefix { font-family: var(--font-mono); opacity: 0.7; }
+.branch-input { flex: 1; min-width: 0; background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-family: var(--font-mono); font-size: 12px; padding: 4px 6px; }
+.branch-input:focus { outline: none; border-color: color-mix(in srgb, var(--accent, #6ab) 60%, var(--border)); }
 
 /* ── Status dots ── */
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--text-muted); flex-shrink: 0; }
@@ -1114,7 +1143,7 @@ onBeforeUnmount(() => {
 
 /* ── Terminal modal ── */
 .term-modal { position: fixed; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; z-index: 100; }
-.term-box { width: 86vw; height: 78vh; background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
+.term-box { width: auto; max-width: 94vw; max-height: 90vh; background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; backdrop-filter: var(--backdrop-blur, none); -webkit-backdrop-filter: var(--backdrop-blur, none); }
 .term-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border); font-size: 13px; }
-.term-host { flex: 1; padding: 8px; overflow: hidden; }
+.term-host { flex: 1; padding: 8px; overflow: auto; }
 </style>
