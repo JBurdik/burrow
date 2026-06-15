@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Burrow — Changelog</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --bg-panel: #111;
+    --border: #222;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --purple: #a78bfa;
+    --red: #ef4444;
+    --orange: #fb923c;
+    --mono: "JetBrains Mono", "Fira Code", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.6; }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 48px 24px 80px; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+  .tagline { color: var(--muted); font-size: 15px; margin-bottom: 48px; }
+  .release { margin-bottom: 40px; }
+  .release-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .version {
+    font-size: 20px;
+    font-weight: 700;
+    font-family: var(--mono);
+    color: var(--text);
+  }
+  .date {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .tag-latest { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); }
+  .section { margin-bottom: 14px; }
+  .section-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 8px;
+  }
+  .feat  .section-label { color: #60a5fa; }
+  .fix   .section-label { color: #4ade80; }
+  .perf  .section-label { color: #facc15; }
+  .break .section-label { color: #f87171; }
+  ul { padding-left: 18px; }
+  li { margin-bottom: 5px; color: #94a3b8; font-size: 13px; }
+  li strong { color: #cbd5e1; }
+  code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px; color: #93c5fd; }
+  .divider { border: none; border-top: 1px solid var(--border); margin: 36px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Burrow — Changelog</h1>
+  <div class="tagline">Historie verzí v češtině. Co se změnilo a proč.</div>
+
+  <!-- v2.3.x dev -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v2.3.x</span>
+      <span class="tag tag-latest">aktuální</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Nové funkce</div>
+      <ul>
+        <li><strong>Stav „permission" + zvonkový ikonka</strong> — Claude Code posílá hook <code>PermissionRequest</code> vždy, když potřebuje souhlas uživatele (spustit příkaz, smazat soubor…). Nově se zobrazuje jako <strong>jantarový pulzující bod</strong> + ikona zvonku v postranním panelu — vizuálně odlišný od modrého bodu „čeká na další zprávu". Dřív se obojí promíchalo dohromady a nešlo poznat, co agent potřebuje.</li>
+        <li><strong>Čítač kol (round counter)</strong> — každé odeslání zprávy agentovi navýší čítač. V postranním panelu se u tabu zobrazí číslo (např. <code>3</code>), pokud je kolo &gt; 1 a tab je aktivní. Na první pohled vidíte, kolikátá konverzační výměna právě probíhá.</li>
+        <li><strong>OSC 133 — okamžité detekování příkazů v shellu</strong> — shell (zsh, bash, fish, iTerm2) posílá markery <code>C</code> (příkaz začal) a <code>D</code> (příkaz skončil) přes OSC 133. Burrow je teď čte a okamžitě přepíná stav tabu na „busy/idle" — bez čekání na 2s polling. Funguje jen pro terminálové taby bez agenta; agentské taby řídí stav přes hooky.</li>
+        <li><strong>Inline přejmenování tabu v postranním panelu</strong> — dvojklik na název tabu ho otevře jako editovatelné pole přímo na místě. Enter nebo blur potvrdí, Esc zruší.</li>
+        <li><strong>Titulek okna OS = aktivní tab</strong> — záhlaví macOS okna teď zobrazuje „popis úkolu — workspace", takže je vidět co agent dělá bez přepnutí do Burrow.</li>
+        <li><strong>OSC 7 — živé sledování adresáře (CWD)</strong> — shell emituje <code>OSC 7</code> po každém <code>cd</code>. Burrow ho čte a aktualizuje <code>leaf.cwd</code> ihned, bez pollingu. <code>burrow spawn --cwd</code> tak vždy dostane správnou cestu i když agent přejde do podadresáře.</li>
+      </ul>
+    </div>
+
+    <div class="section fix">
+      <div class="section-label">Opravy</div>
+      <ul>
+        <li><strong>SessionStart nespouští stav „running"</strong> — Claude Code posílá hook <code>SessionStart</code> při každém spuštění. Ten se dřív mapoval na <code>running</code>, takže každý nový tab okamžitě dostal oranžový puntík ještě před tím, než uživatel cokoliv napsal. Teď se <code>SessionStart</code> ignoruje.</li>
+        <li><strong>Titulek tabu se po dokončení nezamění na „Claude Code"</strong> — Claude Code po skončení úkolu resetuje OSC titulek na „Claude Code" (idle stav). To přepisovalo smysluplný popis úkolu. Nově se titulek po <code>Stop</code> zamkne a nemůže ho přepsat generický idle název — dokud nezačne nové kolo.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- v2.3.0 -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v2.3.0</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Nové funkce</div>
+      <ul>
+        <li><strong>Fleet View</strong> — pohled na všechny workspace najednou v postranním panelu, přehled aktivních agentů přes celou flotilu.</li>
+        <li><strong>Navigace notifikací na konkrétní tab</strong> — klik na notifikaci přepne přímo na tab, ze kterého přišla.</li>
+        <li><strong>Widget využití tokenů (5h okno)</strong> — zobrazuje spotřebu Claude tokenů v posledních 5 hodinách přímo v záhlaví.</li>
+        <li><strong>Deduplikace branch pickeru</strong> — výběr větve v postranním panelu nezobrazuje duplicitní záznamy.</li>
+        <li><strong>Pravidlo delegování v CLAUDE.md</strong> — Burrow automaticky vloží instrukci <code>burrow spawn</code> do globálního <code>~/.claude/CLAUDE.md</code>, aby agenti věděli jak delegovat práci.</li>
+      </ul>
+    </div>
+
+    <div class="section fix">
+      <div class="section-label">Opravy</div>
+      <ul>
+        <li><strong>Claude chat — chyby oprávnění viditelné v UI</strong> — permission errory se zobrazují v chatu, ne jen v konzoli. Přidány klávesové zkratky Y/N pro rychlé potvrzení.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- v2.2.0 -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v2.2.0</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Nové funkce</div>
+      <ul>
+        <li><strong>Podpora prohlížeče (browser tab)</strong> — nový typ tabu s embedded webview pro zobrazení localhost dev serverů nebo libovolné URL přímo v Burrow.</li>
+        <li><strong>Drag &amp; drop rozdělení pane</strong> — přetažením tabu na край existujícího pane ho rozdělíte horizontálně nebo vertikálně.</li>
+        <li><strong>Oprava status hook sémantiky</strong> — sjednocení s modelem cmux: správné přechody mezi running/waiting/done bez falešných stavů.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- v2.1.x -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v2.1.x</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Nové funkce</div>
+      <ul>
+        <li><strong>Claude chat jako plnohodnotný tab</strong> — chat s Claudem vedle terminálových tabů, s historií a persistencí přes restarty.</li>
+        <li><strong>Vkládání obrázků přes ⌘V</strong> — vložení screenshotu do Claude chatu s náhledem před odesláním.</li>
+        <li><strong>Fronta zpráv</strong> — můžete psát Claude další zprávu, zatímco ještě zpracovává předchozí. Zpráva se pošle automaticky po dokončení.</li>
+        <li><strong>Widget využití tokenů</strong> — zobrazuje se hned jak existuje jakákoliv Claude session.</li>
+        <li><strong>Centrum notifikací v záhlaví</strong> — zvoneček s přehledem posledních notifikací od agentů.</li>
+      </ul>
+    </div>
+
+    <div class="section fix">
+      <div class="section-label">Opravy</div>
+      <ul>
+        <li>Duplicitní done notifikace z idle pingers odstraněny.</li>
+        <li>Historie chatu se správně obnovuje po restartu, thinking bloky fungují.</li>
+        <li>Markdown render, <code>/pr</code> příkaz, tlačítko přerušení v Claude UI.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- v2.0.x -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v2.0.x</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Nové funkce</div>
+      <ul>
+        <li><strong>Claude UI mode</strong> — nativní UI pro chat s Claudem, multi-session postranní panel, command suggestions, status line.</li>
+        <li><strong>Permission approval UI</strong> — vizuální potvrzení oprávnění v Claude UI, dangerous mode toggle.</li>
+        <li><strong>burrow set-progress</strong> — agenti mohou nastavit progress bar (0–100 %) pro dlouhé operace.</li>
+        <li><strong>burrow set-status</strong> — custom textový status vedle status dotu v tabu.</li>
+        <li><strong>Diff tab</strong> — záložka pro zobrazení git diffu přímo v Burrow.</li>
+        <li><strong>tmux shim</strong> — <code>burrow</code> CLI simuluje základní tmux příkazy pro kompatibilitu se staršími skripty.</li>
+        <li><strong>burrow log</strong> — agenti mohou logovat zprávy do Burrow bez výpisu do terminálu.</li>
+        <li><strong>Session restore</strong> — daemon udržuje PTY session naživu přes restart Burrow.</li>
+        <li><strong>Jump to unread</strong> — tlačítko pro přeskočení na první nepřečtenou notifikaci.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- v1.0.0 -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v1.0.0</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">První stabilní verze</div>
+      <ul>
+        <li><strong>Centralizovaný terminal status</strong> — sticky názvy tabů, jednotná logika stavů přes celou aplikaci.</li>
+        <li><strong>Nové téma</strong> — tmavé téma s novými barvami, klikatelné ikony v postranním panelu.</li>
+        <li><strong>Git panel vylepšení</strong> — lepší zobrazení diff, stage/unstage, commit.</li>
+        <li><strong>Drag &amp; drop reorder tabů</strong> — přetažení pro změnu pořadí bez artefaktů.</li>
+        <li><strong>Worktree podpora</strong> — <code>burrow worktree</code> vytváří git worktree a otevírá ho jako nový workspace tab.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- v0.x -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v0.x — beta</span>
+      <span class="date">2026</span>
+    </div>
+    <div class="section feat">
+      <div class="section-label">Základ</div>
+      <ul>
+        <li>Multi-workspace IDE s reálnými PTY (Rust <code>portable-pty</code>)</li>
+        <li>Split panes (horizontal / vertical), persistované tabu</li>
+        <li>Agent toolbar — barevná tlačítka pro spuštění agentů (Claude, Codex, Aider…)</li>
+        <li>File explorer + Git panel v pravém panelu</li>
+        <li><code>burrow spawn / wait / capture</code> — delegování práce do nových tabů</li>
+        <li>Status dots — oranžový spinner / modrý bod / zelený puls po dokončení</li>
+        <li>Spotlight (⌘P) — command palette</li>
+        <li>Auto-updater přes GitHub Releases (ed25519 podpis)</li>
+        <li>Globální Claude/Codex hooky pro status tracking (bez nutnosti konfigurace)</li>
+      </ul>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Burrow — Feature Backlog</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --bg-panel: #111;
+    --border: #222;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --purple: #a78bfa;
+    --red: #ef4444;
+    --orange: #fb923c;
+    --mono: "JetBrains Mono", "Fira Code", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.6; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 48px 24px 80px; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+  .tagline { color: var(--muted); font-size: 15px; margin-bottom: 40px; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 36px 0 14px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  p { color: #cbd5e1; margin-bottom: 10px; }
+  ul { padding-left: 18px; color: #cbd5e1; }
+  li { margin-bottom: 5px; }
+  code { font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px; color: #93c5fd; }
+  .badge { display: inline-block; font-family: var(--mono); font-size: 10px; padding: 1px 7px; border-radius: 4px; margin-right: 4px; font-weight: 600; }
+  .effort-quick  { background: rgba(34,197,94,0.12);  color: #4ade80; border: 1px solid rgba(34,197,94,0.25); }
+  .effort-medium { background: rgba(234,179,8,0.12);  color: #facc15; border: 1px solid rgba(234,179,8,0.25); }
+  .effort-big    { background: rgba(239,68,68,0.12);  color: #f87171; border: 1px solid rgba(239,68,68,0.25); }
+  .src-terax  { background: rgba(167,139,250,0.12); color: #c4b5fd; border: 1px solid rgba(167,139,250,0.25); }
+  .src-mana   { background: rgba(59,130,246,0.12);  color: #60a5fa; border: 1px solid rgba(59,130,246,0.25); }
+  .src-warp   { background: rgba(251,146,60,0.12);  color: #fdba74; border: 1px solid rgba(251,146,60,0.25); }
+  .src-iterm  { background: rgba(100,116,139,0.15); color: #94a3b8; border: 1px solid rgba(100,116,139,0.25); }
+  .src-xterm  { background: rgba(34,197,94,0.10);   color: #86efac; border: 1px solid rgba(34,197,94,0.2); }
+  .src-tmux   { background: rgba(234,88,12,0.12);   color: #fb923c; border: 1px solid rgba(234,88,12,0.25); }
+  .feature {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 12px;
+  }
+  .feature-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .feature-title { font-size: 14px; font-weight: 600; color: var(--text); }
+  .feature p { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .feature ul { font-size: 12px; color: var(--muted); }
+  .impl { font-size: 12px; color: #475569; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+  .impl strong { color: #64748b; }
+  .done {
+    border-color: rgba(34,197,94,0.25);
+    opacity: 0.55;
+  }
+  .done .feature-title::after { content: " ✓"; color: #22c55e; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Burrow — Feature Backlog</h1>
+  <div class="tagline">Features worth stealing from terax-ai, manaflow, Warp, iTerm2, xterm.js ecosystem. Sorted by effort within each section.</div>
+
+  <!-- ── QUICK WINS ── -->
+  <h2>Quick Wins — hours, not days</h2>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-quick">quick</span>
+      <span class="badge src-xterm">xterm.js</span>
+      <span class="feature-title">Ctrl+F in-terminal search</span>
+    </div>
+    <p>xterm.js ships a <code>SearchAddon</code>. Wire Ctrl+F → open a mini search bar above the terminal → highlight matches, prev/next navigation. Essential when Claude produces long output.</p>
+    <ul>
+      <li>Install <code>@xterm/addon-search</code> (already in the ecosystem)</li>
+      <li>Add <code>SearchAddon</code> to <code>XTerm.vue</code>, bind Ctrl+F</li>
+      <li>Floating search bar component (reuse spotlight style)</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> XTerm.vue, new SearchBar.vue component</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-quick">quick</span>
+      <span class="badge src-xterm">xterm.js</span>
+      <span class="feature-title">Right-click context menu (copy / paste / clear)</span>
+    </div>
+    <p>Right-click in any terminal pane shows a small context menu: Copy selection, Paste, Clear, Select All. Warp does this; users expect it. Avoids the "how do I paste?" confusion on first launch.</p>
+    <ul>
+      <li>Capture <code>contextmenu</code> on the xterm container, prevent default</li>
+      <li>Show a small positioned menu using the selection-state</li>
+      <li>Paste calls <code>navigator.clipboard.readText()</code> → <code>write_pty</code></li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> XTerm.vue, new TerminalContextMenu.vue</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-quick">quick</span>
+      <span class="badge src-mana">manaflow</span>
+      <span class="feature-title">Idle-timeout agent rescue</span>
+    </div>
+    <p>manaflow auto-transitions <code>running → done</code> after 15 s of silence. Rescues tabs where the agent crashed without firing its <code>Stop</code> hook (network drop, OOM, SIGKILL). Currently those tabs stay orange forever until manually Ctrl+C'd.</p>
+    <ul>
+      <li>In <code>terminalStatus.ts</code> reducer: after entering <code>running</code>, arm a 30 s inactivity timer</li>
+      <li>Any OSC/hook event resets the timer</li>
+      <li>On expire: call <code>_settle(leaf, ctx)</code> → transitions to <code>done</code> or <code>review</code></li>
+      <li>Timer exposed via <code>ReducerCtx.setIdleTimer</code></li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> terminalStatus.ts, Terminal.vue (ctx implementation)</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-quick">quick</span>
+      <span class="badge src-iterm">iTerm2</span>
+      <span class="feature-title">OSC 1337 inline image rendering</span>
+    </div>
+    <p>iTerm2's inline image protocol: <code>ESC]1337;File=...&lt;base64&gt;BEL</code>. Agents and tools (Python matplotlib, <code>imgcat</code>) already emit it. Render the image inline in the terminal output. Useful when Claude generates charts, diagrams, or screenshots.</p>
+    <ul>
+      <li>xterm.js doesn't handle OSC 1337 natively — intercept in the raw data stream before it reaches the terminal</li>
+      <li>Parse payload (width/height hints + base64 blob), inject a <code>&lt;img&gt;</code> via a custom xterm.js ITerminalAddon or overlay</li>
+      <li>Alternatively: strip the sequence and render the image in a floating overlay anchored to the cursor position</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> XTerm.vue (new OSC 1337 parser), optional ImageAddon</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-quick">quick</span>
+      <span class="badge src-terax">terax-ai</span>
+      <span class="feature-title">Scrollback export to file</span>
+    </div>
+    <p>Button (or right-click menu item) to save the full terminal scrollback as a <code>.txt</code> or <code>.ansi</code> file. Terax offers this per-session. Useful for sending Claude's output to another agent or reviewing a long run offline.</p>
+    <ul>
+      <li>xterm.js: <code>term.buffer.active</code> iterator → collect all lines → join</li>
+      <li>Call Tauri <code>write_text_file</code> or show a save dialog</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> XTerm.vue (expose <code>exportScrollback()</code>), Terminal.vue (expose via context menu / toolbar)</div>
+  </div>
+
+  <!-- ── MEDIUM ── -->
+  <h2>Medium Effort — days</h2>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-medium">medium</span>
+      <span class="badge src-terax">terax-ai</span>
+      <span class="feature-title">Clickable file paths in terminal output</span>
+    </div>
+    <p>Scan terminal output for <code>path/to/file.ts:42</code> patterns and render them as clickable links that open the file in the right panel diff/editor view (or pass to <code>$EDITOR</code>). Terax and Warp both do this. Claude's output is full of file references.</p>
+    <ul>
+      <li>xterm.js <code>LinkProvider</code> API: register a regex link provider for <code>[\w./\-]+\.\w+(?::\d+)?</code></li>
+      <li>On click: resolve path relative to workspace cwd → call <code>open_file</code> Tauri command or emit to right panel</li>
+      <li>Optionally highlight on hover (cursor: pointer)</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> XTerm.vue (LinkProvider), lib.rs (open_file command), RightPanel.vue</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-medium">medium</span>
+      <span class="badge src-tmux">tmux-style</span>
+      <span class="feature-title">Broadcast mode — type to all panes</span>
+    </div>
+    <p>Toggle a "broadcast" mode on a workspace: keystrokes typed in any focused pane are mirrored to all other panes in the same workspace simultaneously. Classic tmux <code>set-option synchronize-panes on</code>. Useful for running the same command on multiple agents/directories at once.</p>
+    <ul>
+      <li>Add a <code>broadcastWs: Set&lt;number&gt;</code> to the UI store</li>
+      <li>In <code>Terminal.vue</code> <code>write_pty</code> path: if broadcast active, write to all leaves' PTYs</li>
+      <li>Visual indicator: orange border around the workspace when broadcast is on</li>
+      <li>Toggle via keyboard shortcut (e.g. ⌘⇧B) or title bar button</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> ui.ts store, Terminal.vue, XTerm.vue (emit input up to Terminal)</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-medium">medium</span>
+      <span class="badge src-warp">Warp</span>
+      <span class="feature-title">Command blocks — collapsible output regions</span>
+    </div>
+    <p>OSC 133 A/B/C/D already tells us where commands start and end (just implemented). Use those markers to wrap each command's output in a collapsible "block" UI — click to collapse long npm install output, expand to see it again. Warp's killer feature. Makes long agent sessions much more scannable.</p>
+    <ul>
+      <li>Prerequisite: OSC 133 already wired in XTerm.vue ✓</li>
+      <li>Track (row-start, row-end, exit-code) per command in a <code>blocks</code> array</li>
+      <li>Render collapse toggle overlay anchored to the block start row</li>
+      <li>xterm.js doesn't natively support row hiding — need a custom viewport solution or an ITerminalAddon that intercepts rendering</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> XTerm.vue (block tracking), new CommandBlock overlay component</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-medium">medium</span>
+      <span class="badge src-terax">terax-ai</span>
+      <span class="feature-title">Tab pin / lock</span>
+    </div>
+    <p>Pin a tab so ⌘W can't accidentally close it and it can't be reordered. Useful for a "main agent" tab you're monitoring while spawning throwaway sub-agent tabs. Terax uses this for its managed sessions.</p>
+    <ul>
+      <li>Add <code>pinned?: boolean</code> to <code>Leaf</code></li>
+      <li>Right-click tab in sidebar → "Pin tab" toggles it</li>
+      <li>Pinned tabs show a pin icon; block close action with a confirmation</li>
+      <li>Persist in SQLite <code>terminal_tabs</code> table</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> TerminalSplitView.vue (Leaf), Sidebar.vue, Terminal.vue (block close), lib.rs (persist)</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-medium">medium</span>
+      <span class="badge src-warp">Warp</span>
+      <span class="feature-title">Session restore on relaunch</span>
+    </div>
+    <p>When Burrow relaunches, reattach to still-running PTY sessions (daemon already keeps them alive) AND restore terminal scrollback so the context isn't lost. Currently reattach works but the terminal shows blank until new output arrives.</p>
+    <ul>
+      <li>On PTY create in Rust: pipe the last N bytes of the scrollback ring buffer (already tracked?) into the new xterm instance before live data starts</li>
+      <li>Alternatively: use xterm.js <code>serialize</code> addon to snapshot the viewport and restore it on mount</li>
+      <li>Edge case: restore cursor position accurately</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> lib.rs (scrollback ring buffer), XTerm.vue (restore snapshot on mount)</div>
+  </div>
+
+  <!-- ── BIG ── -->
+  <h2>Big Effort — week+</h2>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-big">big</span>
+      <span class="badge src-terax">terax-ai</span>
+      <span class="feature-title">Preview pane — embedded localhost webview</span>
+    </div>
+    <p>Scan terminal stdout for <code>localhost:PORT</code> or <code>127.0.0.1:PORT</code> patterns. When detected, offer to open an embedded Tauri <code>&lt;webview&gt;</code> in the right panel showing the running app. Automatically refreshes on new output. The single biggest time-saver for web dev agents.</p>
+    <ul>
+      <li>Regex on outputBuffer in XTerm.vue → emit <code>devServer(url)</code></li>
+      <li>RightPanel.vue gets a new "Preview" tab that hosts a Tauri WebviewWindow or <code>&lt;iframe&gt;</code></li>
+      <li>Auto-detect framework (Vite port 5173, Next.js 3000, Rails 3000 — check common ports)</li>
+      <li>Refresh button + auto-refresh on file change (watch filesystem)</li>
+      <li>Handle HTTPS self-signed certs gracefully</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> XTerm.vue, RightPanel.vue, new PreviewPane.vue, tauri.conf.json (webview permissions)</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-big">big</span>
+      <span class="badge src-terax">terax-ai</span>
+      <span class="feature-title">Hunk-by-hunk AI diff review</span>
+    </div>
+    <p>The git diff panel (right panel) shows diffs per file. Add a "Review" button per diff hunk that fires a one-shot <code>claude -p</code> prompt on that hunk in a sidebar panel. Shows inline comments. Lets you review agent changes file-by-file while the agent is still running another task.</p>
+    <ul>
+      <li>Parse unified diff into hunks (already have diff data in git store)</li>
+      <li>Per-hunk "⚡ Review" button → POST to Claude API (not interactive, use -p mode)</li>
+      <li>Stream response into a comment panel below the hunk</li>
+      <li>Cache results so re-opening same diff doesn't re-run</li>
+      <li>Warning: this uses API credits separately from the running agent</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> RightPanel.vue (git diff section), new HunkReview component, Tauri HTTP command for API call</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-big">big</span>
+      <span class="badge src-terax">terax-ai</span>
+      <span class="feature-title">Git commit graph (lane-based visualization)</span>
+    </div>
+    <p>Replace the flat file-list git panel with a lane-based commit graph (like <code>git log --graph</code> or GitLens). Shows branches, merges, and the current HEAD. Especially useful for worktree workflows where agents are committing on multiple branches simultaneously.</p>
+    <ul>
+      <li>Parse <code>git log --graph --format=...</code> output into a structured graph</li>
+      <li>Render with SVG lanes (or canvas) in a scrollable list</li>
+      <li>Click a commit → show diff; click a branch label → switch branch</li>
+      <li>Live-refresh when PTY output suggests a commit happened (detect <code>git commit</code> in OSC 133 C/D output)</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> git.ts store (new log command), RightPanel.vue, new CommitGraph.vue (SVG)</div>
+  </div>
+
+  <div class="feature">
+    <div class="feature-header">
+      <span class="badge effort-big">big</span>
+      <span class="badge src-warp">Warp</span>
+      <span class="feature-title">Workspace templates</span>
+    </div>
+    <p>Save the current workspace layout (tabs, agents, split ratios, cwd per pane) as a named template. New workspace → pick a template → instantly gets the same layout. Useful for: "Claude + git panel + preview pane" being one click away instead of rebuilt from scratch every project.</p>
+    <ul>
+      <li>Serialize full workspace layout to JSON (tabs → root TreeNode + Leaf metadata)</li>
+      <li>Store templates in SQLite <code>workspace_templates</code> table</li>
+      <li>Template picker in the new-workspace dialog</li>
+      <li>Handle PTY IDs gracefully (new IDs on instantiation, same structure)</li>
+    </ul>
+    <div class="impl"><strong>Touch:</strong> lib.rs (new table + commands), workspace.ts store, Sidebar.vue (new template picker)</div>
+  </div>
+
+  <!-- ── DONE ── -->
+  <h2>Already Implemented</h2>
+
+  <div class="feature done">
+    <div class="feature-header">
+      <span class="badge effort-quick">quick</span>
+      <span class="feature-title">OSC 7 live CWD tracking</span>
+    </div>
+  </div>
+  <div class="feature done">
+    <div class="feature-header">
+      <span class="badge effort-quick">quick</span>
+      <span class="feature-title">Double-click inline tab rename</span>
+    </div>
+  </div>
+  <div class="feature done">
+    <div class="feature-header">
+      <span class="badge effort-quick">quick</span>
+      <span class="feature-title">OS window title sync to active tab</span>
+    </div>
+  </div>
+  <div class="feature done">
+    <div class="feature-header">
+      <span class="badge effort-quick">quick</span>
+      <span class="feature-title">Fix: SessionStart no longer triggers running state</span>
+    </div>
+  </div>
+  <div class="feature done">
+    <div class="feature-header">
+      <span class="badge effort-quick">quick</span>
+      <span class="feature-title">Fix: Agent title frozen after Stop (no "Claude Code" revert)</span>
+    </div>
+  </div>
+  <div class="feature done">
+    <div class="feature-header">
+      <span class="badge effort-medium">medium</span>
+      <span class="feature-title">OSC 133 shell command boundary tracking</span>
+    </div>
+  </div>
+  <div class="feature done">
+    <div class="feature-header">
+      <span class="badge effort-medium">medium</span>
+      <span class="feature-title">Agent round counter in sidebar</span>
+    </div>
+  </div>
+  <div class="feature done">
+    <div class="feature-header">
+      <span class="badge effort-medium">medium</span>
+      <span class="feature-title">Permission request state + amber bell icon</span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
