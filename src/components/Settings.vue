@@ -692,6 +692,40 @@
               </button>
             </div>
           </div>
+
+          <div class="sec-divider" />
+
+          <!-- Background image -->
+          <div class="settings-group">
+            <span class="group-label">Background</span>
+            <div class="bg-picker-row">
+              <div class="bg-preview" :style="ui.bgImageUrl ? { backgroundImage: `url('${ui.bgImageUrl}')`, backgroundSize: 'cover', backgroundPosition: 'center' } : {}">
+                <span v-if="!ui.bgImageUrl" class="bg-preview-empty"><PhImage :size="20" weight="thin" /></span>
+              </div>
+              <div class="bg-picker-controls">
+                <div class="bg-picker-btns">
+                  <button class="bg-btn" @click="pickBgImage">Choose image…</button>
+                  <button v-if="ui.bgImagePath" class="bg-btn bg-btn-clear" @click="ui.clearBgImage()">Remove</button>
+                </div>
+                <span class="bg-filename">{{ ui.bgImagePath ? bgFileName(ui.bgImagePath) : "No image selected" }}</span>
+                <template v-if="ui.bgImagePath">
+                  <label class="bg-opacity-label">
+                    Opacity
+                    <span class="bg-opacity-val">{{ Math.round(ui.bgOpacity * 100) }}%</span>
+                  </label>
+                  <input
+                    type="range"
+                    min="0.2"
+                    max="1"
+                    step="0.01"
+                    :value="ui.bgOpacity"
+                    class="bg-opacity-slider"
+                    @input="ui.bgOpacity = parseFloat(($event.target as HTMLInputElement).value)"
+                  />
+                </template>
+              </div>
+            </div>
+          </div>
         </section>
 
         <!-- About / Updates -->
@@ -920,7 +954,7 @@ import {
   PhPuzzlePiece, PhInfo, PhSparkle, PhCode, PhGitBranch, PhTerminal,
   PhListBullets, PhCaretDown, PhFolder, PhPencilSimple, PhCheck, PhBell, PhPlay,
   PhDotsSixVertical, PhArrowClockwise, PhDownloadSimple, PhTerminalWindow,
-  PhPlugsConnected, PhBrowser, PhToggleLeft, PhToggleRight, PhArrowSquareOut,
+  PhPlugsConnected, PhBrowser, PhToggleLeft, PhToggleRight, PhArrowSquareOut, PhImage,
 } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -998,6 +1032,20 @@ async function pickSound(kind: SoundKind) {
 }
 
 function soundFileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+async function pickBgImage() {
+  const selected = await openDialog({
+    multiple: false,
+    filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "avif"] }],
+  });
+  if (selected && typeof selected === "string") {
+    ui.bgImagePath = selected;
+  }
+}
+
+function bgFileName(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
 
@@ -1873,6 +1921,72 @@ const SHORTCUT_GROUPS = [
   color: var(--text-primary);
 }
 .theme-check { color: var(--accent); }
+
+/* Background image picker */
+.bg-picker-row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.bg-preview {
+  width: 96px;
+  height: 64px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: #0a0a0a;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.bg-preview-empty { color: var(--text-muted); }
+.bg-picker-controls {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bg-picker-btns {
+  display: flex;
+  gap: 6px;
+}
+.bg-btn {
+  padding: 5px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: #161616;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.bg-btn:hover { border-color: var(--accent); color: var(--accent); }
+.bg-btn-clear:hover { border-color: var(--red); color: var(--red); }
+.bg-filename {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.bg-opacity-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.bg-opacity-val {
+  font-size: 11px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.bg-opacity-slider {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 
 .placeholder {
   align-items: center;
