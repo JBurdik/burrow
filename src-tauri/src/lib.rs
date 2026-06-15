@@ -2869,34 +2869,25 @@ fn claude_usage_5h(app: AppHandle) -> serde_json::Value {
 // ── Native menu ───────────────────────────────────────────────────────────────
 
 fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+    use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
 
-    let check_update = MenuItem::with_id(app, "check-update", "Check for Updates…", true, None::<&str>)?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let about = PredefinedMenuItem::about(app, Some("About Burrow"), None)?;
-    let hide = PredefinedMenuItem::hide(app, Some("Hide Burrow"))?;
-    let hide_others = PredefinedMenuItem::hide_others(app, Some("Hide Others"))?;
-    let show_all = PredefinedMenuItem::show_all(app, Some("Show All"))?;
-    let quit = PredefinedMenuItem::quit(app, Some("Quit Burrow"))?;
+    // Start from Tauri's standard menu so the default Edit/View/Window
+    // submenus (copy/paste/undo, minimize/zoom, …) are preserved, then
+    // inject "Check for Updates…" into the app (first) submenu.
+    let menu = Menu::default(app)?;
 
-    let app_menu = Submenu::with_items(
-        app,
-        "Burrow",
-        true,
-        &[
-            &about,
-            &separator,
-            &check_update,
-            &PredefinedMenuItem::separator(app)?,
-            &hide,
-            &hide_others,
-            &show_all,
-            &PredefinedMenuItem::separator(app)?,
-            &quit,
-        ],
-    )?;
+    if let Some(first) = menu.items()?.into_iter().next() {
+        if let Some(app_menu) = first.as_submenu() {
+            let check_update =
+                MenuItem::with_id(app, "check-update", "Check for Updates…", true, None::<&str>)?;
+            let separator = PredefinedMenuItem::separator(app)?;
+            // Insert right after the "About" item (index 0) on macOS.
+            let items: &[&dyn IsMenuItem<tauri::Wry>] = &[&separator, &check_update];
+            app_menu.insert_items(items, 1)?;
+        }
+    }
 
-    Menu::with_items(app, &[&app_menu])
+    Ok(menu)
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
