@@ -173,6 +173,15 @@
         <li><a href="burrow.html" style="color:var(--accent)">Full reference →</a></li>
       </ul>
     </div>
+    <div class="card">
+      <h3>Mission Control — tank-style task dashboard <span style="font-size:10px;color:var(--muted)">POC</span></h3>
+      <ul>
+        <li>Separate Tauri window (label <code>mission</code>) that runs headless <code>claude</code> PTYs as disposable tasks — spawn from a prompt, status dots, live-attach xterm, result capture, sequential queue</li>
+        <li>Reuses Burrow's native PTY + global hook server (no new wiring); 🚀 button in the ActivityBar opens it</li>
+        <li><code>src/components/MissionControl.vue</code> + Rust <code>open_mission_window</code> / <code>read_claude_result</code></li>
+        <li><a href="mission-control.html" style="color:var(--accent)">Mission Control →</a> · <a href="tank-analysis.html" style="color:var(--accent)">tank analysis &amp; clone recipe →</a></li>
+      </ul>
+    </div>
   </div>
 
   <h2>Default Agents</h2>
@@ -274,14 +283,19 @@
       on every PTY spawn, so existing installs get the fix automatically.</p>
     </div>
     <div class="card">
-      <h3>Fix: Agent tab title no longer reverts to "Claude Code"</h3>
-      <p>After a task finishes, Claude Code resets its OSC 2 title to <em>"Claude Code"</em> (idle state),
-      which overwrote the meaningful task description in the tab. Fix: <code>XTerm.vue</code> tracks a local
-      <code>hookState</code> (<code>idle | running | waiting | done</code>). Once <code>done</code> arrives,
-      <code>onTitleChange</code> ignores agent OSC titles until a new task starts (<code>running</code> or
-      <code>waiting</code> state arrives). A second fix buffers early OSC titles in <code>pendingOscTitle</code>
-      — previously they were dropped by the <code>if (!foreground) return</code> guard before the first poll
-      returned; now they are applied as soon as the foreground process is confirmed to be an agent.</p>
+      <h3>Fix: Agent tab title tracks task description dynamically</h3>
+      <p>Claude Code emits <code>OSC 0;✳ Claude Code</code> at startup, then updates the tab title to the
+      current task description as the session progresses. Two fixes were needed:</p>
+      <ol style="padding-left:18px;margin-top:8px;font-size:13px;color:#94a3b8;line-height:1.8">
+        <li><strong>Idle revert blocked</strong>: after <code>Stop</code>, Claude resets its title to
+        <code>✳ Claude Code</code>. <code>hookState</code> tracks when a turn is <code>done</code>;
+        <code>onTitleChange</code> blocks only that specific idle reset — other OSC titles pass through.</li>
+        <li><strong>Startup title preserved</strong>: Claude's startup OSC 0 arrives before the first 2 s poll
+        sets <code>foreground</code>. <code>pendingOscTitle</code> now always buffers it. Shell
+        <code>precmd</code>/<code>preexec</code> cwd noise (bare words like <code>work</code>,
+        <code>agentic-ide</code>) cannot overwrite a meaningful title (one with spaces/Unicode) — priority:
+        non-cwd &gt; cwd.</li>
+      </ol>
     </div>
     <div class="card">
       <h3>Feat: OSC 7 live CWD tracking</h3>
@@ -343,7 +357,7 @@
   <table class="file-table">
     <thead><tr><th>Sequence</th><th>Direction</th><th>Meaning</th></tr></thead>
     <tbody>
-      <tr><td><code>OSC 2 ; title BEL</code></td><td>PTY → app</td><td>Tab title update (xterm standard). Frozen after agent <code>done</code> to prevent "Claude Code" idle revert</td></tr>
+      <tr><td><code>OSC 0 ; title BEL</code></td><td>PTY → app</td><td>Tab title + icon name (xterm). Claude emits this at startup (<code>✳ Claude Code</code>) and dynamically as the task description changes. Idle reset (<code>✳ Claude Code</code>) frozen after <code>done</code>; task titles pass through.</td></tr>
       <tr><td><code>OSC 7 ; file://host/path BEL</code></td><td>PTY → app</td><td>Shell CWD hint — updates <code>leaf.cwd</code> live, no polling</td></tr>
       <tr><td><code>OSC 133 ; C BEL</code></td><td>PTY → app</td><td>Shell: command started (non-agent tabs) → immediate busy=true, no poll wait</td></tr>
       <tr><td><code>OSC 133 ; D BEL</code></td><td>PTY → app</td><td>Shell: command done → immediate busy=false</td></tr>
