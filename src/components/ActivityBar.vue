@@ -29,6 +29,7 @@
       @click="toggleMission()"
     >
       <PhRocketLaunch :size="18" />
+      <span v-if="ui.missionActiveCount > 0" class="mc-badge">{{ ui.missionActiveCount > 9 ? '9+' : ui.missionActiveCount }}</span>
     </button>
   </nav>
 </template>
@@ -94,4 +95,22 @@ function toggleMission() {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
+.mc-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--yellow);
+  color: #000;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  padding: 0 3px;
+  pointer-events: none;
+  animation: badge-pulse 1.4s infinite;
+}
+@keyframes badge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 </style>

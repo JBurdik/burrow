@@ -156,20 +156,60 @@
     <div v-if="composerOpen" class="composer-modal" @click.self="composerOpen = false">
       <div class="composer-box" @drop.prevent="onComposerDrop" @dragover.prevent>
         <header class="cm-head">
+          <PhCrosshair :size="14" weight="bold" class="cm-brand" />
           <span>New task</span>
-          <button class="btn tiny" @click="composerOpen = false">close</button>
+          <span class="spacer" />
+          <button class="btn tiny icon-btn" @click="composerOpen = false"><PhX :size="12" /></button>
         </header>
-        <label class="fld">
-          <span>Prompt</span>
-          <textarea v-model="draft.prompt" rows="5" placeholder="What should Claude do? (paste or drop images to attach)" @keydown.meta.enter="runDraft" @paste="onComposerPaste"></textarea>
-        </label>
 
-        <!-- Feature 3 — attached images -->
-        <div v-if="draft.images.length" class="img-chips">
-          <span v-for="(p, i) in draft.images" :key="i" class="img-chip">
+        <div class="fld prompt-fld">
+          <div class="prompt-label-row">
+            <span>Prompt</span>
+            <span class="prompt-hint">Type <kbd>@</kbd> to reference a file · <kbd>⌘↵</kbd> to run</span>
+          </div>
+          <div class="prompt-wrap">
+            <textarea
+              ref="promptTextarea"
+              v-model="draft.prompt"
+              rows="5"
+              placeholder="What should Claude do?"
+              @keydown.meta.enter="runDraft"
+              @paste="onComposerPaste"
+              @input="onPromptInput"
+              @keydown.escape="showFilePicker = false"
+            ></textarea>
+            <!-- @-trigger file picker dropdown -->
+            <div v-if="showFilePicker" class="at-picker">
+              <div class="at-header"><PhMagnifyingGlass :size="11" /> <span>{{ fileSearchQuery || "files in workspace" }}</span></div>
+              <ul>
+                <li v-for="p in fileSearchResults" :key="p" @click="selectFileFromPicker(p)" class="at-opt">
+                  <PhFile :size="12" />
+                  <span class="at-name">{{ fileBasename(p) }}</span>
+                  <span class="at-path">{{ shortCwd(p) }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Attachments: images + tagged files -->
+        <div v-if="draft.images.length || draft.files.length" class="img-chips">
+          <span v-for="(p, i) in draft.images" :key="`img-${i}`" class="img-chip">
             <PhImage :size="12" /> {{ p.split('/').pop() }}
             <button class="x" @click="removeImage(i)"><PhX :size="10" /></button>
           </span>
+          <span v-for="(p, i) in draft.files" :key="`file-${i}`" class="img-chip file-chip">
+            <PhFile :size="12" /> {{ fileBasename(p) }}
+            <button class="x" @click="removeFile(i)"><PhX :size="10" /></button>
+          </span>
+        </div>
+
+        <!-- Attach buttons -->
+        <div class="attach-row">
+          <button class="btn ghost xs attach-btn" @click="pickFiles" type="button" title="Attach context files (sent as @path references)">
+            <PhPaperclip :size="13" /> Attach files
+          </button>
+          <span class="attach-hint">or drop images · type <kbd>@</kbd> for inline ref</span>
         </div>
 
         <div class="fld">
@@ -248,10 +288,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   PhCrosshair, PhPlus, PhFolder, PhGitBranch, PhRobot, PhTerminal,
   PhArrowRight, PhArrowLeft, PhArrowClockwise, PhTrash, PhImage, PhX, PhWarning,
-  PhCaretRight, PhCaretDown, PhCheck, PhArrowSquareOut,
+  PhCaretRight, PhCaretDown, PhCheck, PhArrowSquareOut, PhPaperclip, PhFile,
+  PhMagnifyingGlass,
 } from "@phosphor-icons/vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
@@ -338,7 +380,7 @@ function bumpPtySeqPast(ptyId: number) {
 }
 
 const tasks = ref<Task[]>([]);
-const queue = ref<{ qid: string; prompt: string; cwd: string; model: string; isolate: boolean; branch: string; images: string[]; skipPerms: boolean }[]>([]);
+const queue = ref<{ qid: string; prompt: string; cwd: string; model: string; isolate: boolean; branch: string; images: string[]; files: string[]; skipPerms: boolean }[]>([]);
 const maxConcurrent = ref(1);
 
 const maxConcurrentClamped = computed(() => Math.max(1, maxConcurrent.value));
@@ -365,8 +407,16 @@ const draft = reactive({
   isolate: false,            // spawn in a fresh git worktree off the active repo
   branch: "",                // optional worktree branch name (else auto mission/m-XXXXXX)
   images: [] as string[],    // temp image paths attached to the first prompt
+  files: [] as string[],     // file paths tagged with @file syntax
   skipPerms: false,          // launch claude with --dangerously-skip-permissions
 });
+
+// File search state for the @-trigger picker
+const fileSearchQuery = ref("");
+const fileSearchResults = ref<string[]>([]);
+const showFilePicker = ref(false);
+const filePickerAnchor = ref<{ top: number; left: number }>({ top: 0, left: 0 });
+const promptTextarea = ref<HTMLTextAreaElement | null>(null);
 
 const canRun = computed(() => draft.prompt.trim().length > 0 && draft.cwd.trim().length > 0);
 const orderedTasks = computed(() => [...tasks.value].sort((a, b) => b.createdAt - a.createdAt));
@@ -447,18 +497,21 @@ function shquote(s: string) {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-async function spawnTask(prompt: string, cwd: string, model: string, images: string[] = [], skipPerms = false): Promise<Task> {
+async function spawnTask(prompt: string, cwd: string, model: string, images: string[] = [], skipPerms = false, files: string[] = []): Promise<Task> {
   const id = crypto.randomUUID();
   const ptyId = allocPtyId();
+  // Prepend @file refs if the user tagged files via the picker (not already in prompt)
+  const fileRefs = files.filter((f) => !prompt.includes(`@${f}`)).map((f) => `@${f}`).join("\n");
+  const fullPrompt = fileRefs ? `${fileRefs}\n\n${prompt.trim()}` : prompt.trim();
   const task: Task = {
     id, ptyId,
     workspaceId: workspaceIdForCwd(cwd.trim()),
     title: prompt.trim().split("\n")[0].slice(0, 48) || "task",
-    prompt: prompt.trim(),
+    prompt: fullPrompt,
     cwd: cwd.trim(),
     model,
     status: "running",
-    turns: [{ role: "user", text: prompt.trim() + (images.length ? `\n📎 ${images.length} image${images.length === 1 ? "" : "s"}` : "") }],
+    turns: [{ role: "user", text: prompt.trim() + (images.length ? `\n📎 ${images.length} image${images.length === 1 ? "" : "s"}` : "") + (files.length ? `\n📄 ${files.length} file${files.length === 1 ? "" : "s"} tagged` : "") }],
     followup: "",
     expanded: false,
     alive: true,
@@ -477,7 +530,7 @@ async function spawnTask(prompt: string, cwd: string, model: string, images: str
   const modelFlag = model && model !== "default" ? ` --model ${model}` : "";
   const permFlag = skipPerms ? " --dangerously-skip-permissions" : "";
   const imageFlags = images.map((p) => ` ${shquote(p)}`).join("");  // claude reads image paths as positional args
-  const cmd = `claude --session-id ${id}${modelFlag}${permFlag} ${shquote(task.prompt)}${imageFlags}\n`;
+  const cmd = `claude --session-id ${id}${modelFlag}${permFlag} ${shquote(fullPrompt)}${imageFlags}\n`;
   // Small delay so the shell rc has finished and won't swallow the line.
   setTimeout(() => {
     invoke("write_pty", { id: ptyId, data: Array.from(new TextEncoder().encode(cmd)) }).catch(() => {});
@@ -654,7 +707,8 @@ async function runDraft() {
   const cwd = await resolveCwd(draft.branch, draft.cwd, draft.isolate);
   if (!cwd) return;  // worktree creation failed — error shown, keep the modal open
   const images = [...draft.images];
-  const t = await spawnTask(draft.prompt, cwd, draft.model, images, draft.skipPerms);
+  const files = [...draft.files];
+  const t = await spawnTask(draft.prompt, cwd, draft.model, images, draft.skipPerms, files);
   selectedId.value = t.id;        // jump straight into the new task's detail
   resetDraft();
   composerOpen.value = false;
@@ -664,7 +718,7 @@ function enqueueDraft() {
   if (!canRun.value) return;
   // Queued tasks resolve their cwd at spawn time (so worktrees aren't created
   // until they actually run); the isolate flag rides along.
-  queue.value.push({ qid: crypto.randomUUID(), prompt: draft.prompt.trim(), cwd: draft.cwd.trim(), model: draft.model, isolate: draft.isolate, branch: draft.branch.trim(), images: [...draft.images], skipPerms: draft.skipPerms });
+  queue.value.push({ qid: crypto.randomUUID(), prompt: draft.prompt.trim(), cwd: draft.cwd.trim(), model: draft.model, isolate: draft.isolate, branch: draft.branch.trim(), images: [...draft.images], files: [...draft.files], skipPerms: draft.skipPerms });
   resetDraft();
   composerOpen.value = false;
   pumpQueue();
@@ -673,10 +727,12 @@ function enqueueDraft() {
 function resetDraft() {
   draft.prompt = "";
   draft.images = [];
+  draft.files = [];
   draft.isolate = false;
   draft.branch = "";
   draft.skipPerms = false;
   worktreeError.value = "";
+  showFilePicker.value = false;
 }
 
 // Feature 3 — image attachments. Paste or drop images into the composer; each is
@@ -717,6 +773,88 @@ function onComposerDrop(e: DragEvent) {
 
 function removeImage(i: number) {
   draft.images.splice(i, 1);
+}
+
+// ── File tagging (@ references) ──────────────────────────────────────────────
+// Files are included as @/absolute/path in the prompt — Claude Code reads these
+// as file-content injections. Images stay separate (positional argv); plain files
+// go into the prompt string so they're visible to the user in the conversation.
+
+async function pickFiles() {
+  try {
+    const result = await openDialog({
+      multiple: true,
+      directory: false,
+      defaultPath: draft.cwd || undefined,
+    });
+    if (!result) return;
+    const paths = Array.isArray(result) ? result : [result];
+    for (const p of paths) {
+      if (!draft.files.includes(p)) draft.files.push(p);
+    }
+  } catch { /* dialog cancelled */ }
+}
+
+function removeFile(i: number) {
+  draft.files.splice(i, 1);
+}
+
+function fileBasename(p: string) {
+  return p.split("/").pop() || p;
+}
+
+// @-trigger in textarea: when user types @ we run a fuzzy search against the
+// workspace dir and show a small inline picker.
+async function onPromptInput(e: Event) {
+  const ta = e.target as HTMLTextAreaElement;
+  const val = ta.value;
+  const pos = ta.selectionStart;
+  // Find last @ before cursor that isn't preceded by a non-space char
+  const before = val.slice(0, pos);
+  const atIdx = before.lastIndexOf("@");
+  if (atIdx === -1 || (atIdx > 0 && !/\s/.test(before[atIdx - 1]))) {
+    showFilePicker.value = false;
+    return;
+  }
+  const query = before.slice(atIdx + 1);
+  if (query.includes(" ") || query.includes("\n")) {
+    showFilePicker.value = false;
+    return;
+  }
+  fileSearchQuery.value = query;
+  // Search the workspace dir
+  try {
+    const entries = await invoke<{ name: string; path: string; is_dir: boolean }[]>(
+      "read_dir_shallow", { path: draft.cwd }
+    );
+    const q = query.toLowerCase();
+    fileSearchResults.value = entries
+      .filter((e) => !e.is_dir && e.name.toLowerCase().includes(q))
+      .map((e) => e.path)
+      .slice(0, 8);
+    showFilePicker.value = fileSearchResults.value.length > 0;
+    // Position the picker near the textarea cursor (best-effort)
+    if (showFilePicker.value && ta) {
+      const rect = ta.getBoundingClientRect();
+      filePickerAnchor.value = { top: rect.bottom + 4, left: rect.left };
+    }
+  } catch {
+    showFilePicker.value = false;
+  }
+}
+
+function selectFileFromPicker(path: string) {
+  // Replace the @<query> fragment in the textarea with @path
+  const ta = promptTextarea.value;
+  if (!ta) { draft.files.push(path); showFilePicker.value = false; return; }
+  const val = ta.value;
+  const pos = ta.selectionStart;
+  const before = val.slice(0, pos);
+  const atIdx = before.lastIndexOf("@");
+  const after = val.slice(pos);
+  draft.prompt = before.slice(0, atIdx) + `@${path}` + after;
+  showFilePicker.value = false;
+  nextTick(() => { ta.focus(); const np = atIdx + path.length + 1; ta.setSelectionRange(np, np); });
 }
 
 // Feature 4 — hand the task off to a real Burrow terminal tab WITHOUT killing it.
@@ -780,7 +918,7 @@ async function pumpQueue() {
     const next = queue.value.shift()!;
     const cwd = await resolveCwd(next.branch, next.cwd, next.isolate);
     if (!cwd) continue;  // worktree failed — drop this item, keep draining
-    spawnTask(next.prompt, cwd, next.model, next.images, next.skipPerms);
+    spawnTask(next.prompt, cwd, next.model, next.images, next.skipPerms, next.files ?? []);
   }
 }
 
@@ -965,6 +1103,13 @@ function parseTurns(s: string | null): Turn[] {
 
 // Selecting a task jumps the conversation to its newest turn.
 watch(selectedId, () => scrollConvo());
+
+// Keep the activity bar badge in sync with active task count.
+watch(
+  tasks,
+  (ts) => { ui.missionActiveCount = ts.filter((t) => t.alive && (t.status === "running" || t.status === "waiting")).length; },
+  { deep: true },
+);
 
 onMounted(async () => {
   await loadTasks();
@@ -1185,4 +1330,39 @@ onBeforeUnmount(() => {
 .term-box { width: auto; max-width: 94vw; max-height: 90vh; background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; backdrop-filter: var(--backdrop-blur, none); -webkit-backdrop-filter: var(--backdrop-blur, none); }
 .term-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border); font-size: 13px; }
 .term-host { flex: 1; padding: 8px; overflow: auto; }
+
+/* ── Composer improvements ── */
+.cm-head { display: flex; align-items: center; font-size: 14px; font-weight: 600; gap: 8px; }
+.cm-brand { color: var(--accent); flex-shrink: 0; }
+.icon-btn { padding: 4px 6px; }
+
+.prompt-fld { position: relative; }
+.prompt-label-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+.prompt-hint { font-size: 10px; color: var(--text-muted); }
+.prompt-hint kbd { font-family: var(--font-mono); background: var(--bg-hover); border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; font-size: 10px; color: var(--text-secondary); }
+.prompt-wrap { position: relative; }
+.prompt-wrap textarea { width: 100%; box-sizing: border-box; }
+
+/* @-trigger inline file picker */
+.at-picker {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 200;
+  background: var(--bg-panel); border: 1px solid var(--border); border-radius: 9px;
+  box-shadow: 0 12px 32px -8px #000c; overflow: hidden;
+}
+.at-header { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 10px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-family: var(--font-mono); }
+.at-picker ul { list-style: none; margin: 0; padding: 4px; }
+.at-opt { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.at-opt:hover { background: var(--bg-hover); }
+.at-name { font-weight: 500; color: var(--text-primary); white-space: nowrap; }
+.at-path { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* file chip variant */
+.file-chip { color: color-mix(in srgb, var(--accent) 90%, var(--text-secondary)); border-color: color-mix(in srgb, var(--accent) 25%, var(--border)); }
+.file-chip svg { color: var(--accent); }
+
+/* attach row */
+.attach-row { display: flex; align-items: center; gap: 10px; }
+.attach-btn { display: flex; align-items: center; gap: 5px; }
+.attach-hint { font-size: 10.5px; color: var(--text-muted); }
+.attach-hint kbd { font-family: var(--font-mono); background: var(--bg-hover); border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; font-size: 10px; color: var(--text-secondary); }
 </style>

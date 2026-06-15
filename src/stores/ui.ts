@@ -138,6 +138,7 @@ export const useUIStore = defineStore("ui", () => {
   const bgOpacity = ref(loaded.bgOpacity);
   // In-memory blob URL for the current wallpaper (not persisted).
   const bgImageUrl = ref<string>("");
+  const missionActiveCount = ref(0);
 
   // Push the float-window corner to Rust whenever it changes (and on load), so
   // every floating window snaps + stacks at the chosen corner.
@@ -376,5 +377,6 @@ export const useUIStore = defineStore("ui", () => {
     bgOpacity,
     bgImageUrl,
     clearBgImage,
+    missionActiveCount,
   };
 });
