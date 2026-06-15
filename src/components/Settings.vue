@@ -815,6 +815,26 @@
                 Update check failed: {{ update.error }}
               </div>
             </div>
+
+            <div class="update-box">
+              <div class="update-box-row">
+                <div class="update-box-text">
+                  <span class="upd-strong">Agent status hooks</span>
+                  <span class="upd-dim">
+                    Fix agent status dots if they get stuck or stop updating —
+                    re-points revived sessions at the live server and reinstalls
+                    the global hooks.
+                  </span>
+                </div>
+                <div class="update-box-actions">
+                  <button class="reset-btn" :disabled="repairing" @click="repairAgentStatus">
+                    <PhArrowClockwise :size="12" :class="{ spin: repairing }" />
+                    {{ repairing ? "Repairing…" : "Fix agent status" }}
+                  </button>
+                </div>
+              </div>
+              <div v-if="repairMsg" class="update-box-notes">{{ repairMsg }}</div>
+            </div>
           </div>
         </section>
 
@@ -1000,6 +1020,24 @@ import("@tauri-apps/api/app")
   .then((m) => m.getVersion())
   .then((v) => { appVersion.value = v; })
   .catch(() => { appVersion.value = "dev"; });
+
+// Agent-status repair: force-reclaim hook.port + reinstall hooks. Rescues
+// revived/reattached PTYs whose baked port went stale (e.g. after running a dev
+// build that clobbered the shared port file).
+const repairing = ref(false);
+const repairMsg = ref("");
+async function repairAgentStatus() {
+  repairing.value = true;
+  repairMsg.value = "";
+  try {
+    const port = await invoke<number>("repair_agent_status");
+    repairMsg.value = port ? `Status hooks repaired (port ${port}).` : "Status hooks repaired.";
+  } catch (e) {
+    repairMsg.value = `Repair failed: ${e}`;
+  } finally {
+    repairing.value = false;
+  }
+}
 
 const lastCheckedLabel = computed(() => {
   if (!update.lastChecked) return "never";

@@ -154,16 +154,17 @@ case "$sub" in
     # Two possible ports, neither reliable alone:
     #   - $BURROW_HOOK_PORT  is baked into the PTY env at creation → CORRECT for a
     #     fresh PTY in the running app, but STALE for one reattached after restart.
-    #   - $BURROW_HOME_DIR/hook.port is rewritten each launch → CORRECT after a
-    #     restart, but the file is a single shared writer: a second instance (e.g.
-    #     a `tauri:dev` run) overwrites it with ITS port, then dies, leaving the
-    #     surviving app's PTYs pointing at a dead port. (This was the regression:
-    #     file-first trusted that stale port and the status dot never updated.)
+    #   - $BURROW_HOME_DIR/hook.port (line 1 = port, line 2 = owning pid) is
+    #     rewritten each launch → CORRECT after a restart. A transient instance
+    #     (e.g. a `tauri:dev` run) can still clobber it, but the live app now
+    #     self-reclaims the file when its recorded pid is dead, so it converges
+    #     back within ~3s instead of staying stale forever.
     # So try BOTH (env first), POST to whichever actually answers. -f makes curl
-    # fail on a dead port so we fall through to the next candidate.
+    # fail on a dead port so we fall through to the next candidate. head -n1 reads
+    # just the port line (the pid on line 2 is for the app's reclaim loop).
     file_port=""
     [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
-      file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+      file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
     for port in "$BURROW_HOOK_PORT" "$file_port"; do
       [ -n "$port" ] || continue
       if curl -sf -X POST "http://127.0.0.1:$port/hook" \
@@ -197,7 +198,7 @@ case "$sub" in
         if [ -n "$session_id" ]; then
           file_port=""
           [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
-            file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+            file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
           for port in "$BURROW_HOOK_PORT" "$file_port"; do
             [ -n "$port" ] || continue
             curl -sf -X POST "http://127.0.0.1:$port/session-id" \
@@ -349,7 +350,7 @@ PY
     escaped=$(printf '%s' "$text" | sed 's/\\/\\\\/g; s/"/\\"/g')
     file_port=""
     [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
-      file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+      file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
     for port in "$BURROW_HOOK_PORT" "$file_port"; do
       [ -n "$port" ] || continue
       curl -sf -X POST "http://127.0.0.1:$port/set-status" \
@@ -364,7 +365,7 @@ PY
     [ -n "$BURROW_PTY_ID" ] || exit 0
     file_port=""
     [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
-      file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+      file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
     for port in "$BURROW_HOOK_PORT" "$file_port"; do
       [ -n "$port" ] || continue
       curl -sf -X POST "http://127.0.0.1:$port/flash" \
@@ -406,7 +407,7 @@ PY
         if [ -n "$diff_json" ]; then
           file_port=""
           [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
-            file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+            file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
           for port in "$BURROW_HOOK_PORT" "$file_port"; do
             [ -n "$port" ] || continue
             curl -sf -X POST "http://127.0.0.1:$port/open-diff" \
@@ -480,7 +481,7 @@ PY
     fi
     file_port=""
     [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
-      file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+      file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
     for port in "$BURROW_HOOK_PORT" "$file_port"; do
       [ -n "$port" ] || continue
       curl -sf -X POST "http://127.0.0.1:$port/set-progress" \
@@ -506,7 +507,7 @@ PY
     [ -n "$msg_json" ] || msg_json='""'
     file_port=""
     [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
-      file_port=$(cat "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+      file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
     for port in "$BURROW_HOOK_PORT" "$file_port"; do
       [ -n "$port" ] || continue
       curl -sf -X POST "http://127.0.0.1:$port/log" \

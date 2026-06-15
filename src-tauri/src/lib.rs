@@ -510,6 +510,24 @@ fn remove_status_hooks(app: AppHandle) {
     uninstall_status_hooks(&app);
 }
 
+/// One-button repair for agent status dots. Force-reclaims hook.port to THIS
+/// instance's live port (rescues revived/reattached PTYs whose baked
+/// BURROW_HOOK_PORT is stale after a restart) and re-installs the burrow bin +
+/// global status hooks. Returns the live hook-server port for UI feedback.
+#[tauri::command]
+fn repair_agent_status(app: AppHandle) -> u16 {
+    let port = get_hook_server_port();
+    if port != 0 {
+        if let Ok(data) = app.path().app_data_dir() {
+            let _ = std::fs::create_dir_all(&data);
+            write_hook_port(&data, port);
+        }
+    }
+    ensure_burrow_bin(&app);
+    install_status_hooks(&app);
+    port
+}
+
 /// The agent config dirs hooks/docs are installed into (seeded with defaults + env).
 #[tauri::command]
 fn get_config_dirs(app: AppHandle) -> ConfigDirs {
@@ -650,6 +668,30 @@ burrow trigger-flash         # ping user: \"this tab finished\"\n\
 
 static HOOK_SERVER_PORT: OnceLock<u16> = OnceLock::new();
 
+// Write hook.port atomically (temp + rename) so a reader never sees a half-written
+// file. Format: line 1 = port, line 2 = owning pid — the pid lets readers and the
+// reclaim loop detect a stale file left behind by a now-dead instance.
+fn write_hook_port(data: &Path, port: u16) {
+    let tmp = data.join("hook.port.tmp");
+    let body = format!("{}\n{}", port, std::process::id());
+    if std::fs::write(&tmp, body).is_ok() {
+        let _ = std::fs::rename(&tmp, data.join("hook.port"));
+    }
+}
+
+// Probe whether a pid is alive without signalling it (`kill -0`). Used by the
+// hook.port reclaim loop to avoid two live instances fighting over the file.
+fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn start_hook_server(app: AppHandle) {
     let server = tiny_http::Server::http("127.0.0.1:0").expect("hook server bind failed");
     let port = server.server_addr().to_ip().expect("hook server has no IP addr").port();
@@ -658,7 +700,29 @@ fn start_hook_server(app: AppHandle) {
     // the CURRENT server after an app restart (the port is random each launch).
     if let Ok(data) = app.path().app_data_dir() {
         let _ = std::fs::create_dir_all(&data);
-        let _ = std::fs::write(data.join("hook.port"), port.to_string());
+        write_hook_port(&data, port);
+        // Self-reclaim: a transient instance (e.g. a `tauri:dev` run sharing this
+        // app-data dir) overwrites hook.port with ITS port, then dies — leaving the
+        // surviving app's PTYs pointing at a dead port (the documented stale-port
+        // regression). Reclaim the file, but ONLY when its recorded pid is dead:
+        // two LIVE instances must not fight over the single shared file. Live PTYs
+        // use their baked BURROW_HOOK_PORT anyway; the file only matters for the
+        // post-restart reattach path, where there's normally just one instance.
+        let reclaim_dir = data.clone();
+        std::thread::spawn(move || {
+            let me = std::process::id();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let owned = std::fs::read_to_string(reclaim_dir.join("hook.port"))
+                    .ok()
+                    .and_then(|s| s.lines().nth(1).and_then(|p| p.trim().parse::<u32>().ok()));
+                match owned {
+                    Some(pid) if pid == me => {}              // already ours
+                    Some(pid) if pid_alive(pid) => {}         // another live instance — leave it
+                    _ => write_hook_port(&reclaim_dir, port), // stale / dead / legacy-format → reclaim
+                }
+            }
+        });
     }
 
     std::thread::spawn(move || {
@@ -3001,6 +3065,7 @@ pub fn run() {
             read_file_base64,
             save_temp_image,
             get_hook_server_port,
+            repair_agent_status,
             set_max_agents,
             register_tmux_win,
             list_skills,
