@@ -241,9 +241,13 @@ import {
 } from "@phosphor-icons/vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
+import { useNotificationsStore } from "@/stores/notifications";
+import { playSound } from "@/lib/sounds";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 
 const wsStore = useWorkspaceStore();
 const ui = useUIStore();
+const notifStore = useNotificationsStore();
 // App.vue provides the active workspace's Terminal component (for "send to tab").
 const activeTerm = inject<() => { spawnAgent: (cmd: string) => void } | undefined>("activeTerm", () => undefined);
 
@@ -462,6 +466,7 @@ async function wireTask(task: Task) {
     const state = String(ev.payload);
     const t = tasks.value.find((x) => x.id === task.id);
     if (!t) return;
+    const prev = t.status;
     if (state === "running") t.status = "running";
     else if (state === "waiting") t.status = "waiting";
     else if (state === "done") {
@@ -470,10 +475,39 @@ async function wireTask(task: Task) {
       setTimeout(() => captureResult(t), 600);
       pumpQueue();   // free slot → start the next queued prompt
     }
+    // Notify only on a real transition INTO done/waiting, and only when the user
+    // isn't already looking at this task (Superset-style "finished while away").
+    if (t.status !== prev) {
+      if (t.status === "done") notifyTask(t, "done");
+      else if (t.status === "waiting") notifyTask(t, "waiting");
+    }
     saveTask(t);
   }));
 
   unlisteners.set(task.ptyId, offs);
+}
+
+// Feature #9 — notifications. The user is "watching" a task only when the Mission
+// Control view is up, that task is selected, and the window is focused. If so, the
+// transition is already visible → stay quiet. Otherwise: toast + sound, plus a
+// system notification when the window isn't focused (mirrors Terminal.vue).
+function isWatching(t: Task): boolean {
+  return ui.mode === "mission" && selectedId.value === t.id && document.hasFocus();
+}
+
+async function notifyTask(t: Task, kind: "done" | "waiting") {
+  if (isWatching(t)) return;
+  const title = kind === "done" ? "Task complete" : "Task needs input";
+  const body = t.title || (kind === "done" ? "Agent finished" : "Claude is waiting");
+  notifStore.push({ type: kind === "done" ? "done" : "info", title, body, workspaceId: t.workspaceId ?? undefined });
+  playSound(kind);
+  if (!document.hasFocus()) {
+    try {
+      let granted = await isPermissionGranted();
+      if (!granted) granted = (await requestPermission()) === "granted";
+      if (granted) sendNotification({ title: "Burrow", body: `${kind === "done" ? "✓" : "⏳"} ${body}` });
+    } catch { /* notifications optional */ }
+  }
 }
 
 async function captureResult(t: Task) {
@@ -490,6 +524,10 @@ async function captureResult(t: Task) {
       if (!last || last.text !== reason) {
         t.turns.push({ role: "assistant", text: reason });
         if (t.id === selectedId.value) scrollConvo();
+      }
+      if (!isWatching(t)) {
+        notifStore.push({ type: "error", title: "Task error", body: `${t.title} — ${reason.split("\n")[0]}`, workspaceId: t.workspaceId ?? undefined });
+        playSound("waiting");
       }
       saveTask(t);
       return;

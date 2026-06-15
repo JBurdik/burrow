@@ -48,10 +48,13 @@ After a task finishes (esp. a worktree task), one-click open a PR for its branch
 Burrow already has `run_git`; add a Rust command to push + create the PR (gh CLI
 or a forge API). tank gates this behind `git_provider`.
 
-### #9 — Notifications
-`done`/`waiting` while the user is away → toast + sound. Burrow already has a
-`notifications` store and the sound system (Settings → sounds). Wire mission task
-transitions into it (respect "is watching" like Terminal.vue's `settleDone`).
+### #9 — Notifications ✅ DONE
+`done`/`waiting`/`error` transitions → toast (`notifications` store) + sound
+(`playSound`, gated by Settings → sounds) + a system notification when the window
+is unfocused. Gated by `isWatching(t)` = mission view up + task selected + window
+focused, so a transition you're already looking at stays quiet. In `wireTask`'s
+hook handler (notify only on a real change into the state) + `captureResult` for
+the API-error case.
 
 ### Permission requests / AskUserQuestion
 Today a task runs claude in a raw interactive PTY. Permission prompts and the
