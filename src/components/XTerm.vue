@@ -242,10 +242,23 @@ async function onPaste(e: ClipboardEvent) {
 // fonts.ready re-measures with the real metrics and resizes the PTY to match.
 let lastPtyCols = 0;
 let lastPtyRows = 0;
+// Viewport is "stuck to bottom" when the visible region is the live tail.
+// While stuck, new output and reflows keep auto-scrolling; once the user scrolls
+// up to read history, we leave the viewport alone until they return to the tail.
+function isAtBottom(): boolean {
+  if (!term) return true;
+  const b = term.buffer.active;
+  return b.viewportY >= b.baseY;
+}
+
 function safeFit(): boolean {
   if (!term || !fitAddon || !hostEl.value) return false;
   if (hostEl.value.offsetWidth === 0 || hostEl.value.offsetHeight === 0) return false;
+  const stick = isAtBottom();
   fitAddon.fit();
+  // A fit re-wraps scrollback (esp. when a hidden tab gets its real size on
+  // reactivate), which can leave the viewport mid-buffer — re-pin to the tail.
+  if (stick) term.scrollToBottom();
   // Only resize the PTY when the grid actually changed. Every resize_pty fires a
   // SIGWINCH which makes an alt-screen TUI (Claude Code, vim) repaint; firing it
   // on every observer tick spams repaints mid-stream and scrambles the screen.
@@ -463,7 +476,10 @@ onMounted(async () => {
   // Stream output from Rust → xterm
   unlisten = await listen<number[]>(`pty-data-${props.ptyId}`, (event) => {
     const bytes = new Uint8Array(event.payload);
-    term.write(bytes);
+    // Capture stick BEFORE the write grows the buffer; re-pin in the parse
+    // callback so a fast agent flood can't leave the viewport stranded.
+    const stick = isAtBottom();
+    term.write(bytes, () => { if (stick) term.scrollToBottom(); });
     bytesRx += bytes.length;
     writes++;
     const text = new TextDecoder().decode(bytes);
