@@ -31,6 +31,7 @@
           <span class="chip" :class="{ on: counts.running }"><em class="dot running" />{{ counts.running }}<small>running</small></span>
           <span class="chip" :class="{ on: counts.permission }"><em class="dot permission" />{{ counts.permission }}<small>permission</small></span>
           <span class="chip" :class="{ on: counts.waiting }"><em class="dot waiting" />{{ counts.waiting }}<small>waiting</small></span>
+          <span class="chip" :class="{ on: counts.error }"><em class="dot error" />{{ counts.error }}<small>error</small></span>
           <span class="chip" :class="{ on: counts.review }"><em class="dot review" />{{ counts.review }}<small>review</small></span>
           <span class="chip" :class="{ on: counts.done }"><em class="dot done" />{{ counts.done }}<small>done</small></span>
         </div>
@@ -149,7 +150,7 @@ const allTabs = computed(() =>
 );
 
 const counts = computed(() => {
-  const c = { running: 0, permission: 0, waiting: 0, review: 0, done: 0 };
+  const c = { running: 0, permission: 0, waiting: 0, error: 0, review: 0, done: 0 };
   for (const t of allTabs.value) {
     if (t.status in c) (c as Record<string, number>)[t.status]++;
   }
@@ -157,7 +158,7 @@ const counts = computed(() => {
 });
 
 // Tabs that want the user's eyes, highest-priority first.
-const ATTN_ORDER: TermStatus[] = ["permission", "waiting", "review", "done"];
+const ATTN_ORDER: TermStatus[] = ["error", "permission", "waiting", "review", "done"];
 const attention = computed(() => {
   const wsName = (id: number) => ws.workspaces.find((w) => w.id === id)?.name ?? "?";
   return allTabs.value
@@ -388,6 +389,7 @@ watch(() => ws.workspaces.length, () => refreshGit());
 .dot.permission { background: var(--accent); box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 53%, transparent); animation: pulse 1.4s infinite; }
 .dot.review { background: var(--green); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 53%, transparent); animation: pulse 1.8s infinite; }
 .dot.done { background: var(--green); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 53%, transparent); }
+.dot.error { background: var(--red); box-shadow: 0 0 8px color-mix(in srgb, var(--red) 60%, transparent); animation: pulse 1.4s infinite; }
 
 .btn.ghost { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: 7px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
 .btn.ghost:hover { color: var(--text-primary); }

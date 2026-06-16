@@ -11,11 +11,14 @@
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type TermStatus = "idle" | "running" | "waiting" | "permission" | "done" | "review";
+export type TermStatus = "idle" | "running" | "waiting" | "permission" | "done" | "review" | "error";
 
 /** Priority high→low. Single definition consumed by Terminal.tabStatus, Sidebar.aggStatus,
- *  and FloatBubble — no more separate hard-coded priority lists. */
+ *  and FloatBubble — no more separate hard-coded priority lists.
+ *  `error` is the MOST urgent: a turn that failed (StopFailure: rate_limit, overloaded,
+ *  auth, billing…) outranks even a permission prompt — the user must see it first. */
 export const STATUS_PRIORITY: readonly TermStatus[] = [
+  "error",
   "permission",
   "waiting",
   "running",
@@ -25,7 +28,7 @@ export const STATUS_PRIORITY: readonly TermStatus[] = [
 ] as const;
 
 /** Semantic agent hook event forwarded from XTerm.vue → Terminal.vue → here. */
-export type AgentEvent = "running" | "waiting" | "permission" | "done";
+export type AgentEvent = "running" | "waiting" | "permission" | "done" | "error";
 
 /** Minimal leaf view the reducer needs. The full Leaf type from TerminalSplitView.vue
  *  satisfies this — no cast needed. */
@@ -105,6 +108,8 @@ export function applyAgentEvent(
     if (entering) ctx.playSound("waiting");
   } else if (ev === "done") {
     _settle(leaf, ctx);
+  } else if (ev === "error") {
+    _settleError(leaf, ctx);
   }
 }
 
@@ -156,10 +161,12 @@ export function applyInterrupt(leaf: StatusLeaf, ctx: ReducerCtx): void {
 }
 
 /**
- * Mark a done/review leaf as seen (user opened/returned to the tab) → idle.
+ * Mark a done/review/error leaf as seen (user opened/returned to the tab) → idle.
+ * `error` persists exactly like `review` — it must NOT silently clear while the
+ * user is away; only seeing the tab dismisses it.
  */
 export function markSeen(leaf: StatusLeaf, ctx: ReducerCtx): void {
-  if (leaf.status !== "done" && leaf.status !== "review") return;
+  if (leaf.status !== "done" && leaf.status !== "review" && leaf.status !== "error") return;
   ctx.clearDoneTimer(leaf.id);
   leaf.busy = false;
   leaf.status = "idle";
@@ -180,6 +187,18 @@ function _settle(leaf: StatusLeaf, ctx: ReducerCtx): void {
     ctx.playSound("done");
   }
   ctx.onSettled(leaf);
+}
+
+/** Internal: settle a FAILED turn (Claude StopFailure: rate_limit, overloaded,
+ *  authentication_failed, billing_error, server_error…). Unlike `done`, an error
+ *  is urgent and ALWAYS persists (never the 4s auto-clear, regardless of whether
+ *  the user is watching) — only markSeen dismisses it. No onSettled: this is NOT a
+ *  "task complete" — firing the done notification/git-refresh would mislead. */
+function _settleError(leaf: StatusLeaf, ctx: ReducerCtx): void {
+  ctx.clearDoneTimer(leaf.id);
+  leaf.busy = false;
+  leaf.status = "error";
+  ctx.playSound("done");
 }
 
 // ── Name derivation ───────────────────────────────────────────────────────────

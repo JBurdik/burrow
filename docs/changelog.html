@@ -79,11 +79,56 @@
   <h1>Burrow — Changelog</h1>
   <div class="tagline">Historie verzí v češtině. Co se změnilo a proč.</div>
 
+  <!-- v2.5.0 -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v2.5.0</span>
+      <span class="tag tag-latest">aktuální</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Nové funkce</div>
+      <ul>
+        <li><strong>Stav „error" — selhání tahu je vidět</strong> — Claude Code posílá hook <code>StopFailure</code>, když tah skončí chybou API (rate limit, přetížení, selhání ověření, <code>billing_error</code>, chyba serveru…). Nově se tab/úkol obarví <strong>červeným pulzujícím bodem</strong> + ukáže <em>proč</em> (např. <code>error: billing_error</code>). Je to <strong>nejurgentnější stav</strong> — přebíjí i permission a drží, dokud ho neuvidíš. Dřív agent po pádu zůstal viset na zaseklém bodu bez vysvětlení; teď okamžitě víte, že došlo třeba na limit předplatného.</li>
+        <li><strong>SessionStart — model a titulek bez hádání</strong> — hook <code>SessionStart</code> nese <code>model</code>, <code>session_title</code> a <code>source</code> (startup/resume). Tab i úkol v Mission Control se popíšou správně a ukážou běžící model, místo aby se odhadoval z výstupu PTY. Reattach po restartu se rozpozná přes <code>source:"resume"</code>.</li>
+        <li><strong>Mission Control se chová jako klasický terminál</strong> — MC dřív mělo vlastní zjednodušený model stavů (permission splynulo s waiting, žádné review). Nově zrcadlí <strong>kanonickou sadu stavů</strong> terminálových tabů: <strong>permission</strong> (jantarový bod — agent čeká na souhlas) je odlišený od <strong>waiting</strong> (modrá), a přibyl <strong>review</strong> (zelený puls — úkol dokončil, zatímco jste byli pryč; drží, dokud ho neotevřete). Jediný záměrný rozdíl od terminálu: dokončený úkol navíc zachytí transcript výsledku.</li>
+        <li><strong>Mapování Notification</strong> — hook <code>Notification</code> nově rozlišuje typ: <code>permission_prompt</code> → permission, <code>idle_prompt</code> → waiting; ostatní typy zůstávají bez efektu (telemetrie).</li>
+      </ul>
+    </div>
+
+    <div class="section fix">
+      <div class="section-label">Opravy</div>
+      <ul>
+        <li><strong>Permission stav správně zapojen + self-healing statusu</strong> — dropnutý statusový POST během ~3s okna přeobsazení portu se teď sám zhojí: sticky stavy (waiting/permission/done/error) zkoušejí až 3× s re-readem <code>hook.port</code> mezi pokusy. Opraven i zaseklý „waiting" v Mission Control.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- v2.4.0 -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v2.4.0</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Nové funkce &amp; opravy</div>
+      <ul>
+        <li><strong>UI vylepšení + statusy</strong> — sada vylepšení rozhraní a status indikátorů napříč postranním panelem a taby.</li>
+        <li><strong>Self-reclaim zastaralého <code>hook.port</code></strong> — server statusových hooků si při startu znovu zabere port; přidáno tlačítko opravy v Nastavení.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
   <!-- v2.3.3 -->
   <div class="release">
     <div class="release-header">
       <span class="version">v2.3.3</span>
-      <span class="tag tag-latest">aktuální</span>
       <span class="date">červen 2026</span>
     </div>
 

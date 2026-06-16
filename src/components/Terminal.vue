@@ -14,6 +14,7 @@
         }"
         :data-reorder-idx="tabIdx"
         data-reorder-group="tab"
+        :title="tabTooltip(tab)"
         @click.stop="activateTab(tab.id)"
         @pointerdown="(e: PointerEvent) => tabDragDown(tabIdx, e, 'tab')"
       >
@@ -27,6 +28,7 @@
           v-else-if="tabStatus(tab) !== 'idle'"
           class="status-dot"
           :class="`status-${tabStatus(tab)}`"
+          :title="tabStatus(tab) === 'error' ? tabStatusDetail(tab) : undefined"
         >{{ tabStatus(tab) === 'running' ? spinnerFrame : '' }}</span>
         <span class="tab-label" :class="{ 'tab-flash': getAllLeaves(tab.root).some(l => flashingLeafs.has(l.id)) }">{{ tabTitle(tab) }}</span>
         <span v-if="tabStatusText(tab)" class="tab-status-text">{{ tabStatusText(tab) }}</span>
@@ -113,6 +115,7 @@
               v-else-if="pane.leaf.status !== 'idle'"
               class="status-dot"
               :class="`status-${pane.leaf.status}`"
+              :title="pane.leaf.status === 'error' ? pane.leaf.statusDetail : undefined"
             >{{ pane.leaf.status === 'running' ? spinnerFrame : '' }}</span>
             <span class="pane-title-text">{{ pane.leaf.title }}</span>
             <button class="pane-title-close" @click.stop="closePane(pane.leaf.id)" title="Close pane">
@@ -157,7 +160,8 @@
             @title="(t) => onLeafTitle(pane.leaf.id, t)"
             @busy="(b) => onLeafBusy(pane.leaf.id, b)"
             @agent="(b) => onLeafAgent(pane.leaf.id, b)"
-            @agent-state="(s) => onAgentState(pane.leaf.id, s)"
+            @agent-state="(s, d) => onAgentState(pane.leaf.id, s, d)"
+            @agent-meta="(m) => onAgentMeta(pane.leaf.id, m)"
             @needs-input="(b) => onLeafNeedsInput(pane.leaf.id, b)"
             @interrupt="() => onLeafInterrupt(pane.leaf.id)"
             @spawn="(req) => addTab(req.cmd, { cwd: req.cwd || undefined, resultToken: req.token || undefined })"
@@ -696,16 +700,40 @@ function markTabSeen(tab: Tab) {
 // XTerm. ONE semantic event → one clean transition, so a trailing "waiting" can
 // never clobber a fresh "done". A new turn arrives as "running", which is the
 // only thing that resurrects a finished leaf — exactly right.
-function onAgentState(id: number, s: string) {
+function onAgentState(id: number, s: string, detail?: string) {
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
+    if (s === "error") {
+      // Failed turn (StopFailure). Stash the cause (rate_limit|overloaded|…) for the
+      // tooltip, then settle to the red, persists-until-seen `error` status.
+      leaf.statusDetail = detail || undefined;
+      applyAgentEvent(leaf, "error", makeCtx(tab));
+      break;
+    }
     if (s === "running" || s === "waiting" || s === "permission" || s === "done") {
       // New round = a distinct "running" episode (UserPromptSubmit or first launch).
       if (s === "running" && leaf.status !== "running") {
         leaf.round = (leaf.round ?? 0) + 1;
+        leaf.statusDetail = undefined;   // a fresh turn clears any stale error cause
       }
       applyAgentEvent(leaf, s as AgentEvent, makeCtx(tab));
+    }
+    break;
+  }
+}
+
+// SessionStart metadata (model + title) — NOT a status. Stash the model for an
+// unobtrusive tab tooltip; prefer the session title only over a generic
+// "Terminal N" default so an agent-set descriptive title is never clobbered.
+function onAgentMeta(id: number, meta: { model: string; source: string; title: string }) {
+  for (const tab of tabs.value) {
+    const leaf = findLeaf(tab.root, id);
+    if (!leaf) continue;
+    if (meta.model) leaf.model = meta.model;
+    if (meta.title) {
+      leaf.sessionTitle = meta.title;
+      if (isDefaultTitle(leaf.title)) leaf.title = meta.title;
     }
     break;
   }
@@ -761,6 +789,25 @@ function tabStatusText(tab: Tab): string {
     if (l.statusText) return l.statusText;
   }
   return "";
+}
+
+// Error cause (rate_limit|overloaded|…) for the red dot's tooltip.
+function tabStatusDetail(tab: Tab): string {
+  for (const l of getAllLeaves(tab.root)) {
+    if (l.status === "error" && l.statusDetail) return l.statusDetail;
+  }
+  return "";
+}
+
+// Unobtrusive tab tooltip: agent model (from SessionStart) + any error cause.
+function tabTooltip(tab: Tab): string | undefined {
+  const parts: string[] = [];
+  for (const l of getAllLeaves(tab.root)) {
+    if (l.model) { parts.push(`Model: ${l.model}`); break; }
+  }
+  const detail = tabStatusDetail(tab);
+  if (detail) parts.push(`Error: ${detail}`);
+  return parts.length ? parts.join(" · ") : undefined;
 }
 
 function tabProgress(tab: Tab): number | undefined {

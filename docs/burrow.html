@@ -145,10 +145,14 @@ burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
     the sub-agent's status dot would stick orange after it finished.
   </div>
 
-  <h3><code>burrow status &lt;running|waiting|permission|done&gt;</code></h3>
+  <h3><code>burrow status &lt;running|waiting|permission|done|error|session&gt; [meta…]</code></h3>
   <p>
     Reports the current tab's agent state to Burrow's <strong>hook HTTP server</strong> (a <code>POST /hook</code> with
-    <code>{ptyId,state}</code>). Reads <code>BURROW_PTY_ID</code> + the port. Port resolution is <strong>file-first</strong>: the
+    <code>{ptyId,state,…}</code>). Two states carry optional metadata flags: <code>error --detail &lt;error_type&gt;</code>
+    (e.g. <code>billing_error</code>) POSTs <code>{ptyId,state:"error",detail}</code>, and
+    <code>session --model M --source S --title T</code> POSTs <code>{ptyId,state:"session",model,source,title}</code> (source =
+    <code>startup|resume|clear|compact</code>). Metadata values are JSON-escaped. Reads <code>BURROW_PTY_ID</code> + the port.
+    Port resolution is <strong>file-first</strong>: the
     live <code>&lt;BURROW_HOME_DIR&gt;/hook.port</code> file is authoritative (the app rewrites it every launch with the current
     random server port), and <code>BURROW_HOOK_PORT</code> is only a fallback. (Env-first was a bug: a daemon-reattached PTY
     carries a stale baked-in port and POSTed to a dead server, so the dot never updated.) A no-op outside Burrow. The frontend
@@ -158,7 +162,8 @@ burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
   <div class="callout" style="border-left:3px solid var(--green);padding-left:12px">
     <strong>Sticky states self-heal a dropped POST.</strong> If the server is momentarily unreachable (the ~3&nbsp;s window the
     app self-reclaims a stale <code>hook.port</code>), a lost status update would leave the dot stuck. So
-    <code>waiting</code>/<code>permission</code>/<code>done</code> — the states that <em>persist</em> until the next turn — retry up
+    <code>waiting</code>/<code>permission</code>/<code>done</code>/<code>error</code>/<code>session</code> — the states that
+    <em>persist</em> until the next turn — retry up
     to 3× with a 1&nbsp;s sleep + <code>hook.port</code> re-read between attempts. <code>running</code> takes a single fast
     attempt: it fires on every tool call and a lost one self-corrects on the very next event, so it must never block the agent
     with sleeps (e.g. if the app is fully down).
@@ -182,10 +187,22 @@ burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
       running. That's an interim stop (the agent parked on background sub-agents and Claude auto-resumes the same session);
       reporting done there was the premature-completion bug. The <code>background_tasks</code> status check is scoped to that
       array slice, so an unrelated <code>"status":"running"</code> elsewhere in the JSON can't false-positive.</li>
-    <li><code>Notification</code> / <code>SubagentStop</code> / <code>SessionEnd</code> → <strong>no-op</strong> (telemetry /
-      idle pings, not a turn boundary). Real permission requests arrive as <code>PermissionRequest</code>, not
-      <code>Notification</code> — so no message-sniffing heuristic is needed.</li>
+    <li><code>SessionStart</code> → <strong>session</strong> — forwards <code>model</code> / <code>source</code> /
+      <code>session_title</code> as metadata so Burrow can label the tab (fires on session begin/resume).</li>
+    <li><code>StopFailure</code> → <strong>error</strong> — the turn ended on an API error; the <code>error_type</code> field
+      (<code>rate_limit</code>, <code>billing_error</code>, <code>server_error</code>, …) is passed through as <code>detail</code>.</li>
+    <li><code>Notification</code> → refined by the <code>type</code> field: <code>permission_prompt</code> →
+      <strong>permission</strong>, <code>idle_prompt</code> → <strong>waiting</strong>, everything else <strong>no-op</strong>
+      (the old blanket behavior). Real permission requests still arrive as <code>PermissionRequest</code>; this just rescues
+      clients that surface it as a <code>Notification</code> instead.</li>
+    <li><code>SubagentStop</code> / <code>SessionEnd</code> → <strong>no-op</strong> (telemetry, not a turn boundary).</li>
   </ul>
+  <p style="color:var(--muted);font-size:13px">
+    <code>SessionStart</code> / <code>StopFailure</code> and the <code>Notification</code> <code>type</code> discrimination are
+    Claude-only hook events — <code>install_status_hooks</code> registers them in <code>~/.claude/settings.json</code> only; Codex
+    stays on its existing lifecycle events. The hook server re-emits <code>error</code>/<code>session</code> on the same
+    <code>pty-hook-{id}</code> Tauri event as an object (extra fields passed through); the four legacy states stay bare strings.
+  </p>
   <p>
     Because it's <strong>global + env-driven</strong>, status works for <em>every</em> agent session — launched-by-button, typed
     by hand, or reattached after restart — not just per-launch ones. The merge is non-destructive (append + dedupe +

@@ -177,6 +177,7 @@
       <h3>Mission Control — tank-style task dashboard <span style="font-size:10px;color:var(--muted)">POC</span></h3>
       <ul>
         <li>In-window view (<code>ui.mode === 'mission'</code>, 🚀 in the ActivityBar) running headless <code>claude</code> PTYs as disposable tasks — spawn, status dots, follow-up conversation, live-attach xterm, result capture, sequential queue</li>
+        <li>Status dots: running/waiting/<strong>error</strong> (red pulse — failed turn, shows <code>statusDetail</code> e.g. <code>rate_limit</code>/<code>billing_error</code>)/done. The <code>pty-hook-{id}</code> listener parses both the legacy bare-string payload and the structured object <code>{state,detail?,model?,source?,title?}</code>: <code>error</code> is terminal+sticky (notifies, not silently resumed) and <code>session</code> (SessionStart) populates <code>model</code>/<code>title</code> without touching status</li>
         <li>Reuses Burrow's native PTY + global hook server (no new wiring); tasks persist in the shared <code>workspaces.db</code> (<code>mission_tasks</code> table), grouped by workspace</li>
         <li>Scope = the sidebar's active workspace (<code>wsStore.active</code>), mirrored read-only in the rail; no active workspace → centered <q>pick a workspace</q> blank state. Chrome uses Phosphor icons (no emoji)</li>
         <li><code>src/components/MissionControl.vue</code> + Rust <code>read_claude_result</code> / <code>list|upsert|delete_mission_task</code></li>
@@ -343,6 +344,25 @@
       permission</code>; <code>terminalStatus.ts</code> handles it like <code>waiting</code>
       (busy=true, plays waiting sound) but with its own <code>TermStatus</code> value so the UI
       can style it differently. Ctrl+C clears permission state (same as running/waiting).</p>
+    </div>
+    <div class="card">
+      <h3>Feat: Error state + session metadata</h3>
+      <p>Two new signals ride the <code>pty-hook-{id}</code> channel (payload is now a bare state string
+      for the legacy states, or an object <code>{state, detail?|model?|source?|title?}</code> for the two
+      new ones).</p>
+      <p><strong>error</strong> — Claude's <code>StopFailure</code> hook (turn ended on an API error:
+      <code>rate_limit</code>, <code>overloaded</code>, <code>authentication_failed</code>, <code>billing_error</code>,
+      <code>server_error</code>…). The <code>error_type</code> rides through as <code>detail</code>. Surfaces as a
+      <strong>red pulsing dot</strong> and is the <strong>highest-priority status</strong> in
+      <code>STATUS_PRIORITY</code> (<code>error &gt; permission &gt; waiting &gt; running &gt; review &gt; done &gt;
+      idle</code>) — the user must see a failed turn first. Like <code>review</code> it <strong>persists until
+      the tab is seen</strong> (<code>markTabSeen</code>); it never auto-clears, even while watching. The
+      <code>detail</code> string shows as the dot's tooltip. A fresh <code>running</code> turn clears it.</p>
+      <p><strong>session</strong> (<code>SessionStart</code>) — NOT a status: pure metadata
+      (<code>model</code>/<code>source</code>/<code>title</code>). <code>XTerm.vue</code> forwards it via a separate
+      <code>agentMeta</code> emit; <code>Terminal.vue</code> stashes <code>leaf.model</code> + <code>leaf.sessionTitle</code>,
+      prefers the session title only over a generic "Terminal N" default (never clobbers an agent-set task title), and
+      shows the model unobtrusively as the tab tooltip.</p>
     </div>
     <div class="card">
       <h3>Fix: Status pipeline reliability</h3>

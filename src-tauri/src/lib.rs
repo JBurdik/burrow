@@ -388,15 +388,27 @@ fn install_status_hooks(app: &AppHandle) {
 
     let dirs = load_config_dirs(app);
 
-    // Claude: status events. SessionStart fires when a session (re)starts mid-tab.
-    // Notification is telemetry (cmux model: real permission requests come via
-    // PermissionRequest, not Notification), so we no longer hook it.
-    let claude_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "PermissionRequest"];
+    // Claude: status events. `burrow hook` maps each event → a Burrow state:
+    //   SessionStart   → session  (carries model/source/title; labels the tab)
+    //   StopFailure    → error    (turn ended on an API error; detail=error_type)
+    //   Notification   → permission|waiting for the actionable `type`s
+    //                    (permission_prompt/idle_prompt), no-op otherwise.
+    // Notification is registered again (it WAS dropped as pure telemetry) now that
+    // `burrow hook` discriminates on the notification `type` rather than treating
+    // every Notification as actionable.
+    let claude_events = [
+        "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "PermissionRequest",
+        "SessionStart", "StopFailure", "Notification",
+    ];
     for d in &dirs.claude {
         merge_status_hooks(&Path::new(d).join("settings.json"), &claude_events, &cmd);
     }
 
-    // Codex: same hook schema, in <codex-dir>/hooks.json.
+    // Codex: same hook schema, in <codex-dir>/hooks.json. SessionStart/StopFailure
+    // and the Notification `type` discrimination are Claude-specific hook events —
+    // Codex's hook surface doesn't define them, so we scope those to Claude only
+    // and leave Codex on its existing lifecycle events (its notify path handles
+    // approvals/turn-complete instead).
     let codex_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
     for d in &dirs.codex {
         merge_status_hooks(&Path::new(d).join("hooks.json"), &codex_events, &cmd);
@@ -738,7 +750,26 @@ fn start_hook_server(app: AppHandle) {
                         if let (Some(pty_id), Some(state)) =
                             (val["ptyId"].as_u64(), val["state"].as_str())
                         {
-                            let _ = app.emit(&format!("pty-hook-{pty_id}"), state.to_string());
+                            // `error` and `session` carry extra metadata, so emit an
+                            // OBJECT {state, detail?|model?|source?|title?}. The four
+                            // legacy states (running/waiting/permission/done) keep the
+                            // bare-string shape XTerm.vue already consumes. Same
+                            // `pty-hook-{id}` channel either way — no new event.
+                            if state == "error" || state == "session" {
+                                let mut payload = serde_json::Map::new();
+                                payload.insert("state".into(), serde_json::json!(state));
+                                for k in ["detail", "model", "source", "title"] {
+                                    if let Some(v) = val.get(k).and_then(|v| v.as_str()) {
+                                        payload.insert(k.into(), serde_json::json!(v));
+                                    }
+                                }
+                                let _ = app.emit(
+                                    &format!("pty-hook-{pty_id}"),
+                                    serde_json::Value::Object(payload),
+                                );
+                            } else {
+                                let _ = app.emit(&format!("pty-hook-{pty_id}"), state.to_string());
+                            }
                         }
                     }
                     "/write" => {

@@ -144,12 +144,28 @@ case "$sub" in
     ;;
 
   status)
-    # burrow status <running|waiting|permission|done>
+    # burrow status <running|waiting|permission|done|error|session> [meta...]
+    #   --detail D   error type string  (state=error,   e.g. billing_error)
+    #   --model M    active model        (state=session)
+    #   --source S   startup|resume|...  (state=session)
+    #   --title  T   session title       (state=session)
     # Report this tab's agent state to Burrow's hook server. Any agent can call
     # this from a hook/notify program. Needs BURROW_PTY_ID + BURROW_HOOK_PORT
     # (exported into every Burrow PTY). No-op outside Burrow.
     state="$1"
-    [ -n "$state" ] || { echo "burrow status: no state (running|waiting|permission|done)" >&2; exit 1; }
+    [ -n "$state" ] || { echo "burrow status: no state (running|waiting|permission|done|error|session)" >&2; exit 1; }
+    shift
+    # Optional metadata — only error/session use any of these.
+    detail=""; s_model=""; s_source=""; s_title=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --detail) detail="$2";   shift 2 ;;
+        --model)  s_model="$2";  shift 2 ;;
+        --source) s_source="$2"; shift 2 ;;
+        --title)  s_title="$2";  shift 2 ;;
+        *)        shift ;;
+      esac
+    done
     [ -n "$BURROW_PTY_ID" ] || exit 0
     # Two possible ports, neither reliable alone:
     #   - $BURROW_HOOK_PORT  is baked into the PTY env at creation → CORRECT for a
@@ -169,13 +185,23 @@ case "$sub" in
     file_port=""
     [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
       file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
-    # Only the STICKY states (waiting/permission/done) get the slow retry loop: if
-    # one is lost the dot is stuck until the next turn. `running` fires on every
-    # tool call and a lost one self-corrects on the very next event, so it takes a
-    # single fast attempt — never block the agent with sleeps when the app is down.
+    # Build the JSON payload: base {ptyId,state} plus any provided metadata. Values
+    # are JSON-escaped (backslash + double-quote) so titles/details can't break it.
+    _esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+    payload="{\"ptyId\":$BURROW_PTY_ID,\"state\":\"$state\""
+    [ -n "$detail" ]   && payload="$payload,\"detail\":\"$(_esc "$detail")\""
+    [ -n "$s_model" ]  && payload="$payload,\"model\":\"$(_esc "$s_model")\""
+    [ -n "$s_source" ] && payload="$payload,\"source\":\"$(_esc "$s_source")\""
+    [ -n "$s_title" ]  && payload="$payload,\"title\":\"$(_esc "$s_title")\""
+    payload="$payload}"
+    # Only the STICKY states (waiting/permission/done/error/session) get the slow
+    # retry loop: if one is lost the dot/metadata is stuck until the next turn.
+    # `running` fires on every tool call and a lost one self-corrects on the very
+    # next event, so it takes a single fast attempt — never block the agent with
+    # sleeps when the app is down.
     case "$state" in
-      waiting|permission|done) _max=3 ;;
-      *)                       _max=1 ;;
+      waiting|permission|done|error|session) _max=3 ;;
+      *)                                      _max=1 ;;
     esac
     _attempt=0
     while [ "$_attempt" -lt "$_max" ]; do
@@ -183,7 +209,7 @@ case "$sub" in
         [ -n "$port" ] || continue
         if curl -sf -X POST "http://127.0.0.1:$port/hook" \
             -H 'Content-Type: application/json' \
-            -d "{\"ptyId\":$BURROW_PTY_ID,\"state\":\"$state\"}" >/dev/null 2>&1; then
+            -d "$payload" >/dev/null 2>&1; then
           exit 0
         fi
       done
@@ -238,7 +264,21 @@ case "$sub" in
           *)                            state=running ;;
         esac ;;
       PostToolUse)                state=running ;;
-      SessionStart)               exit 0 ;;
+      SessionStart)
+        # Session (re)started mid-tab. Forward model/source/title as metadata so
+        # Burrow can label the tab. source=startup|resume|clear|compact.
+        s_source=$(printf '%s' "$json" | sed -n 's/.*"source"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+        s_model=$(printf '%s' "$json" | sed -n 's/.*"model"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+        s_title=$(printf '%s' "$json" | sed -n 's/.*"session_title"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+        burrow status session --model "$s_model" --source "$s_source" --title "$s_title"
+        exit 0 ;;
+      StopFailure)
+        # The turn ended on an API error (rate_limit, billing_error, server_error,
+        # …). error_type holds the matcher value; pass it through as the detail.
+        etype=$(printf '%s' "$json" | sed -n 's/.*"error_type"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+        [ -n "$etype" ] || etype=unknown
+        burrow status error --detail "$etype"
+        exit 0 ;;
       PermissionRequest)          state=permission ;;
       Stop)
         # A Stop carrying still-running background_tasks is an INTERIM stop: the
@@ -259,11 +299,22 @@ case "$sub" in
         else
           state=done
         fi ;;
-      # Notification = telemetry (idle pings, system events). Real permission
-      # requests arrive as PermissionRequest, not Notification — same model as
-      # cmux's FeedEventClassifier (.statusNotification → non-actionable).
+      Notification)
+        # Refined mapping: most notifications are telemetry (idle pings, auth/
+        # elicitation events), but the `type` field disambiguates the actionable
+        # ones. permission_prompt → the agent needs an allow/deny decision;
+        # idle_prompt → it's parked waiting on you. Everything else stays a no-op
+        # (the old blanket behavior). Real PermissionRequest events still arrive on
+        # their own channel; this just rescues clients that surface it as a
+        # Notification instead.
+        ntype=$(printf '%s' "$json" | sed -n 's/.*"type"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+        case "$ntype" in
+          permission_prompt) state=permission ;;
+          idle_prompt)       state=waiting ;;
+          *)                 exit 0 ;;
+        esac ;;
       # SubagentStop is a sub-agent internal event, not a top-level turn end.
-      Notification|SubagentStop|SessionEnd|*) exit 0 ;;
+      SubagentStop|SessionEnd|*) exit 0 ;;
     esac
     burrow status "$state"
     exit 0

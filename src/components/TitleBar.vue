@@ -627,6 +627,11 @@ const isDev = import.meta.env.DEV;
   right: 0;
   min-width: 168px;
   background: var(--bg-panel);
+  /* Transient popup floats over terminal content; --bg-panel turns translucent
+     when a wallpaper is set, so always blur (independent of the panels slider)
+     to keep the menu legible. */
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px;

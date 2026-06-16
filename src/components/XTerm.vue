@@ -31,7 +31,7 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 const props = defineProps<{ ptyId: number; cwd: string; initialCmd?: string; resultToken?: string; initiallyTitled?: boolean }>();
-const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string]; agent: [b: boolean]; interrupt: []; cwd: [p: string] }>();
+const emit = defineEmits<{ title: [t: string]; busy: [b: boolean]; needsInput: [b: boolean]; spawn: [req: { cmd: string; token: string; cwd: string }]; agentState: [s: string, detail?: string]; agentMeta: [meta: { model: string; source: string; title: string }]; agent: [b: boolean]; interrupt: []; cwd: [p: string] }>();
 
 const ui = useUIStore();
 
@@ -171,7 +171,7 @@ let agentTitled = false; // set in onMounted after props are available
 let pendingOscTitle: string | null = null;
 // Last hook state — used to freeze the tab title after a turn ends so Claude's
 // "Claude Code" idle-state title can't overwrite the task description.
-let hookState: "idle" | "running" | "waiting" | "permission" | "done" = "idle";
+let hookState: "idle" | "running" | "waiting" | "permission" | "done" | "error" = "idle";
 
 // Strip control/non-printable chars (mid-OSC replay garbage), trim, cap length.
 function sanitizeTitle(s: string): string {
@@ -396,13 +396,36 @@ onMounted(async () => {
     // single running|waiting|done event has no ordering hazard; Terminal.vue owns
     // the transition. The 2s poll never fabricates agent status, so these hooks
     // are the sole source of truth for an agent's running/waiting/done.
-    listen<string>(`pty-hook-${props.ptyId}`, (event) => {
-      const state = event.payload;
-      if (state === "running" || state === "waiting" || state === "permission" || state === "done") {
-        hookState = state as typeof hookState;
-        emit("agentState", state);
-      }
-    }),
+    // Payload is either a bare state string (legacy) or an object carrying the
+    // state plus extras: `detail` for an `error`, and `{model,source,title}` for a
+    // `session` (SessionStart metadata). Normalize, then fan out ONE event so there
+    // is no ordering hazard — Terminal.vue owns the transition.
+    listen<string | { state: string; detail?: string; model?: string; source?: string; title?: string }>(
+      `pty-hook-${props.ptyId}`,
+      (event) => {
+        const p = event.payload;
+        const obj = typeof p === "object" && p ? p : null;
+        const state = obj ? obj.state : p;
+        if (state === "session") {
+          // Not a status — pure metadata (model/title from SessionStart). Surface it
+          // up so Terminal.vue can store it; never touch the status dot.
+          emit("agentMeta", {
+            model: obj?.model ?? "",
+            source: obj?.source ?? "",
+            title: obj?.title ?? "",
+          });
+          return;
+        }
+        if (
+          state === "running" || state === "waiting" || state === "permission" ||
+          state === "done" || state === "error"
+        ) {
+          hookState = state as typeof hookState;
+          // `error` carries a detail string (rate_limit|overloaded|…); pass it through.
+          emit("agentState", state, state === "error" ? obj?.detail : undefined);
+        }
+      },
+    ),
     // tmux send-keys path: the shim POSTs /write → hook server emits this event →
     // we forward to the daemon as regular PTY input.
     listen<string>(`pty-write-${props.ptyId}`, (event) => {

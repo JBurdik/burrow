@@ -537,4 +537,14 @@ html, body, #app {
   70%  { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); }
   100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
 }
+.status-dot.status-error {
+  background: var(--status-error, #ef4444);
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  animation: error-pulse 1.2s ease-out infinite;
+}
+@keyframes error-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+  70%  { box-shadow: 0 0 0 5px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
 </style>

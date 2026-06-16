@@ -37,6 +37,9 @@
       <div class="rail-summary">
         <span class="chip" :class="{ on: countBy('running') }"><em class="dot running" />{{ countBy('running') }}<small>running</small></span>
         <span class="chip" :class="{ on: countBy('waiting') }"><em class="dot waiting" />{{ countBy('waiting') }}<small>waiting</small></span>
+        <span class="chip" :class="{ on: countBy('permission') }"><em class="dot permission" />{{ countBy('permission') }}<small>permission</small></span>
+        <span class="chip" :class="{ on: countBy('error') }"><em class="dot error" />{{ countBy('error') }}<small>error</small></span>
+        <span class="chip" :class="{ on: countBy('review') }"><em class="dot review" />{{ countBy('review') }}<small>review</small></span>
         <span class="chip" :class="{ on: countBy('done') }"><em class="dot done" />{{ countBy('done') }}<small>done</small></span>
         <span class="spacer" />
         <button class="btn ghost xs" v-if="tasks.some(t => !t.alive)" @click="clearDead">clear finished</button>
@@ -67,7 +70,7 @@
               :key="t.id"
               class="task-row"
               :class="{ active: t.id === selectedId }"
-              @click="selectedId = t.id"
+              @click="selectTask(t)"
             >
               <em class="dot" :class="t.status" />
               <span class="row-title">{{ t.title }}</span>
@@ -375,7 +378,12 @@ const activeTerm = inject<() => {
   focusLeaf: (ptyId: number) => void;
 } | undefined>("activeTerm", () => undefined);
 
-type Status = "running" | "waiting" | "done" | "error" | "idle";
+// Mirror the canonical terminal status set (terminalStatus.ts → TermStatus) so MC
+// behaves exactly like a real terminal tab: `permission` is a distinct amber state
+// (allow/deny decision), `review` is a finished-while-away green pulse that persists
+// until the task is seen. The ONLY intentional MC-specific behavior is that a `done`
+// turn also captures the transcript result (captureResult), which terminals don't.
+type Status = "running" | "waiting" | "permission" | "done" | "review" | "error" | "idle";
 type Role = "user" | "assistant";
 interface Turn { role: Role; text: string }
 
@@ -389,6 +397,8 @@ interface Task {
   model: string;
   profileId: string; // Claude profile (config dir / binary) used to launch — kept so resume reuses it
   status: Status;
+  statusDetail?: string;   // when status==='error': the error type (rate_limit|overloaded|authentication_failed|billing_error|server_error…)
+  sessionSource?: string;  // last SessionStart source (startup|resume|clear|compact) — informational
   turns: Turn[];     // full conversation: user prompts + assistant replies
   followup: string;  // draft text for the in-card follow-up input
   followupImages?: string[]; // temp image paths attached to the next follow-up
@@ -550,12 +560,26 @@ function countBy(s: Status) {
   return tasks.value.filter((t) => t.status === s && t.workspaceId != null && scope.has(t.workspaceId)).length;
 }
 
+// Selecting a task = the user has now SEEN it (mirrors Terminal.vue's markTabSeen).
+// A `review` (finished-while-away) badge clears to a settled `done` once read. An
+// `error` is left flagged red — a failed turn isn't "fine once glanced at"; it stays
+// until the user acts on it (resume / follow-up re-enters via `running`).
+function selectTask(t: Task) {
+  selectedId.value = t.id;
+  if (t.status === "review") {
+    t.status = "done";
+    saveTask(t);
+  }
+}
+
 function statusLabel(t: Task): string {
   switch (t.status) {
     case "running": return "working…";
     case "waiting": return "waiting for input";
+    case "permission": return "needs permission";
     case "done": return "finished";
-    case "error": return "error";
+    case "review": return "finished — unread";
+    case "error": return "error: " + (t.statusDetail || "failed");
     default: return t.alive ? "idle" : "stopped";
   }
 }
@@ -638,31 +662,75 @@ async function wireTask(task: Task) {
   }));
 
   // Status dot via the global hook server (same channel Burrow tabs use).
-  offs.push(await listen<string>(`pty-hook-${task.ptyId}`, (ev) => {
-    const state = String(ev.payload);
+  // Payload is backward-compatible: a plain string for the simple states, or a
+  // structured object `{ state, detail?, model?, source?, title? }` for the new
+  // `error` (failed turn) + `session` (SessionStart metadata) events.
+  offs.push(await listen<string | { state: string; detail?: string; model?: string; source?: string; title?: string }>(`pty-hook-${task.ptyId}`, (ev) => {
+    const p = typeof ev.payload === "string" ? { state: ev.payload } : (ev.payload || { state: "" });
+    const state = p.state;
     const t = tasks.value.find((x) => x.id === task.id);
     if (!t) return;
     const prev = t.status;
-    if (state === "running") t.status = "running";
-    // `waiting` (blocking question) and `permission` (allow/deny request) both mean
-    // "needs you" — MC has no separate amber state, so both surface as `waiting`.
-    // Only real while a turn is in flight: after the turn ends Claude can fire a late
-    // idle ping, which must NOT drag a finished task back out of `done`/`error`. A
-    // genuine follow-up re-enters via UserPromptSubmit → `running`.
-    else if (state === "waiting" || state === "permission") {
-      if (prev === "running" || prev === "waiting") t.status = "waiting";
+    // `session` carries SessionStart metadata, NOT a turn boundary — never touch status.
+    // Populate model only if the user didn't pick one (keep their choice), and the
+    // title only when the task is still on its auto-generated seed (don't clobber).
+    if (state === "session") {
+      if (p.model && (!t.model || t.model === "default")) t.model = p.model;
+      if (p.title && (!t.title || t.title === "task")) t.title = p.title;
+      if (p.source) t.sessionSource = p.source;
+      saveTask(t);
+      return;
+    }
+    if (state === "running") {
+      // A failed turn (`error`) is terminal + attention-needing: a stray `running`
+      // ping must NOT silently resume it unless the turn genuinely restarts. Claude
+      // re-enters a real new turn via UserPromptSubmit, which also fires `running`,
+      // so we only clear the error when the user has actually sent a follow-up —
+      // signalled by a trailing user turn after the error was recorded.
+      if (prev === "error") {
+        const lastTurn = t.turns[t.turns.length - 1];
+        if (lastTurn?.role !== "user") return; // no resume yet → keep the error sticky
+        t.statusDetail = undefined;
+      }
+      t.status = "running";
+    }
+    // `waiting` (a blocking question) and `permission` (an allow/deny request) are
+    // DISTINCT states — exactly like a real terminal tab (waiting = blue, permission
+    // = amber). Both only matter while a turn is in flight: after the turn ends Claude
+    // can fire a late idle ping, which must NOT drag a finished task back out of
+    // `done`/`review`/`error`. A genuine follow-up re-enters via UserPromptSubmit →
+    // `running`, so we only honor them when coming from a live state.
+    else if (state === "waiting") {
+      if (prev === "running" || prev === "waiting" || prev === "permission") t.status = "waiting";
+    }
+    else if (state === "permission") {
+      if (prev === "running" || prev === "waiting" || prev === "permission") t.status = "permission";
+    }
+    // `error` = the turn failed (rate_limit|overloaded|authentication_failed|
+    // billing_error|server_error…). Terminal like `done`, but surfaced red so the
+    // user sees WHY. `p.detail` carries the error type.
+    else if (state === "error") {
+      t.status = "error";
+      t.statusDetail = p.detail || "failed";
+      pumpQueue();   // turn is over → free the slot
     }
     else if (state === "done") {
-      t.status = "done";
+      // Same done/review split as Terminal.vue's settleDone: if the user is watching
+      // this task right now → transient `done`; if they're away → `review` (a green
+      // pulse that persists until they open the task, so a finish-while-away isn't
+      // missed). The transcript capture runs either way — that's MC's whole job.
+      t.status = isWatching(t) ? "done" : "review";
       // Transcript flushes a beat after Stop — read the result shortly after.
       setTimeout(() => captureResult(t), 600);
       pumpQueue();   // free slot → start the next queued prompt
     }
-    // Notify only on a real transition INTO done/waiting, and only when the user
-    // isn't already looking at this task (Superset-style "finished while away").
+    // Notify only on a real transition INTO a needs-attention/finished state, and only
+    // when the user isn't already looking at this task (Superset-style "finished while
+    // away"). notifyTask itself no-ops when watching.
     if (t.status !== prev) {
-      if (t.status === "done") notifyTask(t, "done");
-      else if (t.status === "waiting") notifyTask(t, "waiting");
+      if (t.status === "done" || t.status === "review") notifyTask(t, "done");
+      else if (t.status === "error") notifyTask(t, "error");
+      else if (t.status === "waiting" || t.status === "permission") notifyTask(t, "waiting");
     }
     saveTask(t);
   }));
@@ -678,17 +746,20 @@ function isWatching(t: Task): boolean {
   return ui.mode === "mission" && selectedId.value === t.id && document.hasFocus();
 }
 
-async function notifyTask(t: Task, kind: "done" | "waiting") {
+async function notifyTask(t: Task, kind: "done" | "waiting" | "error") {
   if (isWatching(t)) return;
-  const title = kind === "done" ? "Task complete" : "Task needs input";
-  const body = t.title || (kind === "done" ? "Agent finished" : "Claude is waiting");
-  notifStore.push({ type: kind === "done" ? "done" : "info", title, body, workspaceId: t.workspaceId ?? undefined });
-  playSound(kind);
+  const title = kind === "done" ? "Task complete" : kind === "error" ? "Task error" : "Task needs input";
+  const detail = kind === "error" ? ` — ${t.statusDetail || "failed"}` : "";
+  const body = (t.title || (kind === "done" ? "Agent finished" : kind === "error" ? "Agent failed" : "Claude is waiting")) + detail;
+  notifStore.push({ type: kind === "done" ? "done" : kind === "error" ? "error" : "info", title, body, workspaceId: t.workspaceId ?? undefined });
+  // No `error` sound preset — reuse the attention chime.
+  playSound(kind === "error" ? "waiting" : kind);
   if (!document.hasFocus()) {
     try {
       let granted = await isPermissionGranted();
       if (!granted) granted = (await requestPermission()) === "granted";
-      if (granted) sendNotification({ title: "Burrow", body: `${kind === "done" ? "✓" : "⏳"} ${body}` });
+      const icon = kind === "done" ? "✓" : kind === "error" ? "⚠️" : "⏳";
+      if (granted) sendNotification({ title: "Burrow", body: `${icon} ${body}` });
     } catch { /* notifications optional */ }
   }
 }
@@ -1620,8 +1691,12 @@ onBeforeUnmount(() => {
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--text-muted); flex-shrink: 0; }
 .dot.running { background: var(--yellow); box-shadow: 0 0 8px color-mix(in srgb, var(--yellow) 53%, transparent); animation: pulse 1.4s infinite; }
 .dot.waiting { background: var(--accent); box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 53%, transparent); }
+/* permission = agent needs an allow/deny decision (amber pulse — distinct from blue waiting) */
+.dot.permission { background: var(--status-permission, #f59e0b); box-shadow: 0 0 8px color-mix(in srgb, var(--status-permission, #f59e0b) 60%, transparent); animation: pulse 1.2s infinite; }
 .dot.done { background: var(--green); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 53%, transparent); }
-.dot.error { background: var(--red); }
+/* review = finished while you were away; green pulse persists until the task is opened */
+.dot.review { background: var(--status-review, var(--green)); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 53%, transparent); animation: pulse 1.8s infinite; }
+.dot.error { background: var(--red); box-shadow: 0 0 8px color-mix(in srgb, var(--red) 60%, transparent); animation: pulse 1.4s infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 /* ── Terminal modal ── */

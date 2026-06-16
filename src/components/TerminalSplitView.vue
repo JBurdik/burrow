@@ -87,6 +87,9 @@ export interface Leaf {
   browserUrl?: string; // set when leafType === "browser"
   round?: number;       // increments on each new user prompt submission (UserPromptSubmit)
   statusText?: string;  // set by `burrow set-status`; shown next to status dot
+  statusDetail?: string; // error cause (rate_limit|overloaded|auth…) for an 'error' status; tooltip
+  model?: string;        // agent model id from SessionStart metadata (e.g. claude-opus-4-8)
+  sessionTitle?: string; // session title from SessionStart metadata
   progress?: number;    // 0.0–1.0; set by `burrow set-progress`
   progressLabel?: string;
   sessionId?: string;   // Claude session_id for cross-restart resume
