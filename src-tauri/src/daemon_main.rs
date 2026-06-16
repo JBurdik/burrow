@@ -327,6 +327,29 @@ async fn cmd_resize(msg: &Value, id: u64, w: &WriterRef, state: &Arc<DaemonState
 
 async fn cmd_kill(msg: &Value, id: u64, w: &WriterRef, state: &Arc<DaemonState>) -> Res {
     let pty_id = msg["pty_id"].as_u64().unwrap_or(0) as u32;
+
+    // Removing the session from the map is NOT enough to kill the child (claude
+    // etc.): the reader thread holds an Arc<PtySession> (and a cloned master fd),
+    // so the master never drops, no SIGHUP is delivered, and the agent keeps
+    // running orphaned in the daemon — a process + fd leak. Signal the whole
+    // process group first (mirrors a real terminal close), THEN drop the session.
+    // The child exits → slave closes → reader thread hits EOF → drops its Arc →
+    // master fully drops → everything self-cleans.
+    let pgid = {
+        let sessions = state.sessions.read().await;
+        sessions.get(&pty_id)
+            .and_then(|s| s.master.lock().unwrap().process_group_leader())
+    };
+    if let Some(pgid) = pgid {
+        // SIGHUP first (clean hangup, what closing a terminal sends), then SIGTERM
+        // as a backstop for anything that ignores HUP. killpg targets the group so
+        // child processes spawned by the agent die too.
+        unsafe {
+            libc::killpg(pgid, libc::SIGHUP);
+            libc::killpg(pgid, libc::SIGTERM);
+        }
+    }
+
     state.sessions.write().await.remove(&pty_id);
     reply(w, id, json!({"ok": true})).await
 }

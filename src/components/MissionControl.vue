@@ -1108,6 +1108,11 @@ function focusHandoff(t: Task) {
 // still holds); this revives a task whose PTY is truly gone.
 async function resumeTask(t: Task) {
   if (t.alive) return;
+  // Drop any listeners/buffer left under the OLD ptyId before we reassign — a task
+  // that died mid-session was wired under its previous id; without this those
+  // pty-data/pty-hook listeners orphan (and the stale replay buffer lingers).
+  teardown(t.ptyId);
+  buffers.delete(t.ptyId);
   const ptyId = allocPtyId();
   t.ptyId = ptyId;
   t.alive = true;
