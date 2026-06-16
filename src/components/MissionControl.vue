@@ -868,6 +868,37 @@ async function captureResult(t: Task) {
   } catch { /* best-effort */ }
 }
 
+// Live streaming: while a task runs, its JSONL transcript grows one assistant text
+// block at a time (per-message, not per-token). Append any assistant text not yet
+// shown so the detail feed fills in as the turn progresses — instead of staying on
+// "working…" until the final `captureResult`. Dedup by exact text (same spirit as
+// captureResult's lastAssistant check), so re-running each tick is idempotent and
+// captureResult's final append can't double up. Only touches assistant turns —
+// user turns are pushed optimistically (seed + sendFollowup) and left alone.
+async function syncLiveTurns(t: Task) {
+  let rows: TranscriptEntry[];
+  try {
+    rows = await invoke<TranscriptEntry[]>("read_claude_transcript", {
+      cwd: t.cwd, sessionId: t.id, configDir: taskConfigDir(t),
+    });
+  } catch { return; }
+  if (!rows?.length) return;
+  const seen = new Set(t.turns.filter((x) => x.role === "assistant").map((x) => x.text));
+  let appended = false;
+  for (const r of rows) {
+    if (r.role !== "assistant" || r.kind !== "text") continue;
+    const text = (r.text || "").trim();
+    if (!text || seen.has(text)) continue;
+    t.turns.push({ role: "assistant", text });
+    seen.add(text);
+    appended = true;
+  }
+  if (appended) {
+    if (t.id === selectedId.value) scrollConvo();
+    saveTask(t);
+  }
+}
+
 function apiErrorReason(e: { status: number | null; message: string }): string {
   const code = e.status ? ` (HTTP ${e.status})` : "";
   const hint = e.status === 429 ? " — rate limited"
@@ -1488,8 +1519,13 @@ function parseTurns(s: string | null): Turn[] {
   try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; }
 }
 
-// Selecting a task jumps the conversation to its newest turn.
-watch(selectedId, () => scrollConvo());
+// Selecting a task jumps the conversation to its newest turn — and immediately
+// pulls any assistant messages already on disk (don't wait for the 1.5s poll).
+watch(selectedId, (id) => {
+  scrollConvo();
+  const t = tasks.value.find((x) => x.id === id);
+  if (t?.alive && (t.status === "running" || t.status === "waiting")) syncLiveTurns(t);
+});
 
 // Keep the activity bar badge in sync with active task count.
 watch(
@@ -1519,6 +1555,8 @@ async function reconcileStatuses() {
     // turn truly ended (text reply, no pending tool), so a task genuinely parked on a
     // question has `turn_ended=false` and stays `waiting`.
     if (!t.alive || (t.status !== "running" && t.status !== "waiting")) continue;
+    // Stream new assistant messages into the detail feed as the turn progresses.
+    await syncLiveTurns(t);
     let act: Activity;
     try {
       act = await invoke("read_claude_activity", { cwd: t.cwd, sessionId: t.id, configDir: taskConfigDir(t) });
