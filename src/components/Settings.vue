@@ -651,6 +651,84 @@
           </div>
         </section>
 
+        <!-- Integrations -->
+        <section v-else-if="active === 'integrations'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Integrations</h2>
+              <span class="sec-sub">Send agent status to external services</span>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <div class="settings-group">
+            <span class="group-label">ntfy.sh — push notifications</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Enable ntfy</span>
+                <span class="field-desc">Push agent events to your phone/desktop via <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy.sh</a></span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" :checked="ui.ntfyEnabled" @change="ui.ntfyEnabled = ($event.target as HTMLInputElement).checked" />
+                <span class="toggle-track"><span class="toggle-thumb" /></span>
+              </label>
+            </div>
+
+            <template v-if="ui.ntfyEnabled">
+              <div class="field">
+                <div class="field-info">
+                  <span class="field-name">Server</span>
+                  <span class="field-desc">Base URL of your ntfy server</span>
+                </div>
+                <input v-model="ui.ntfyServer" class="select cfg-inp" placeholder="https://ntfy.sh" spellcheck="false" />
+              </div>
+              <div class="field">
+                <div class="field-info">
+                  <span class="field-name">Topic</span>
+                  <span class="field-desc">Subscribe to this topic in the ntfy app to receive pushes</span>
+                </div>
+                <input v-model="ui.ntfyTopic" class="select cfg-inp" placeholder="my-burrow-agents" spellcheck="false" />
+              </div>
+              <div class="field">
+                <div class="field-info">
+                  <span class="field-name">Access token</span>
+                  <span class="field-desc">Optional — only for protected topics (Bearer token)</span>
+                </div>
+                <input v-model="ui.ntfyToken" type="password" class="select cfg-inp" placeholder="tk_…" spellcheck="false" autocomplete="off" />
+              </div>
+            </template>
+          </div>
+
+          <div v-if="ui.ntfyEnabled" class="settings-group">
+            <span class="group-label">Notify on</span>
+            <div v-for="ev in NTFY_EVENTS" :key="ev.id" class="field">
+              <div class="field-info">
+                <span class="field-name">{{ ev.label }}</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" :checked="ui.ntfyEvents.includes(ev.id)" @change="toggleNtfyEvent(ev.id, ($event.target as HTMLInputElement).checked)" />
+                <span class="toggle-track"><span class="toggle-thumb" /></span>
+              </label>
+            </div>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Only when away</span>
+                <span class="field-desc">Skip pushes while the Burrow window is focused</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" :checked="ui.ntfyOnlyWhenAway" @change="ui.ntfyOnlyWhenAway = ($event.target as HTMLInputElement).checked" />
+                <span class="toggle-track"><span class="toggle-thumb" /></span>
+              </label>
+            </div>
+            <div class="sec-foot">
+              <span v-if="ntfyTestMsg" class="ntfy-test-msg" :class="{ err: ntfyTestErr }">{{ ntfyTestMsg }}</span>
+              <button class="reset-btn" :disabled="!ui.ntfyTopic || ntfyTesting" @click="sendNtfyTest">
+                <PhPaperPlaneTilt :size="12" /> {{ ntfyTesting ? "Sending…" : "Send test" }}
+              </button>
+            </div>
+          </div>
+        </section>
+
         <!-- Keybindings -->
         <section v-else-if="active === 'keybindings'" class="section">
           <div class="sec-head">
@@ -1094,7 +1172,7 @@ import {
   PhListBullets, PhCaretDown, PhFolder, PhPencilSimple, PhCheck, PhBell, PhPlay,
   PhDotsSixVertical, PhArrowClockwise, PhDownloadSimple, PhTerminalWindow,
   PhPlugsConnected, PhBrowser, PhToggleLeft, PhToggleRight, PhArrowSquareOut, PhImage,
-  PhUserGear,
+  PhUserGear, PhPaperPlaneTilt,
 } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -1104,7 +1182,8 @@ import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
 import { useAgentsStore, type AgentIcon } from "@/stores/agents";
 import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { useUIStore, UI_FONTS, TERMINAL_FONTS } from "@/stores/ui";
+import { useUIStore, UI_FONTS, TERMINAL_FONTS, NTFY_EVENTS, type NtfyEvent } from "@/stores/ui";
+import { testNtfy } from "@/lib/ntfy";
 import { useUpdateStore } from "@/stores/update";
 import { THEMES } from "@/themes";
 import { soundsForKind, playSound, type SoundKind } from "@/lib/sounds";
@@ -1123,6 +1202,35 @@ async function pickProfileConfigDir(id: string) {
 const wsStore = useWorkspaceStore();
 const ui = useUIStore();
 const update = useUpdateStore();
+
+// ── Integrations: ntfy.sh ──
+const ntfyTesting = ref(false);
+const ntfyTestMsg = ref("");
+const ntfyTestErr = ref(false);
+
+function toggleNtfyEvent(ev: NtfyEvent, on: boolean) {
+  const set = new Set(ui.ntfyEvents);
+  if (on) set.add(ev);
+  else set.delete(ev);
+  // Reassign the array so the store watcher persists the change.
+  ui.ntfyEvents = NTFY_EVENTS.map((e) => e.id).filter((id) => set.has(id));
+}
+
+async function sendNtfyTest() {
+  if (!ui.ntfyTopic) return;
+  ntfyTesting.value = true;
+  ntfyTestMsg.value = "";
+  ntfyTestErr.value = false;
+  try {
+    await testNtfy({ server: ui.ntfyServer, topic: ui.ntfyTopic, token: ui.ntfyToken || undefined });
+    ntfyTestMsg.value = "Sent — check your ntfy app";
+  } catch (e) {
+    ntfyTestErr.value = true;
+    ntfyTestMsg.value = `Failed: ${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    ntfyTesting.value = false;
+  }
+}
 
 // Resolved at mount from the Tauri runtime so the displayed version always
 // matches the actual bundle, not a hard-coded string.
@@ -1512,6 +1620,7 @@ const navItems: NavItem[] = [
   { divider: true },
   { id: "appearance", label: "Appearance", icon: PhPalette },
   { id: "notifications", label: "Notifications", icon: PhBell },
+  { id: "integrations", label: "Integrations", icon: PhPlugsConnected },
   { id: "keybindings", label: "Keybindings", icon: PhKeyboard },
   { id: "extensions", label: "Extensions", icon: PhPuzzlePiece },
   { id: "about", label: "About", icon: PhInfo },
@@ -1943,7 +2052,9 @@ const SHORTCUT_GROUPS = [
 
 .tbl-empty { font-size: 12px; color: #444; padding: 20px; text-align: center; }
 
-.sec-foot { margin-top: 8px; }
+.sec-foot { margin-top: 8px; display: flex; align-items: center; gap: 10px; }
+.ntfy-test-msg { font-size: 12px; color: var(--text-muted, #888); }
+.ntfy-test-msg.err { color: var(--danger, #e5534b); }
 .reset-btn {
   display: flex;
   align-items: center;

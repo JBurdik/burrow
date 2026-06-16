@@ -218,6 +218,8 @@ import { type Leaf, type TreeNode, type SplitNode } from "./TerminalSplitView.vu
 import { nextPtyId, initPtyCounter } from "@/lib/ptyId";
 import { spinnerFrame } from "@/lib/spinner";
 import { playSound } from "@/lib/sounds";
+import { notifyNtfy } from "@/lib/ntfy";
+import type { NtfyEvent } from "@/stores/ui";
 import {
   aggregateStatus,
   applyAgentEvent,
@@ -601,6 +603,7 @@ function makeCtx(tab: Tab): ReducerCtx {
         if (l) { title = l.title; break; }
       }
       notifyDone(title, tab.id);
+      maybeNtfy("done", title);
       if (gitStore.cwd === props.cwd) gitStore.refresh(true);
     },
   };
@@ -707,8 +710,10 @@ function onAgentState(id: number, s: string, detail?: string) {
     if (s === "error") {
       // Failed turn (StopFailure). Stash the cause (rate_limit|overloaded|…) for the
       // tooltip, then settle to the red, persists-until-seen `error` status.
+      const wasError = leaf.status === "error";
       leaf.statusDetail = detail || undefined;
       applyAgentEvent(leaf, "error", makeCtx(tab));
+      if (!wasError) maybeNtfy("error", leaf.title);
       break;
     }
     if (s === "running" || s === "waiting" || s === "permission" || s === "done") {
@@ -717,7 +722,11 @@ function onAgentState(id: number, s: string, detail?: string) {
         leaf.round = (leaf.round ?? 0) + 1;
         leaf.statusDetail = undefined;   // a fresh turn clears any stale error cause
       }
+      // Fire ntfy on the rising edge only (status actually changes), so repeated
+      // events of the same state don't spam. `done` is handled in onSettled.
+      const changed = leaf.status !== s;
       applyAgentEvent(leaf, s as AgentEvent, makeCtx(tab));
+      if (changed && (s === "waiting" || s === "permission")) maybeNtfy(s, leaf.title);
     }
     break;
   }
@@ -737,6 +746,19 @@ function onAgentMeta(id: number, meta: { model: string; source: string; title: s
     }
     break;
   }
+}
+
+// Push an ntfy.sh notification for an agent transition, gated by the
+// Integrations settings (enabled, topic set, event subscribed, away-only).
+function maybeNtfy(event: NtfyEvent, leafTitle: string) {
+  if (!uiStore.ntfyEnabled || !uiStore.ntfyTopic) return;
+  if (!uiStore.ntfyEvents.includes(event)) return;
+  if (uiStore.ntfyOnlyWhenAway && document.hasFocus()) return;
+  notifyNtfy(
+    { server: uiStore.ntfyServer, topic: uiStore.ntfyTopic, token: uiStore.ntfyToken || undefined },
+    event,
+    leafTitle || "Agent",
+  ).catch(() => {}); // best-effort: a failed push must never disrupt the UI
 }
 
 async function notifyDone(leafTitle: string, tabId?: number) {

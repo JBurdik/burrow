@@ -79,11 +79,30 @@
   <h1>Burrow — Changelog</h1>
   <div class="tagline">Historie verzí v češtině. Co se změnilo a proč.</div>
 
+  <!-- unreleased -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">Připravuje se</span>
+      <span class="tag tag-latest">nevydáno</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Nové funkce</div>
+      <ul>
+        <li><strong>Integrace v Nastavení + ntfy.sh</strong> — nová sekce <strong>Nastavení → Integrace</strong> pro napojení na externí služby. První integrace: <strong>push notifikace přes <code>ntfy.sh</code></strong>. Burrow pošle upozornění na telefon/desktop, když agent dokončí tah nebo potřebuje pozornost — užitečné, když nejste u počítače.</li>
+        <li><strong>Volitelné spouštěče</strong> — vyberete, které přechody pushnou: <strong>hotovo</strong>, <strong>čeká na vstup</strong>, <strong>potřebuje povolení</strong>, <strong>chyba tahu</strong>. Každý přechod má vlastní prioritu a emoji. Volba „jen když nejsem u okna" potlačí pushe, dokud je okno Burrow v popředí.</li>
+        <li><strong>Vlastní server + token</strong> — nastavitelná URL serveru (výchozí <code>https://ntfy.sh</code>), téma a volitelný přístupový token pro chráněná témata. Tlačítko <strong>„Send test"</strong> ověří zapojení. Posílá se přímo z aplikace (žádný backend), protože ntfy povoluje CORS.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
   <!-- v2.6.0 -->
   <div class="release">
     <div class="release-header">
       <span class="version">v2.6.0</span>
-      <span class="tag tag-latest">aktuální</span>
       <span class="date">červen 2026</span>
     </div>
 

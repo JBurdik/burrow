@@ -68,7 +68,23 @@ interface Prefs {
   blurContent: number; // Mission Control rail + Dashboard cards
   blurTerminal: number; // terminal panes
   blurOverlay: number; // spotlight, settings, modal composers
+  // ── Integrations: ntfy.sh push notifications ──
+  ntfyEnabled: boolean; // master toggle for the ntfy integration
+  ntfyServer: string; // base server URL (default https://ntfy.sh)
+  ntfyTopic: string; // topic to publish to
+  ntfyToken: string; // optional access token (Bearer) for protected topics
+  ntfyEvents: NtfyEvent[]; // which agent transitions push a notification
+  ntfyOnlyWhenAway: boolean; // only push when the app window is unfocused
 }
+
+// Agent transitions that can trigger an ntfy push.
+export type NtfyEvent = "done" | "waiting" | "permission" | "error";
+export const NTFY_EVENTS: { id: NtfyEvent; label: string }[] = [
+  { id: "done", label: "Task complete" },
+  { id: "waiting", label: "Waiting for input" },
+  { id: "permission", label: "Permission needed" },
+  { id: "error", label: "Turn failed (error)" },
+];
 
 // The px sizes in the stylesheets are authored at this baseline. `zoom` scales
 // the whole UI relative to it, so the default uiFontSize being above the
@@ -104,6 +120,12 @@ const DEFAULT_PREFS: Prefs = {
   blurContent: 20,
   blurTerminal: 0,
   blurOverlay: 20,
+  ntfyEnabled: false,
+  ntfyServer: "https://ntfy.sh",
+  ntfyTopic: "",
+  ntfyToken: "",
+  ntfyEvents: ["done", "permission", "error"],
+  ntfyOnlyWhenAway: true,
 };
 
 function loadPrefs(): Prefs {
@@ -153,6 +175,12 @@ export const useUIStore = defineStore("ui", () => {
   const blurContent = ref(loaded.blurContent);
   const blurTerminal = ref(loaded.blurTerminal);
   const blurOverlay = ref(loaded.blurOverlay);
+  const ntfyEnabled = ref(loaded.ntfyEnabled);
+  const ntfyServer = ref(loaded.ntfyServer);
+  const ntfyTopic = ref(loaded.ntfyTopic);
+  const ntfyToken = ref(loaded.ntfyToken);
+  const ntfyEvents = ref<NtfyEvent[]>(loaded.ntfyEvents);
+  const ntfyOnlyWhenAway = ref(loaded.ntfyOnlyWhenAway);
   // In-memory blob URL for the current wallpaper (not persisted).
   const bgImageUrl = ref<string>("");
   const missionActiveCount = ref(0);
@@ -287,6 +315,12 @@ export const useUIStore = defineStore("ui", () => {
         blurContent: blurContent.value,
         blurTerminal: blurTerminal.value,
         blurOverlay: blurOverlay.value,
+        ntfyEnabled: ntfyEnabled.value,
+        ntfyServer: ntfyServer.value,
+        ntfyTopic: ntfyTopic.value,
+        ntfyToken: ntfyToken.value,
+        ntfyEvents: ntfyEvents.value,
+        ntfyOnlyWhenAway: ntfyOnlyWhenAway.value,
       } satisfies Prefs),
     );
   }
@@ -299,7 +333,8 @@ export const useUIStore = defineStore("ui", () => {
   watch(
     [uiFont, uiFontSize, uiScale, terminalFont, terminalFontSize, swapPanels, theme,
      soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
-     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir, mode, missionShowActivity],
+     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir, mode, missionShowActivity,
+     ntfyEnabled, ntfyServer, ntfyTopic, ntfyToken, ntfyEvents, ntfyOnlyWhenAway],
     () => {
       savePrefs();
       applyTheme();
@@ -417,5 +452,11 @@ export const useUIStore = defineStore("ui", () => {
     blurTerminal,
     blurOverlay,
     missionActiveCount,
+    ntfyEnabled,
+    ntfyServer,
+    ntfyTopic,
+    ntfyToken,
+    ntfyEvents,
+    ntfyOnlyWhenAway,
   };
 });
