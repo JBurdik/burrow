@@ -99,7 +99,9 @@
         <div class="convo-full" ref="convoEl">
           <div v-for="(turn, i) in selected.turns" :key="i" class="turn" :class="turn.role">
             <span class="role"><PhCaretRight v-if="turn.role === 'user'" :size="13" weight="bold" /><PhRobot v-else :size="14" /></span>
-            <div class="ttext">{{ turn.text }}</div>
+            <div v-if="turn.role === 'user'" class="ttext">{{ turn.text }}</div>
+            <!-- eslint-disable-next-line vue/no-v-html -->
+            <div v-else class="ttext md-body" v-html="renderMd(turn.text)"></div>
           </div>
           <div v-if="selected.status === 'running'" class="working"><PhRobot :size="13" /> working…</div>
           <div v-if="selected.turns.length === 1 && selected.status !== 'running'" class="no-result">no result captured yet</div>
@@ -113,17 +115,40 @@
           <button class="btn primary" @click="focusHandoff(selected)"><PhArrowSquareOut :size="13" /> Focus tab</button>
         </div>
         <!-- Persistent continue bar (tank's "send & continue") -->
-        <div class="continue-bar" v-else-if="selected.alive">
-          <textarea
-            v-model="selected.followup"
-            rows="2"
-            placeholder="continue this conversation (Enter to send, Shift+Enter for newline)"
-            :disabled="selected.status === 'running'"
-            @keydown.enter.exact.prevent="sendFollowup(selected)"
-          ></textarea>
-          <div class="cb-actions">
-            <button class="btn ghost" @click="stopGeneration(selected)" :disabled="selected.status !== 'running'">stop</button>
-            <button class="btn primary" :disabled="selected.status === 'running' || !selected.followup.trim()" @click="sendFollowup(selected)">send &amp; continue</button>
+        <div class="continue-bar" v-else-if="selected.alive"
+             @drop.prevent="onFollowupDrop($event, selected)" @dragover.prevent>
+          <!-- pasted/dropped image thumbnails -->
+          <div v-if="selected.followupImages?.length" class="fu-thumbs">
+            <div v-for="(p, i) in selected.followupImages" :key="`fu-${i}`" class="img-thumb" :title="p.split('/').pop()">
+              <img v-if="imagePreviews[p]" :src="imagePreviews[p]" :alt="p.split('/').pop()" />
+              <span v-else class="img-thumb-fallback"><PhImage :size="18" /></span>
+              <button class="thumb-x" @click="removeFollowupImage(selected, i)" title="Remove"><PhX :size="11" weight="bold" /></button>
+            </div>
+          </div>
+          <div class="fu-input" :class="{ disabled: selected.status === 'running' }">
+            <textarea
+              v-model="selected.followup"
+              rows="2"
+              placeholder="Continue the conversation — paste or drop images · Enter to send · Shift+Enter for newline"
+              :disabled="selected.status === 'running'"
+              @paste="onFollowupPaste($event, selected)"
+              @keydown.enter.exact.prevent="sendFollowup(selected)"
+            ></textarea>
+            <div class="fu-actions">
+              <button
+                v-if="selected.status === 'running'"
+                class="fu-btn stop"
+                @click="stopGeneration(selected)"
+                title="Interrupt the current turn (Esc)"
+              ><PhStop :size="13" weight="fill" /></button>
+              <button
+                v-else
+                class="fu-btn send"
+                :disabled="!selected.followup.trim() && !selected.followupImages?.length"
+                @click="sendFollowup(selected)"
+                title="Send & continue"
+              ><PhArrowUp :size="15" weight="bold" /></button>
+            </div>
           </div>
         </div>
         <div class="continue-bar dead" v-else-if="!selected.alive">
@@ -192,12 +217,17 @@
           </div>
         </div>
 
-        <!-- Attachments: images + tagged files -->
-        <div v-if="draft.images.length || draft.files.length" class="img-chips">
-          <span v-for="(p, i) in draft.images" :key="`img-${i}`" class="img-chip">
-            <PhImage :size="12" /> {{ p.split('/').pop() }}
-            <button class="x" @click="removeImage(i)"><PhX :size="10" /></button>
-          </span>
+        <!-- Image attachments: thumbnail previews -->
+        <div v-if="draft.images.length" class="img-thumbs">
+          <div v-for="(p, i) in draft.images" :key="`img-${i}`" class="img-thumb" :title="p.split('/').pop()">
+            <img v-if="imagePreviews[p]" :src="imagePreviews[p]" :alt="p.split('/').pop()" />
+            <span v-else class="img-thumb-fallback"><PhImage :size="18" /></span>
+            <button class="thumb-x" @click="removeImage(i)" title="Remove"><PhX :size="11" weight="bold" /></button>
+          </div>
+        </div>
+
+        <!-- Tagged context files -->
+        <div v-if="draft.files.length" class="img-chips">
           <span v-for="(p, i) in draft.files" :key="`file-${i}`" class="img-chip file-chip">
             <PhFile :size="12" /> {{ fileBasename(p) }}
             <button class="x" @click="removeFile(i)"><PhX :size="10" /></button>
@@ -230,6 +260,31 @@
               >
                 <span>{{ m.label }}</span>
                 <PhCheck v-if="m.value === draft.model" :size="13" weight="bold" />
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="fld">
+          <span>Profile</span>
+          <div class="dd">
+            <button type="button" class="dd-btn" :class="{ open: profileMenuOpen }" @click="profileMenuOpen = !profileMenuOpen">
+              <span class="dd-val"><PhUserGear :size="12" class="dd-ico" /> {{ profileLabel }}</span>
+              <PhCaretDown :size="12" class="dd-chev" :class="{ open: profileMenuOpen }" />
+            </button>
+            <div v-if="profileMenuOpen" class="dd-backdrop" @click="profileMenuOpen = false" />
+            <ul v-if="profileMenuOpen" class="dd-menu">
+              <li
+                v-for="p in profilesStore.profiles"
+                :key="p.id"
+                class="dd-opt"
+                :class="{ sel: p.id === draft.profileId }"
+                @click="draft.profileId = p.id; profileMenuOpen = false"
+              >
+                <span class="dd-opt-main">
+                  <span>{{ p.name }}</span>
+                  <code v-if="p.configDir" class="dd-opt-sub">{{ p.configDir }}</code>
+                </span>
+                <PhCheck v-if="p.id === draft.profileId" :size="13" weight="bold" />
               </li>
             </ul>
           </div>
@@ -287,21 +342,30 @@ import { ref, reactive, computed, watch, inject, onMounted, onBeforeUnmount, nex
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   PhCrosshair, PhPlus, PhFolder, PhGitBranch, PhRobot, PhTerminal,
   PhArrowRight, PhArrowLeft, PhArrowClockwise, PhTrash, PhImage, PhX, PhWarning,
   PhCaretRight, PhCaretDown, PhCheck, PhArrowSquareOut, PhPaperclip, PhFile,
-  PhMagnifyingGlass,
+  PhMagnifyingGlass, PhUserGear, PhStop, PhArrowUp,
 } from "@phosphor-icons/vue";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { useProfilesStore } from "@/stores/profiles";
 import { useUIStore } from "@/stores/ui";
 import { useNotificationsStore } from "@/stores/notifications";
 import { playSound } from "@/lib/sounds";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
+
+function renderMd(text: string): string {
+  return DOMPurify.sanitize(marked.parse(text) as string);
+}
 
 const wsStore = useWorkspaceStore();
+const profilesStore = useProfilesStore();
 const ui = useUIStore();
 const notifStore = useNotificationsStore();
 // App.vue provides the active workspace's Terminal component (for "send to tab").
@@ -323,9 +387,11 @@ interface Task {
   prompt: string;    // the first prompt (kept for the title/seed)
   cwd: string;
   model: string;
+  profileId: string; // Claude profile (config dir / binary) used to launch — kept so resume reuses it
   status: Status;
   turns: Turn[];     // full conversation: user prompts + assistant replies
   followup: string;  // draft text for the in-card follow-up input
+  followupImages?: string[]; // temp image paths attached to the next follow-up
   expanded: boolean; // show all turns vs last 4
   alive: boolean;
   handedOff: boolean; // PTY adopted by a real terminal tab — that tab owns input,
@@ -345,6 +411,7 @@ interface TaskRow {
   turns: string | null;       // JSON-encoded Turn[]
   created_at: number;
   handed_off: number | null;  // 1 = handed off to a terminal tab
+  profile_id: string | null;  // Claude profile id (NULL = default)
 }
 
 const MODELS = [
@@ -380,15 +447,20 @@ function bumpPtySeqPast(ptyId: number) {
 }
 
 const tasks = ref<Task[]>([]);
-const queue = ref<{ qid: string; prompt: string; cwd: string; model: string; isolate: boolean; branch: string; images: string[]; files: string[]; skipPerms: boolean }[]>([]);
+const queue = ref<{ qid: string; prompt: string; cwd: string; model: string; profileId: string; isolate: boolean; branch: string; images: string[]; files: string[]; skipPerms: boolean }[]>([]);
 const maxConcurrent = ref(1);
 
 const maxConcurrentClamped = computed(() => Math.max(1, maxConcurrent.value));
 const selectedId = ref<string | null>(null);
 const composerOpen = ref(false);
 const modelMenuOpen = ref(false);
+const profileMenuOpen = ref(false);
 const convoEl = ref<HTMLElement | null>(null);
 const modelLabel = computed(() => MODELS.find((m) => m.value === draft.model)?.label ?? "Default");
+const profileLabel = computed(() => profilesStore.get(draft.profileId)?.name ?? "Default");
+// path → data-URL thumbnail for attached images (kept only for the composer preview;
+// the temp file path is what's actually passed to claude).
+const imagePreviews = reactive<Record<string, string>>({});
 
 // ── Workspace scope: the active workspace, chosen in Burrow's sidebar (no picker
 // of our own — the sidebar already owns selection). Every new task targets it; with
@@ -404,6 +476,7 @@ const draft = reactive({
   prompt: "",
   cwd: "",
   model: "default",
+  profileId: "default",      // Claude profile (config dir / binary) — see profiles store
   isolate: false,            // spawn in a fresh git worktree off the active repo
   branch: "",                // optional worktree branch name (else auto mission/m-XXXXXX)
   images: [] as string[],    // temp image paths attached to the first prompt
@@ -497,7 +570,17 @@ function shquote(s: string) {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-async function spawnTask(prompt: string, cwd: string, model: string, images: string[] = [], skipPerms = false, files: string[] = []): Promise<Task> {
+// Build the launch prefix + binary for a profile: a CLAUDE_CONFIG_DIR env override
+// (so a profile is a separate Claude config/account) + the binary + extra args.
+function profileLaunch(profileId: string): { env: string; bin: string; args: string } {
+  const p = profilesStore.get(profileId);
+  const bin = (p?.command || "").trim() || "claude";
+  const env = p?.configDir?.trim() ? `CLAUDE_CONFIG_DIR=${shquote(p.configDir.trim())} ` : "";
+  const args = p?.args?.trim() ? ` ${p.args.trim()}` : "";
+  return { env, bin, args };
+}
+
+async function spawnTask(prompt: string, cwd: string, model: string, images: string[] = [], skipPerms = false, files: string[] = [], profileId = "default"): Promise<Task> {
   const id = crypto.randomUUID();
   const ptyId = allocPtyId();
   // Prepend @file refs if the user tagged files via the picker (not already in prompt)
@@ -510,6 +593,7 @@ async function spawnTask(prompt: string, cwd: string, model: string, images: str
     prompt: fullPrompt,
     cwd: cwd.trim(),
     model,
+    profileId,
     status: "running",
     turns: [{ role: "user", text: prompt.trim() + (images.length ? `\n📎 ${images.length} image${images.length === 1 ? "" : "s"}` : "") + (files.length ? `\n📄 ${files.length} file${files.length === 1 ? "" : "s"} tagged` : "") }],
     followup: "",
@@ -530,7 +614,8 @@ async function spawnTask(prompt: string, cwd: string, model: string, images: str
   const modelFlag = model && model !== "default" ? ` --model ${model}` : "";
   const permFlag = skipPerms ? " --dangerously-skip-permissions" : "";
   const imageFlags = images.map((p) => ` ${shquote(p)}`).join("");  // claude reads image paths as positional args
-  const cmd = `claude --session-id ${id}${modelFlag}${permFlag} ${shquote(fullPrompt)}${imageFlags}\n`;
+  const { env, bin, args: profileArgs } = profileLaunch(profileId);
+  const cmd = `${env}${bin} --session-id ${id}${modelFlag}${permFlag}${profileArgs} ${shquote(fullPrompt)}${imageFlags}\n`;
   // Small delay so the shell rc has finished and won't swallow the line.
   setTimeout(() => {
     invoke("write_pty", { id: ptyId, data: Array.from(new TextEncoder().encode(cmd)) }).catch(() => {});
@@ -559,7 +644,11 @@ async function wireTask(task: Task) {
     if (!t) return;
     const prev = t.status;
     if (state === "running") t.status = "running";
-    else if (state === "waiting") t.status = "waiting";
+    // A `waiting` is only real while a turn is in flight. After the turn ends,
+    // Claude fires an idle "waiting for your input" Notification ~60s later — that
+    // must NOT drag a finished task back out of `done`/`error`. A genuine
+    // follow-up re-enters via UserPromptSubmit → `running`.
+    else if (state === "waiting") { if (prev === "running") t.status = "waiting"; }
     else if (state === "done") {
       t.status = "done";
       // Transcript flushes a beat after Stop — read the result shortly after.
@@ -601,10 +690,15 @@ async function notifyTask(t: Task, kind: "done" | "waiting") {
   }
 }
 
+// A task's transcript lives under its profile's CLAUDE_CONFIG_DIR (default = ~/.claude).
+function taskConfigDir(t: Task): string {
+  return profilesStore.get(t.profileId)?.configDir?.trim() || "";
+}
+
 async function captureResult(t: Task) {
   try {
     const out = await invoke<{ text: string; error: { status: number | null; message: string } | null }>(
-      "read_claude_outcome", { cwd: t.cwd, sessionId: t.id },
+      "read_claude_outcome", { cwd: t.cwd, sessionId: t.id, configDir: taskConfigDir(t) },
     );
     // Feature C — surface API errors (429/529/…) as a distinct `error` state
     // instead of a false `done`. tank does the same via isApiErrorMessage.
@@ -650,14 +744,27 @@ function apiErrorReason(e: { status: number | null; message: string }): string {
 // running automatically.
 function sendFollowup(t: Task) {
   const text = t.followup.trim();
-  if (!text || t.status === "running" || !t.alive) return;
-  t.turns.push({ role: "user", text });
+  const imgs = t.followupImages ?? [];
+  if ((!text && !imgs.length) || t.status === "running" || !t.alive) return;
+  const turnText = text + (imgs.length ? `${text ? "\n" : ""}📎 ${imgs.length} image${imgs.length === 1 ? "" : "s"}` : "");
+  t.turns.push({ role: "user", text: turnText });
   t.followup = "";
+  for (const p of imgs) delete imagePreviews[p];
+  t.followupImages = [];
   t.status = "running";
   // Collapse newlines: claude's REPL submits on Enter, so a raw \n would split
-  // the message. Send the text then a carriage return to submit.
-  const line = text.replace(/\r?\n/g, " ") + "\r";
-  invoke("write_pty", { id: t.ptyId, data: Array.from(new TextEncoder().encode(line)) }).catch(() => {});
+  // the message. Image paths are appended bare (claude reads image file paths
+  // referenced in the prompt).
+  const imgPart = imgs.map((p) => shquote(p)).join(" ");
+  const body = (text.replace(/\r?\n/g, " ") + (imgPart ? ` ${imgPart}` : "")).trim();
+  // Two writes: claude's REPL treats a fast text+CR burst as a bracketed paste,
+  // so a trailing \r lands as a literal newline (text applied, never submitted).
+  // Send the body, then submit with a standalone Enter a beat later.
+  const enc = (s: string) => Array.from(new TextEncoder().encode(s));
+  invoke("write_pty", { id: t.ptyId, data: enc(body) })
+    .then(() => new Promise((r) => setTimeout(r, 40)))
+    .then(() => invoke("write_pty", { id: t.ptyId, data: enc("\r") }))
+    .catch(() => {});
   scrollConvo();
   saveTask(t);
 }
@@ -708,7 +815,7 @@ async function runDraft() {
   if (!cwd) return;  // worktree creation failed — error shown, keep the modal open
   const images = [...draft.images];
   const files = [...draft.files];
-  const t = await spawnTask(draft.prompt, cwd, draft.model, images, draft.skipPerms, files);
+  const t = await spawnTask(draft.prompt, cwd, draft.model, images, draft.skipPerms, files, draft.profileId);
   selectedId.value = t.id;        // jump straight into the new task's detail
   resetDraft();
   composerOpen.value = false;
@@ -718,7 +825,7 @@ function enqueueDraft() {
   if (!canRun.value) return;
   // Queued tasks resolve their cwd at spawn time (so worktrees aren't created
   // until they actually run); the isolate flag rides along.
-  queue.value.push({ qid: crypto.randomUUID(), prompt: draft.prompt.trim(), cwd: draft.cwd.trim(), model: draft.model, isolate: draft.isolate, branch: draft.branch.trim(), images: [...draft.images], files: [...draft.files], skipPerms: draft.skipPerms });
+  queue.value.push({ qid: crypto.randomUUID(), prompt: draft.prompt.trim(), cwd: draft.cwd.trim(), model: draft.model, profileId: draft.profileId, isolate: draft.isolate, branch: draft.branch.trim(), images: [...draft.images], files: [...draft.files], skipPerms: draft.skipPerms });
   resetDraft();
   composerOpen.value = false;
   pumpQueue();
@@ -726,8 +833,10 @@ function enqueueDraft() {
 
 function resetDraft() {
   draft.prompt = "";
+  for (const p of draft.images) delete imagePreviews[p];
   draft.images = [];
   draft.files = [];
+  draft.profileId = "default";
   draft.isolate = false;
   draft.branch = "";
   draft.skipPerms = false;
@@ -738,14 +847,15 @@ function resetDraft() {
 // Feature 3 — image attachments. Paste or drop images into the composer; each is
 // saved to a temp file (save_temp_image) and its path is passed to claude as a
 // positional arg on spawn (claude reads image paths from argv).
-async function addImageFiles(files: FileList | File[]) {
+async function addImageFiles(files: FileList | File[], sink: string[] = draft.images) {
   for (const f of Array.from(files)) {
     if (!f.type.startsWith("image/")) continue;
     try {
       const b64 = await fileToBase64(f);
       const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
       const path = await invoke<string>("save_temp_image", { b64, ext });
-      draft.images.push(path);
+      sink.push(path);
+      imagePreviews[path] = `data:${f.type || "image/png"};base64,${b64}`; // thumbnail preview
     } catch { /* skip unreadable image */ }
   }
 }
@@ -772,7 +882,27 @@ function onComposerDrop(e: DragEvent) {
 }
 
 function removeImage(i: number) {
-  draft.images.splice(i, 1);
+  const [p] = draft.images.splice(i, 1);
+  if (p) delete imagePreviews[p];
+}
+
+// Follow-up image attachments — same temp-file pipeline as the composer, but the
+// paths ride along with the next follow-up message instead of a fresh spawn.
+function onFollowupPaste(e: ClipboardEvent, t: Task) {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  const imgs = Array.from(items).filter((i) => i.type.startsWith("image/")).map((i) => i.getAsFile()).filter(Boolean) as File[];
+  if (imgs.length) { e.preventDefault(); if (!t.followupImages) t.followupImages = []; addImageFiles(imgs, t.followupImages); }
+}
+
+function onFollowupDrop(e: DragEvent, t: Task) {
+  const files = e.dataTransfer?.files;
+  if (files?.length) { e.preventDefault(); if (!t.followupImages) t.followupImages = []; addImageFiles(files, t.followupImages); }
+}
+
+function removeFollowupImage(t: Task, i: number) {
+  const [p] = (t.followupImages ?? []).splice(i, 1);
+  if (p) delete imagePreviews[p];
 }
 
 // ── File tagging (@ references) ──────────────────────────────────────────────
@@ -824,13 +954,14 @@ async function onPromptInput(e: Event) {
   fileSearchQuery.value = query;
   // Search the workspace dir
   try {
-    const entries = await invoke<{ name: string; path: string; is_dir: boolean }[]>(
+    const entries = await invoke<{ name: string; is_dir: boolean }[]>(
       "read_dir_shallow", { path: draft.cwd }
     );
     const q = query.toLowerCase();
+    const base = draft.cwd.replace(/\/$/, "");
     fileSearchResults.value = entries
       .filter((e) => !e.is_dir && e.name.toLowerCase().includes(q))
-      .map((e) => e.path)
+      .map((e) => `${base}/${e.name}`)
       .slice(0, 8);
     showFilePicker.value = fileSearchResults.value.length > 0;
     // Position the picker near the textarea cursor (best-effort)
@@ -900,7 +1031,10 @@ async function resumeTask(t: Task) {
   buffers.set(ptyId, "");
   await wireTask(t);
   await invoke("create_pty", { id: ptyId, cwd: t.cwd, cols: 120, rows: 34 });
-  const cmd = `claude --resume ${t.id}\n`;
+  // Resume under the SAME profile's config dir — sessions are stored per
+  // CLAUDE_CONFIG_DIR, so the default binary wouldn't find this session.
+  const { env, bin, args: profileArgs } = profileLaunch(t.profileId);
+  const cmd = `${env}${bin} --resume ${t.id}${profileArgs}\n`;
   setTimeout(() => {
     invoke("write_pty", { id: ptyId, data: Array.from(new TextEncoder().encode(cmd)) }).catch(() => {});
     // No turn runs on a bare resume — claude just reloads and waits at its prompt.
@@ -918,16 +1052,21 @@ async function pumpQueue() {
     const next = queue.value.shift()!;
     const cwd = await resolveCwd(next.branch, next.cwd, next.isolate);
     if (!cwd) continue;  // worktree failed — drop this item, keep draining
-    spawnTask(next.prompt, cwd, next.model, next.images, next.skipPerms, next.files ?? []);
+    spawnTask(next.prompt, cwd, next.model, next.images, next.skipPerms, next.files ?? [], next.profileId ?? "default");
   }
 }
 
 // ── Stop / cleanup ───────────────────────────────────────────────────────────
-// Interrupt the current turn (Ctrl+C) without killing the session — tank's
-// "stop" button. claude returns to its prompt; follow-up still works.
+// Interrupt the current turn without killing the session. claude's REPL cancels
+// the in-flight turn on ESC (0x1b) — Ctrl+C there only *arms exit* ("press again
+// to exit") and a second one kills the whole session, breaking follow-up. ESC
+// returns claude to its prompt with the session intact.
 function stopGeneration(t: Task) {
-  if (!t.alive) return;
-  invoke("write_pty", { id: t.ptyId, data: [0x03] }).catch(() => {});
+  if (!t.alive || t.status !== "running") return;
+  invoke("write_pty", { id: t.ptyId, data: [0x1b] }).catch(() => {});
+  // Optimistic flip — the Stop hook confirms, but the dot shouldn't stay orange
+  // if the interrupt lands before any hook fires.
+  t.status = "waiting";
 }
 
 // Kill the PTY and drop the task entirely (header "Delete").
@@ -963,6 +1102,8 @@ function clearDead() {
 const termHost = ref<HTMLElement | null>(null);
 const termTaskId = ref<string | null>(null);
 let termInstance: Terminal | null = null;
+let termFit: FitAddon | null = null;
+let termResizeObs: ResizeObserver | null = null;
 let termInputOff: (() => void) | null = null;
 
 const termTaskTitle = computed(() => tasks.value.find((t) => t.id === termTaskId.value)?.title ?? "");
@@ -973,26 +1114,31 @@ async function openTerminal(t: Task) {
   await nextTick();
   const css = getComputedStyle(document.documentElement);
   const cssVar = (n: string, fb: string) => css.getPropertyValue(n).trim() || fb;
-  // Render at the PTY's EXACT native geometry (every mission PTY is created at
-  // 120×34 — see create_pty calls). The replay buffer and the live agent both
-  // emit absolute cursor positioning (`[24G` etc.) for that 120-col grid, so a
-  // FitAddon that picks a different width misaligns every redraw → garbled
-  // overlap. Fixing the grid to 120×34 makes replay + live align exactly; no
-  // reflow, no SIGWINCH disruption to the running agent. The dialog is sized to
-  // fit this grid (term-host scrolls if the window is too small).
+  // Proven model (mirrors the `tank` web app, which never garbles): let FitAddon
+  // size the grid to the modal, then resize the PTY to MATCH that grid. The agent
+  // always repaints at exactly the cols/rows xterm shows, so no absolute-cursor
+  // misalignment, no overlap. The earlier approach fixed xterm+PTY at 120×34 and
+  // replayed stacked TUI frames — if the modal wasn't exactly 120 cols wide (it
+  // isn't, esp. under the #app zoom) every redraw landed off-grid → permanent
+  // scramble. Integer fontSize keeps cell metrics clean (same fix as XTerm.vue).
   termInstance = new Terminal({
-    cols: 120,
-    rows: 34,
     cursorBlink: true,
     fontFamily: cssVar("--font-mono", "ui-monospace, SFMono-Regular, Menlo, monospace"),
-    fontSize: 12,
+    fontSize: 13,
     theme: {
       background: cssVar("--terminal-bg", "#0a0a0a"),
       foreground: cssVar("--text-primary", "#e6edf3"),
     },
     scrollback: 5000,
   });
+  termFit = new FitAddon();
+  termInstance.loadAddon(termFit);
   termInstance.open(termHost.value!);
+  fitMissionTerm(t.ptyId);
+  // Re-fit after layout + web fonts settle (first fit can measure stale metrics).
+  requestAnimationFrame(() => requestAnimationFrame(() => fitMissionTerm(t.ptyId)));
+  document.fonts?.ready.then(() => fitMissionTerm(t.ptyId)).catch(() => {});
+
   termInstance.write(buffers.get(t.ptyId) || "");
 
   const onData = termInstance.onData((data) => {
@@ -1000,20 +1146,37 @@ async function openTerminal(t: Task) {
   });
   termInputOff = () => onData.dispose();
 
-  // The raw replay is a *stack* of every past TUI frame, ending on a partial one.
-  // Claude repaints its box IN PLACE (relative cursor moves), so a bare SIGWINCH
-  // redraws on top of those stale rows → spinner/status cells interleave with the
-  // leftovers → permanent garble (the bug). Fix: blank the VIEWPORT first (ED2 +
-  // home, written locally into xterm — scrollback above stays intact), THEN nudge
-  // a SIGWINCH so the agent's full repaint lands on a clean screen. The same-size
-  // resize is a kernel no-op, so toggle 119→120 (back to native geometry) to
-  // guarantee delivery. The PTY is owned solely by this modal (no other xterm
-  // mounts it), so resizing it is safe — no geometry fight.
-  if (t.alive) {
+  // The raw replay is a *stack* of every past TUI frame. Claude repaints its box
+  // in place, so a bare SIGWINCH redraws on top of those stale rows → garble.
+  // Blank the viewport (ED2 + home, local to xterm — scrollback stays), then nudge
+  // a SIGWINCH so the agent's full repaint lands on a clean screen at the FITTED
+  // size. Toggle cols±1 to guarantee delivery (a same-size resize is a no-op).
+  // PTY is owned solely by this modal, so resizing is safe.
+  if (t.alive && termInstance) {
     termInstance.write("\x1b[2J\x1b[H");
-    invoke("resize_pty", { id: t.ptyId, cols: 119, rows: 34 }).catch(() => {});
-    setTimeout(() => invoke("resize_pty", { id: t.ptyId, cols: 120, rows: 34 }).catch(() => {}), 60);
+    const { cols, rows } = termInstance;
+    invoke("resize_pty", { id: t.ptyId, cols: Math.max(1, cols - 1), rows }).catch(() => {});
+    setTimeout(() => invoke("resize_pty", { id: t.ptyId, cols, rows }).catch(() => {}), 60);
   }
+
+  // Keep the grid + PTY in lockstep with the modal size (live drag / window resize).
+  termResizeObs = new ResizeObserver(() => fitMissionTerm(t.ptyId));
+  termResizeObs.observe(termHost.value!);
+}
+
+let lastFitCols = 0;
+let lastFitRows = 0;
+// Fit the modal terminal and push the resulting geometry to the PTY (debounce via
+// dedupe: only resize_pty when cols/rows actually changed, to avoid SIGWINCH spam).
+function fitMissionTerm(ptyId: number) {
+  if (!termInstance || !termFit || !termHost.value) return;
+  if (termHost.value.offsetWidth === 0 || termHost.value.offsetHeight === 0) return;
+  try { termFit.fit(); } catch { return; }
+  const { cols, rows } = termInstance;
+  if (cols === lastFitCols && rows === lastFitRows) return;
+  lastFitCols = cols;
+  lastFitRows = rows;
+  invoke("resize_pty", { id: ptyId, cols, rows }).catch(() => {});
 }
 
 function sendCtrlC() {
@@ -1022,8 +1185,11 @@ function sendCtrlC() {
 }
 
 function closeTerminal() {
+  termResizeObs?.disconnect(); termResizeObs = null;
   termInputOff?.(); termInputOff = null;
   termInstance?.dispose(); termInstance = null;
+  termFit = null;
+  lastFitCols = 0; lastFitRows = 0;
   termTaskId.value = null;
 }
 
@@ -1043,6 +1209,7 @@ function saveTask(t: Task) {
       turns: JSON.stringify(t.turns),
       created_at: t.createdAt,
       handed_off: t.handedOff ? 1 : 0,
+      profile_id: t.profileId,
     },
   }).catch(() => {});
 }
@@ -1058,6 +1225,7 @@ async function loadTasks() {
     prompt: "",
     cwd: r.cwd ?? "",
     model: r.model ?? "default",
+    profileId: r.profile_id ?? "default",
     status: (r.status as Status) ?? "done",
     turns: parseTurns(r.turns),
     followup: "",
@@ -1111,9 +1279,67 @@ watch(
   { deep: true },
 );
 
+// ── Hook-independent status fallback ──────────────────────────────────────────
+// The status dot is hook-driven (pty-hook-{id} → running/waiting/done). But a hook
+// can be missed (server not up yet, an agent that doesn't emit Stop, a task that
+// finished while the UI wasn't listening, or a stale state restored from the DB),
+// leaving a task stuck on `running`. The JSONL transcript is the source of truth
+// tank reads: a finished turn ends with an assistant text reply and then the file
+// goes idle. So every couple seconds we check live `running` tasks and settle any
+// whose transcript has clearly parked at the end of a turn. Conservative on purpose
+// — `turn_ended` is false mid-tool-call, so a long-running tool won't false-settle.
+const TURN_IDLE_MS = 2500;
+let statusTimer: number | null = null;
+type Activity = { exists: boolean; idle_ms: number; turn_ended: boolean; awaiting_input: boolean; is_error: boolean };
+
+async function reconcileStatuses() {
+  for (const t of tasks.value) {
+    // Only forward-settle from `running` — never pull a settled done/waiting back
+    // (the transcript can lag a fresh hook; we don't want to regress it).
+    if (!t.alive || t.status !== "running") continue;
+    let act: Activity;
+    try {
+      act = await invoke("read_claude_activity", { cwd: t.cwd, sessionId: t.id, configDir: taskConfigDir(t) });
+    } catch { continue; }
+    if (!act.exists) continue;
+    // Parked on a blocking tool (question / plan approval) → waiting for the user.
+    if (act.awaiting_input) {
+      t.status = "waiting";
+      if (!isWatching(t)) notifyTask(t, "waiting");
+      saveTask(t);
+      continue;
+    }
+    // Turn ended (text reply, no pending tool) + transcript idle, but no `done` hook
+    // arrived — settle it. The idle gate avoids racing a long in-flight tool call.
+    if (act.turn_ended && act.idle_ms >= TURN_IDLE_MS) {
+      t.status = act.is_error ? "error" : "done";
+      captureResult(t);
+      if (!act.is_error && !isWatching(t)) notifyTask(t, "done");
+      saveTask(t);
+      pumpQueue();
+    }
+  }
+}
+
+// A restored task whose PTY the daemon no longer holds is read-only — it can't be
+// "running" anymore (nothing is driving it). Settle any such ghost from its
+// transcript so a crash/restart mid-turn doesn't leave a permanent orange dot.
+async function settleRestoredGhosts() {
+  for (const t of tasks.value) {
+    if (t.alive || (t.status !== "running" && t.status !== "waiting")) continue;
+    let act: { exists: boolean; turn_ended: boolean; is_error: boolean };
+    try { act = await invoke("read_claude_activity", { cwd: t.cwd, sessionId: t.id, configDir: taskConfigDir(t) }); } catch { continue; }
+    t.status = act.exists && act.is_error ? "error" : "done"; // PTY gone → no longer running
+    captureResult(t);
+    saveTask(t);
+  }
+}
+
 onMounted(async () => {
   await loadTasks();
   await reconcileLive();   // re-attach still-running PTYs + never reuse a live id
+  await settleRestoredGhosts();
+  statusTimer = window.setInterval(reconcileStatuses, 1500);
   // Composer cwd defaults to the active workspace (the scope chosen in the sidebar).
   draft.cwd = activeWs.value?.path || tasks.value[0]?.cwd || "";
   selectedId.value = orderedTasks.value[0]?.id ?? null;
@@ -1122,6 +1348,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   closeTerminal();
+  if (statusTimer != null) clearInterval(statusTimer);
   for (const offs of unlisteners.values()) offs.forEach((u) => u());
 });
 </script>
@@ -1216,7 +1443,10 @@ onBeforeUnmount(() => {
 }
 .dd-btn:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
 .dd-btn.open { border-color: var(--accent); }
-.dd-val { flex: 1; text-align: left; }
+.dd-val { flex: 1; text-align: left; display: inline-flex; align-items: center; gap: 6px; }
+.dd-ico { color: var(--text-muted); flex: none; }
+.dd-opt-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dd-opt-sub { font-size: 10px; color: var(--text-muted); font-family: var(--mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dd-chev { color: var(--text-muted); transition: transform 0.2s cubic-bezier(0.22,1,0.36,1); }
 .dd-chev.open { transform: rotate(180deg); }
 .dd-backdrop { position: fixed; inset: 0; z-index: 100; }
@@ -1278,19 +1508,59 @@ onBeforeUnmount(() => {
 .turn .ttext { white-space: pre-wrap; }
 .turn.user .ttext { color: var(--text-primary); font-family: var(--font-mono); background: var(--bg-hover); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; flex: 1; }
 .turn.assistant .ttext { color: var(--text-secondary); background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; flex: 1; }
+
+/* Markdown body inside assistant turns */
+.md-body { white-space: normal; line-height: 1.6; }
+.md-body :deep(p) { margin: 0 0 8px; }
+.md-body :deep(p:last-child) { margin-bottom: 0; }
+.md-body :deep(ul), .md-body :deep(ol) { margin: 4px 0 8px; padding-left: 20px; }
+.md-body :deep(li) { margin: 2px 0; }
+.md-body :deep(code) { font-family: var(--font-mono); font-size: 11px; background: color-mix(in srgb, var(--accent) 12%, transparent); padding: 1px 4px; border-radius: 3px; }
+.md-body :deep(pre) { background: var(--bg-base); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 6px 0; }
+.md-body :deep(pre code) { background: none; padding: 0; font-size: 11px; }
+.md-body :deep(blockquote) { border-left: 3px solid var(--accent); margin: 6px 0; padding-left: 10px; color: var(--text-muted); }
+.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-weight: 700; margin: 10px 0 4px; color: var(--text-primary); }
+.md-body :deep(h1) { font-size: 16px; }
+.md-body :deep(h2) { font-size: 14px; }
+.md-body :deep(h3) { font-size: 13px; }
+.md-body :deep(a) { color: var(--accent); text-decoration: underline; }
+.md-body :deep(hr) { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.md-body :deep(table) { border-collapse: collapse; font-size: 12px; margin: 6px 0; }
+.md-body :deep(th), .md-body :deep(td) { border: 1px solid var(--border); padding: 4px 8px; }
+.md-body :deep(th) { background: var(--bg-panel); font-weight: 600; }
+.md-body :deep(strong) { color: var(--text-primary); font-weight: 700; }
 .working { color: var(--yellow); font-size: 12px; padding-left: 28px; display: flex; align-items: center; gap: 6px; animation: pulse 1.4s infinite; }
 .no-result { color: var(--text-muted); font-size: 12px; font-style: italic; padding-left: 28px; }
 
 /* ── Continue bar (send & continue) ── */
 .continue-bar { border-top: 1px solid var(--border); padding: 12px 20px 16px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-panel); }
-.continue-bar textarea {
-  background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 10px;
-  color: var(--text-primary); padding: 10px 12px; font-size: 13px; font-family: var(--font-mono);
-  resize: vertical; min-height: 48px; max-height: 200px;
+.fu-thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Input shell with the action buttons living inside the textarea's bottom-right. */
+.fu-input {
+  position: relative; display: flex; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--terminal-bg); transition: border-color 0.14s, box-shadow 0.14s;
 }
-.continue-bar textarea:focus { outline: none; border-color: var(--accent); }
-.continue-bar textarea:disabled { opacity: 0.5; }
-.cb-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.fu-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.fu-input.disabled { opacity: 0.6; }
+.fu-input textarea {
+  flex: 1; background: transparent; border: none; border-radius: 12px;
+  color: var(--text-primary); padding: 11px 56px 11px 13px; font-size: 13px; font-family: var(--font-mono);
+  resize: none; min-height: 52px; max-height: 200px; line-height: 1.45;
+}
+.fu-input textarea:focus { outline: none; }
+.fu-input textarea:disabled { cursor: not-allowed; }
+.fu-actions { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; }
+.fu-btn {
+  display: flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+  border: none; border-radius: 9px; cursor: pointer; transition: transform 0.1s, background 0.14s, opacity 0.14s;
+}
+.fu-btn:active { transform: scale(0.92); }
+.fu-btn.send { background: var(--accent); color: #fff; }
+.fu-btn.send:hover:not(:disabled) { filter: brightness(1.1); }
+.fu-btn.send:disabled { background: var(--bg-hover); color: var(--text-muted); cursor: default; }
+.fu-btn.stop { background: color-mix(in srgb, #ef4444 22%, var(--bg-hover)); color: #ef4444; }
+.fu-btn.stop:hover { background: #ef4444; color: #fff; }
 .continue-bar.dead { color: var(--text-muted); font-size: 12px; flex-direction: row; align-items: center; }
 
 .empty-detail { display: flex; align-items: center; justify-content: center; height: 100%; }
@@ -1306,6 +1576,20 @@ onBeforeUnmount(() => {
 .composer-actions { display: flex; gap: 8px; align-items: center; }
 
 /* image attachments + worktree toggle */
+.img-thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+.img-thumb {
+  position: relative; width: 60px; height: 60px; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--border); background: var(--bg-hover); flex: none;
+}
+.img-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.img-thumb-fallback { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--text-muted); }
+.thumb-x {
+  position: absolute; top: 2px; right: 2px; display: flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border: none; border-radius: 5px; cursor: pointer;
+  background: #000a; color: #fff; opacity: 0; transition: opacity 0.12s;
+}
+.img-thumb:hover .thumb-x { opacity: 1; }
+.thumb-x:hover { background: #000d; }
 .img-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .img-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; background: var(--bg-hover); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; color: var(--text-secondary); }
 .img-chip .x { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 0; }
@@ -1329,9 +1613,9 @@ onBeforeUnmount(() => {
 
 /* ── Terminal modal ── */
 .term-modal { position: fixed; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; z-index: 100; }
-.term-box { width: auto; max-width: 94vw; max-height: 90vh; background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; backdrop-filter: var(--blur-overlay, none); -webkit-backdrop-filter: var(--blur-overlay, none); }
+.term-box { width: min(1000px, 80vw); height: min(680px, 78vh); background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 24px 64px -16px #000c; display: flex; flex-direction: column; overflow: hidden; backdrop-filter: var(--blur-overlay, none); -webkit-backdrop-filter: var(--blur-overlay, none); }
 .term-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border); font-size: 13px; }
-.term-host { flex: 1; padding: 8px; overflow: auto; }
+.term-host { flex: 1; min-height: 0; padding: 8px; overflow: hidden; }
 
 /* ── Composer improvements ── */
 .cm-head { display: flex; align-items: center; font-size: 14px; font-weight: 600; gap: 8px; }

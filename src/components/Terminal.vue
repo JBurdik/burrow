@@ -1385,7 +1385,12 @@ function refitAll() {
   xtermRefs.forEach((x) => x?.refit?.());
 }
 
-defineExpose({ addTab, spawnAgent, adoptPty, openDiffInTab, openFileInTab, insertContext, focusLeaf, openClaudeChat, openBrowserTab, refitAll });
+// Un-scramble every mounted xterm: clear the renderer atlas + full redraw.
+function repaintAll() {
+  xtermRefs.forEach((x) => x?.repaint?.());
+}
+
+defineExpose({ addTab, spawnAgent, adoptPty, openDiffInTab, openFileInTab, insertContext, focusLeaf, openClaudeChat, openBrowserTab, refitAll, repaintAll });
 </script>
 
 <style scoped>

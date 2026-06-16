@@ -47,6 +47,7 @@
       @new-workspace="openNewWorkspace"
       @open-settings="ui.openSettings()"
       @open-browser="activeTerm()?.openBrowserTab()"
+      @repaint="activeTerm()?.repaintAll()"
     />
     <ToastStack />
     <UpdateBanner />
@@ -299,6 +300,13 @@ function onKeydown(e: KeyboardEvent) {
       activeTerm()?.spawnAgent(agents.commandLine(a));
       return;
     }
+  }
+  // ⌘⇧R — repaint terminals (un-scramble) even when xterm isn't focused.
+  // preventDefault to stop the webview hard-reloading on this combo.
+  if (e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey && (e.key === "R" || e.key === "r")) {
+    e.preventDefault();
+    activeTerm()?.repaintAll();
+    return;
   }
   // ⌘⇧U — jump to first unread (review) tab across ALL workspaces
   if (e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey && e.key === "U") {

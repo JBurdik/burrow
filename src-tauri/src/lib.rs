@@ -2284,6 +2284,7 @@ fn init_db(app: &AppHandle) -> Result<Connection, rusqlite::Error> {
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN default_title TEXT");
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN session_id TEXT");
     let _ = conn.execute_batch("ALTER TABLE mission_tasks ADD COLUMN handed_off INTEGER");
+    let _ = conn.execute_batch("ALTER TABLE mission_tasks ADD COLUMN profile_id TEXT");
     Ok(conn)
 }
 
@@ -2568,13 +2569,18 @@ pub struct MissionTask {
     /// owns input; Mission Control keeps tracking status read-only). NULL/0 = no.
     #[serde(default)]
     pub handed_off: Option<i64>,
+    /// Id of the Claude profile (config dir + binary + args) this task launched
+    /// with — so `--resume` reuses the same CLAUDE_CONFIG_DIR (sessions are stored
+    /// per config dir). NULL = the default profile.
+    #[serde(default)]
+    pub profile_id: Option<String>,
 }
 
 #[tauri::command]
 fn list_mission_tasks(db: State<DbState>) -> Result<Vec<MissionTask>, String> {
     let conn = db.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT id, workspace_id, pty_id, title, cwd, model, status, turns, created_at, handed_off FROM mission_tasks ORDER BY created_at ASC")
+        .prepare("SELECT id, workspace_id, pty_id, title, cwd, model, status, turns, created_at, handed_off, profile_id FROM mission_tasks ORDER BY created_at ASC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| Ok(MissionTask {
@@ -2588,6 +2594,7 @@ fn list_mission_tasks(db: State<DbState>) -> Result<Vec<MissionTask>, String> {
             turns: row.get(7)?,
             created_at: row.get(8)?,
             handed_off: row.get(9)?,
+            profile_id: row.get(10)?,
         }))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -2599,13 +2606,13 @@ fn list_mission_tasks(db: State<DbState>) -> Result<Vec<MissionTask>, String> {
 fn upsert_mission_task(task: MissionTask, db: State<DbState>) -> Result<(), String> {
     let conn = db.conn.lock().unwrap();
     conn.execute(
-        "INSERT INTO mission_tasks (id, workspace_id, pty_id, title, cwd, model, status, turns, created_at, handed_off)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "INSERT INTO mission_tasks (id, workspace_id, pty_id, title, cwd, model, status, turns, created_at, handed_off, profile_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(id) DO UPDATE SET
             workspace_id=excluded.workspace_id, pty_id=excluded.pty_id, title=excluded.title,
             cwd=excluded.cwd, model=excluded.model, status=excluded.status, turns=excluded.turns,
-            handed_off=excluded.handed_off",
-        rusqlite::params![task.id, task.workspace_id, task.pty_id, task.title, task.cwd, task.model, task.status, task.turns, task.created_at, task.handed_off],
+            handed_off=excluded.handed_off, profile_id=excluded.profile_id",
+        rusqlite::params![task.id, task.workspace_id, task.pty_id, task.title, task.cwd, task.model, task.status, task.turns, task.created_at, task.handed_off, task.profile_id],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -2619,27 +2626,47 @@ fn delete_mission_task(id: String, db: State<DbState>) -> Result<(), String> {
 }
 
 /// Claude stores each session transcript at
-/// `~/.claude/projects/<slug>/<session_id>.jsonl`, where `<slug>` is the cwd
-/// with `/` and `.` replaced by `-`. Mirror that mapping.
-fn claude_transcript_path(cwd: &str, session_id: &str) -> Option<std::path::PathBuf> {
-    let home = dirs_home()?;
+/// `<config>/projects/<slug>/<session_id>.jsonl`, where `<config>` is `~/.claude`
+/// by default (or a profile's CLAUDE_CONFIG_DIR) and `<slug>` is the cwd with `/`
+/// and `.` replaced by `-`. Mirror that mapping. `config_dir` empty/None → default.
+fn claude_transcript_path(cwd: &str, session_id: &str, config_dir: Option<&str>) -> Option<std::path::PathBuf> {
+    let base = match config_dir {
+        Some(d) if !d.trim().is_empty() => expand_tilde_home(d.trim()),
+        _ => dirs_home()?.join(".claude"),
+    };
     let slug: String = cwd
         .chars()
         .map(|c| if c == '/' || c == '.' { '-' } else { c })
         .collect();
-    Some(home.join(".claude").join("projects").join(slug).join(format!("{session_id}.jsonl")))
+    Some(base.join("projects").join(slug).join(format!("{session_id}.jsonl")))
 }
 
 fn dirs_home() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(std::path::PathBuf::from)
 }
 
+/// Expand a leading `~` to $HOME (profile config dirs are often typed `~/.claude-x`).
+/// Distinct from `expand_tilde` (which needs an AppHandle + returns String).
+fn expand_tilde_home(p: &str) -> std::path::PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = dirs_home() {
+            return home.join(rest);
+        }
+    }
+    if p == "~" {
+        if let Some(home) = dirs_home() {
+            return home;
+        }
+    }
+    std::path::PathBuf::from(p)
+}
+
 /// Read the last assistant text block from a task's Claude transcript — the
 /// task's "result", captured when the Stop hook fires (mirrors tank's
 /// read_last_assistant_text). Returns "" if not found yet.
 #[tauri::command]
-fn read_claude_result(cwd: String, session_id: String) -> String {
-    let Some(path) = claude_transcript_path(&cwd, &session_id) else { return String::new() };
+fn read_claude_result(cwd: String, session_id: String, config_dir: Option<String>) -> String {
+    let Some(path) = claude_transcript_path(&cwd, &session_id, config_dir.as_deref()) else { return String::new() };
     let Ok(content) = std::fs::read_to_string(&path) else { return String::new() };
     for line in content.lines().rev() {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else { continue };
@@ -2681,9 +2708,9 @@ pub struct ClaudeOutcome {
 /// Read the last assistant message's text AND whether it's an API error — in one
 /// pass over the transcript. Used by Mission Control on a task's `done`.
 #[tauri::command]
-fn read_claude_outcome(cwd: String, session_id: String) -> ClaudeOutcome {
+fn read_claude_outcome(cwd: String, session_id: String, config_dir: Option<String>) -> ClaudeOutcome {
     let empty = ClaudeOutcome { text: String::new(), error: None };
-    let Some(path) = claude_transcript_path(&cwd, &session_id) else { return empty };
+    let Some(path) = claude_transcript_path(&cwd, &session_id, config_dir.as_deref()) else { return empty };
     let Ok(content) = std::fs::read_to_string(&path) else { return empty };
     for line in content.lines().rev() {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else { continue };
@@ -2714,6 +2741,89 @@ fn read_claude_outcome(cwd: String, session_id: String) -> ClaudeOutcome {
         return ClaudeOutcome { text, error };
     }
     empty
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeActivity {
+    /// True if the transcript exists at all (claude got far enough to write it).
+    pub exists: bool,
+    /// ms since the transcript file was last modified (0 if unknown). A turn that's
+    /// actively running keeps appending lines, so a large idle gap = claude is
+    /// parked at its prompt.
+    pub idle_ms: u64,
+    /// True when the LAST transcript entry is an assistant message that ends the
+    /// turn — a text reply with no trailing tool_use awaiting a result. Mid-turn the
+    /// tail is a tool_use (assistant) or a tool_result (user), so this is false.
+    pub turn_ended: bool,
+    /// True when the tail is an assistant message whose pending tool call BLOCKS on
+    /// the operator (AskUserQuestion / ExitPlanMode) — i.e. "waiting for you", not
+    /// "running" and not "done". Mirrors tank's BLOCKING_TOOLS gate.
+    pub awaiting_input: bool,
+    /// True if the final assistant message is a synthetic API-error record.
+    pub is_error: bool,
+}
+
+/// Hook-independent status fallback for Mission Control. The JSONL transcript is the
+/// source of truth tank reads; a missed `Stop` hook (or a task that finished while
+/// the UI wasn't listening, e.g. across a restart) would otherwise leave a task stuck
+/// on `running`. We expose enough signal for the frontend to flip running→done once
+/// the transcript has gone idle on a finished turn.
+#[tauri::command]
+fn read_claude_activity(cwd: String, session_id: String, config_dir: Option<String>) -> ClaudeActivity {
+    let none = ClaudeActivity { exists: false, idle_ms: 0, turn_ended: false, awaiting_input: false, is_error: false };
+    let Some(path) = claude_transcript_path(&cwd, &session_id, config_dir.as_deref()) else { return none };
+    let Ok(meta) = std::fs::metadata(&path) else { return none };
+    let idle_ms = meta
+        .modified()
+        .ok()
+        .and_then(|m| m.elapsed().ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return ClaudeActivity { exists: true, idle_ms, turn_ended: false, awaiting_input: false, is_error: false };
+    };
+    // Walk from the end to the last real message entry.
+    let mut turn_ended = false;
+    let mut awaiting_input = false;
+    let mut is_error = false;
+    for line in content.lines().rev() {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let ty = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if ty != "assistant" && ty != "user" {
+            continue; // skip summaries/system/etc.
+        }
+        if ty == "assistant" {
+            let body = &msg["message"]["content"];
+            let mut has_text = false;
+            let mut has_tool_use = false;
+            if body.as_str().is_some() {
+                has_text = true;
+            } else if let Some(arr) = body.as_array() {
+                for block in arr {
+                    match block.get("type").and_then(|v| v.as_str()) {
+                        Some("text") => has_text = true,
+                        Some("tool_use") => {
+                            has_tool_use = true;
+                            // A pending BLOCKING tool call = waiting on the operator.
+                            if matches!(
+                                block.get("name").and_then(|v| v.as_str()),
+                                Some("AskUserQuestion") | Some("ExitPlanMode")
+                            ) {
+                                awaiting_input = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Turn is over only when the tail is a text reply with no pending tool call.
+            turn_ended = has_text && !has_tool_use;
+            is_error = msg.get("isApiErrorMessage").and_then(|v| v.as_bool()) == Some(true);
+        }
+        // ty == "user" (a tool_result or a fresh prompt) → mid-turn, all flags stay false.
+        break;
+    }
+    ClaudeActivity { exists: true, idle_ms, turn_ended, awaiting_input, is_error }
 }
 
 // ── Claude 5h usage ───────────────────────────────────────────────────────────
@@ -3088,6 +3198,7 @@ pub fn run() {
             claude_plan_usage,
             read_claude_result,
             read_claude_outcome,
+            read_claude_activity,
             list_mission_tasks,
             upsert_mission_task,
             delete_mission_task,

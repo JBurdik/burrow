@@ -71,6 +71,12 @@ export function aggregateStatus<T>(
  * Apply an agent hook event (running | waiting | done) to a leaf.
  * Replaces onAgentState + settleDone in Terminal.vue.
  */
+/** A turn is "in flight" only in these states — the window during which a
+ *  `waiting`/`permission` hook is real. done/review/idle = the turn is over. */
+function isTurnActive(s: TermStatus): boolean {
+  return s === "running" || s === "waiting" || s === "permission";
+}
+
 export function applyAgentEvent(
   leaf: StatusLeaf,
   ev: AgentEvent,
@@ -81,11 +87,18 @@ export function applyAgentEvent(
     leaf.busy = true;
     leaf.status = "running";
   } else if (ev === "waiting") {
+    // A `waiting`/`permission` is only meaningful while a turn is in flight. After
+    // Stop settles a leaf (done/review) or before any turn starts (idle), Claude's
+    // delayed "waiting for your input" Notification (or any stray waiting) must NOT
+    // drag the leaf back out of done. A genuine new turn always arrives as `running`
+    // first, so guarding on an active status can't suppress a real transition.
+    if (!isTurnActive(leaf.status)) return;
     const enteringWait = leaf.status !== "waiting";
     leaf.busy = true;
     leaf.status = "waiting";
     if (enteringWait) ctx.playSound("waiting");
   } else if (ev === "permission") {
+    if (!isTurnActive(leaf.status)) return;
     const entering = leaf.status !== "permission";
     leaf.busy = true;
     leaf.status = "permission";

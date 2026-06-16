@@ -326,6 +326,84 @@
           </div>
         </section>
 
+        <!-- Claude Profiles -->
+        <section v-else-if="active === 'profiles'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Claude Profiles</h2>
+              <span class="sec-sub">Launch Mission Control tasks with a different config dir, binary, or flags</span>
+            </div>
+            <div class="add-area">
+              <button class="add-btn" @click="profilesStore.add()">
+                <PhPlus :size="11" /> Add Profile
+              </button>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <p class="profile-help">
+            A profile sets <code>CLAUDE_CONFIG_DIR</code> (a separate Claude account / settings / session
+            store), the binary to run, and extra flags. Pick one per task in Mission Control's composer.
+          </p>
+
+          <div class="profiles-list">
+            <div v-for="p in profilesStore.profiles" :key="p.id" class="profile-card">
+              <div class="pc-head">
+                <PhUserGear :size="14" class="pc-ico" />
+                <input
+                  class="inp pc-name"
+                  :value="p.name"
+                  placeholder="Profile name"
+                  :disabled="p.id === DEFAULT_PROFILE_ID"
+                  @input="profilesStore.update(p.id, { name: val($event) })"
+                />
+                <span v-if="p.id === DEFAULT_PROFILE_ID" class="pc-badge">built-in</span>
+                <span class="spacer" />
+                <button
+                  v-if="p.id !== DEFAULT_PROFILE_ID"
+                  class="pc-del"
+                  title="Delete profile"
+                  @click="profilesStore.remove(p.id)"
+                ><PhTrash :size="13" /></button>
+              </div>
+              <div class="pc-grid">
+                <label class="pc-field">
+                  <span>Command</span>
+                  <input
+                    class="inp mono"
+                    :value="p.command"
+                    placeholder="claude"
+                    @input="profilesStore.update(p.id, { command: val($event) })"
+                  />
+                </label>
+                <label class="pc-field">
+                  <span>Extra flags</span>
+                  <input
+                    class="inp mono"
+                    :value="p.args"
+                    placeholder="--model haiku"
+                    @input="profilesStore.update(p.id, { args: val($event) })"
+                  />
+                </label>
+                <label class="pc-field pc-field-wide">
+                  <span>Config dir <em>(CLAUDE_CONFIG_DIR — blank = default)</em></span>
+                  <div class="pc-dir">
+                    <input
+                      class="inp mono"
+                      :value="p.configDir"
+                      placeholder="~/.claude-work"
+                      @input="profilesStore.update(p.id, { configDir: val($event) })"
+                    />
+                    <button class="pc-browse" title="Browse…" @click="pickProfileConfigDir(p.id)">
+                      <PhFolderOpen :size="13" />
+                    </button>
+                  </div>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- General -->
         <section v-else-if="active === 'general'" class="section">
           <div class="sec-head">
@@ -992,6 +1070,7 @@ import {
   PhListBullets, PhCaretDown, PhFolder, PhPencilSimple, PhCheck, PhBell, PhPlay,
   PhDotsSixVertical, PhArrowClockwise, PhDownloadSimple, PhTerminalWindow,
   PhPlugsConnected, PhBrowser, PhToggleLeft, PhToggleRight, PhArrowSquareOut, PhImage,
+  PhUserGear,
 } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -999,6 +1078,7 @@ import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import OpenAIIcon from "@/components/icons/OpenAIIcon.vue";
 import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
 import { useAgentsStore, type AgentIcon } from "@/stores/agents";
+import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore, UI_FONTS, TERMINAL_FONTS } from "@/stores/ui";
 import { useUpdateStore } from "@/stores/update";
@@ -1009,6 +1089,13 @@ import { usePointerReorder } from "@/composables/usePointerReorder";
 defineEmits<{ close: [] }>();
 
 const store = useAgentsStore();
+const profilesStore = useProfilesStore();
+async function pickProfileConfigDir(id: string) {
+  try {
+    const dir = await openDialog({ directory: true, multiple: false });
+    if (typeof dir === "string") profilesStore.update(id, { configDir: dir });
+  } catch { /* dialog cancelled */ }
+}
 const wsStore = useWorkspaceStore();
 const ui = useUIStore();
 const update = useUpdateStore();
@@ -1395,6 +1482,7 @@ const navItems: NavItem[] = [
   { id: "general", label: "General", icon: PhSlidersHorizontal },
   { id: "workspaces", label: "Workspaces", icon: PhFolderOpen },
   { id: "agents", label: "Agents", icon: PhRobot },
+  { id: "profiles", label: "Claude Profiles", icon: PhUserGear },
   { id: "skills", label: "Skills", icon: PhSparkle },
   { id: "mcp", label: "MCP Servers", icon: PhPlugsConnected },
   { divider: true },
@@ -1669,6 +1757,30 @@ const SHORTCUT_GROUPS = [
 }
 .inp::placeholder { color: #3a3a3a; }
 .inp.mono { font-family: var(--font-mono); font-size: 12px; }
+
+/* Claude Profiles */
+.profile-help { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin: 0; }
+.profile-help code { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); background: var(--bg-hover); padding: 1px 5px; border-radius: 4px; }
+.profiles-list { display: flex; flex-direction: column; gap: 12px; }
+.profile-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--bg-panel); }
+.pc-head { display: flex; align-items: center; gap: 9px; }
+.pc-ico { color: var(--accent); flex: none; }
+.pc-name { font-weight: 600; flex: 0 1 auto; width: auto; max-width: 220px; }
+.pc-name:disabled { opacity: 0.7; }
+.pc-badge { font-size: 10px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
+.pc-del { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; border-radius: 5px; }
+.pc-del:hover { color: #f87171; background: var(--bg-hover); }
+.pc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 12px; }
+.pc-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.pc-field > span { font-size: 11px; color: var(--text-secondary); }
+.pc-field > span em { color: var(--text-muted); font-style: normal; }
+.pc-field-wide { grid-column: 1 / -1; }
+.pc-field .inp { border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; background: var(--bg-input, #00000022); }
+.pc-field .inp:focus { border-color: var(--accent); }
+.pc-dir { display: flex; gap: 6px; align-items: stretch; }
+.pc-dir .inp { flex: 1; }
+.pc-browse { flex: none; display: flex; align-items: center; justify-content: center; width: 34px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-hover); color: var(--text-secondary); cursor: pointer; }
+.pc-browse:hover { border-color: var(--accent); color: var(--text-primary); }
 
 .name-inp { font-weight: 500; }
 

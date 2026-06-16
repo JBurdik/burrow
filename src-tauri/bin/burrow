@@ -184,6 +184,7 @@ case "$sub" in
     [ -n "$BURROW_PTY_ID" ] || exit 0
     json=$(cat)
     ev=$(printf '%s' "$json" | sed -n 's/.*"hook_event_name"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+    tool=$(printf '%s' "$json" | sed -n 's/.*"tool_name"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
     case "$ev" in
       UserPromptSubmit)
         state=running
@@ -207,10 +208,31 @@ case "$sub" in
               >/dev/null 2>&1 && break
           done
         fi ;;
-      PreToolUse|PostToolUse) state=running ;;
+      PreToolUse)
+        # A turn that calls a BLOCKING tool parks waiting on the operator — flag it
+        # as `waiting` ("needs you"), not plain `running`. Same set tank gates on
+        # (AskUserQuestion = a question, ExitPlanMode = a plan to approve). The
+        # matching PostToolUse flips back to running once the user answers.
+        case "$tool" in
+          AskUserQuestion|ExitPlanMode) state=waiting ;;
+          *)                            state=running ;;
+        esac ;;
+      PostToolUse)                state=running ;;
       SessionStart)               exit 0 ;;
-      PermissionRequest)          state=permission ;;
-      Stop)                       state=done ;;
+      PermissionRequest)          state=waiting ;;
+      Stop)
+        # A Stop carrying still-running background_tasks is an INTERIM stop: the
+        # agent spawned background sub-agents and parked waiting on them, and Claude
+        # auto-resumes the SAME session when they return (tank: 'background_waiting',
+        # cmux: fullyIdle=false → stay running). Reporting `done` here is the premature
+        # -completion bug. Detect a running background task and keep state running; a
+        # bare Stop (no pending background work) is a real turn end → done.
+        if printf '%s' "$json" | grep -q '"background_tasks"' \
+           && printf '%s' "$json" | grep -Eq '"status"[ ]*:[ ]*"(running|pending|in_progress)"'; then
+          state=running
+        else
+          state=done
+        fi ;;
       # Notification = telemetry (idle pings, system events). Real permission
       # requests arrive as PermissionRequest, not Notification — same model as
       # cmux's FeedEventClassifier (.statusNotification → non-actionable).

@@ -85,6 +85,7 @@ const emit = defineEmits<{
   newWorkspace: [];
   openSettings: [];
   openBrowser: [];
+  repaint: [];
 }>();
 
 const isOpen = ref(false);
@@ -163,6 +164,7 @@ const sections = computed(() => {
       { id: "cmd-settings", title: "Settings → Agents", icon: PhGear as Component, color: "#555555", shortcut: undefined, action: () => { emit("openSettings"); close(); } },
       { id: "cmd-newterm", title: "New Terminal", icon: PhTerminal as Component, color: "#34d399", shortcut: "⌃`", action: () => { emit("newTerminal"); close(); } },
       { id: "cmd-browser", title: "Open Browser Tab", icon: PhGlobe as Component, color: "#60a5fa", shortcut: undefined, action: () => { emit("openBrowser"); close(); } },
+      { id: "cmd-repaint", title: "Repaint Terminal (un-scramble)", icon: PhTerminal as Component, color: "#fbbf24", shortcut: "⌘⇧R", action: () => { emit("repaint"); close(); } },
     ] as const)
       .filter(({ title }) => !q || title.toLowerCase().includes(q))
       .map((c) => ({

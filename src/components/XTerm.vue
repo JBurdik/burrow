@@ -49,7 +49,12 @@ const ui = useUIStore();
 // own layout width lands the zoomed footprint back exactly on the pane.
 // Verified in a real WebKit-zoom browser: px → rect==offset (net-zoom-1) and
 // host==pane (no overflow); % → 295px horizontal overflow.
-const scaledFontSize = () => ui.terminalFontSize * ui.effectiveScale;
+// MUST round to an integer. A fractional font size (13 * 1.07 = 13.91px) gives a
+// fractional cell height (× lineHeight 1.4); the canvas/WebGL renderer rounds each
+// row independently, so the error accumulates down the grid and lower rows render
+// on top of upper ones — the "doubled / strikethrough" scramble. Integer px keeps
+// cell heights stable. Visible only when effectiveScale != 1 (counter-zoom active).
+const scaledFontSize = () => Math.max(1, Math.round(ui.terminalFontSize * ui.effectiveScale));
 
 const hostEl = ref<HTMLElement>();
 
@@ -112,8 +117,10 @@ function applyCounterZoom() {
   const h = el.clientHeight;
   el.style.flex = "none";
   el.style.zoom = String(1 / s);
-  el.style.width = `${w * s}px`;
-  el.style.height = `${h * s}px`;
+  // Integer px: a sub-pixel box makes the renderer's backing canvas land on a
+  // fractional device-pixel grid → blurry + drifting rows under the zoom.
+  el.style.width = `${Math.round(w * s)}px`;
+  el.style.height = `${Math.round(h * s)}px`;
 }
 let term: Terminal;
 let fitAddon: FitAddon;
@@ -123,6 +130,7 @@ let unlisten: UnlistenFn | null = null;
 let unlistenSnapReq: UnlistenFn | null = null;
 let unlistenWrite: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver;
+let resizeTimer: ReturnType<typeof setTimeout> | undefined;
 let pollTimer: ReturnType<typeof setInterval>;
 let dbgTimer: ReturnType<typeof setInterval>;
 
@@ -232,12 +240,34 @@ async function onPaste(e: ClipboardEvent) {
 // so the terminal overflows the panel. The container size never changes again, so
 // the ResizeObserver never corrects it. Re-fitting on the next frames + after
 // fonts.ready re-measures with the real metrics and resizes the PTY to match.
-function safeFit() {
-  if (!term || !fitAddon || !hostEl.value) return;
-  if (hostEl.value.offsetWidth === 0 || hostEl.value.offsetHeight === 0) return;
+let lastPtyCols = 0;
+let lastPtyRows = 0;
+function safeFit(): boolean {
+  if (!term || !fitAddon || !hostEl.value) return false;
+  if (hostEl.value.offsetWidth === 0 || hostEl.value.offsetHeight === 0) return false;
   fitAddon.fit();
-  invoke("resize_pty", { id: props.ptyId, cols: term.cols, rows: term.rows });
+  // Only resize the PTY when the grid actually changed. Every resize_pty fires a
+  // SIGWINCH which makes an alt-screen TUI (Claude Code, vim) repaint; firing it
+  // on every observer tick spams repaints mid-stream and scrambles the screen.
+  const changed = term.cols !== lastPtyCols || term.rows !== lastPtyRows;
+  if (changed) {
+    lastPtyCols = term.cols;
+    lastPtyRows = term.rows;
+    invoke("resize_pty", { id: props.ptyId, cols: term.cols, rows: term.rows });
+  }
   notifyFloatGrid();
+  return changed;
+}
+
+// Un-scramble a garbled screen: drop the renderer's glyph atlas and force a full
+// redraw of every visible row from xterm's buffer. The scramble is a RENDER-side
+// artifact (stale/overlapping glyphs the canvas never cleared), so the buffer is
+// already correct — refresh() repaints it cleanly. No SIGWINCH/reflow here: a
+// resize toggle re-wraps scrollback and can itself double lines.
+function forceRepaint() {
+  if (!term) return;
+  try { (renderAddon as unknown as { clearTextureAtlas?: () => void })?.clearTextureAtlas?.(); } catch { /* DOM renderer: no atlas */ }
+  term.refresh(0, term.rows - 1);
 }
 
 // Tell any floating mirror of this pty that the grid changed, so it can match
@@ -487,6 +517,14 @@ onMounted(async () => {
       if (e.type === "keydown") term.clear();
       return false;
     }
+    // Cmd+Shift+R → force a full repaint to un-scramble an alt-screen TUI that
+    // got garbled (e.g. a mid-redraw resize during a handoff/compaction reprint).
+    // Nudges SIGWINCH so the agent re-emits the whole screen. Swallowed.
+    if (e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey && (e.key === "r" || e.key === "R")) {
+      e.preventDefault(); // else the webview hard-reloads on this combo
+      if (e.type === "keydown") forceRepaint();
+      return false;
+    }
     // Shift+Enter → CSI u escape (kitty protocol) so Claude Code inserts a newline.
     if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       if (e.type === "keydown") send("\x1b[13;2u");
@@ -531,7 +569,16 @@ onMounted(async () => {
   // size is driven by applyCounterZoom (explicit px), so watching the host would
   // miss pane/window resizes and risk a feedback loop. The parent reflects the
   // real available space — recompute the counter-zoom box, then refit.
-  resizeObserver = new ResizeObserver(() => { applyCounterZoom(); safeFit(); });
+  // Counter-zoom box is cheap + DOM-only, so keep it live for a smooth visual
+  // drag. The PTY resize is debounced: a pane/window drag fires this dozens of
+  // times, and each safeFit() → resize_pty → SIGWINCH; spamming SIGWINCH while
+  // the agent is repainting is what scrambles the screen. Coalesce to one fit
+  // (+ full repaint) once the drag settles.
+  resizeObserver = new ResizeObserver(() => {
+    applyCounterZoom();
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(() => { if (safeFit()) forceRepaint(); }, 80);
+  });
   resizeObserver.observe(hostEl.value!.parentElement ?? hostEl.value!);
 
   // Cmd+V image paste → temp file → path into the PTY (text paste untouched).
@@ -641,6 +688,7 @@ onBeforeUnmount(async () => {
   clearInterval(pollTimer);
   clearInterval(dbgTimer);
   resizeObserver?.disconnect();
+  if (resizeTimer) clearTimeout(resizeTimer);
   unlisten?.();
   unlistenHook?.();
   unlistenSnapReq?.();
@@ -665,7 +713,12 @@ watch(
     term.options.fontSize = scaledFontSize();
     applyCounterZoom();
     fitAddon?.fit();
+    lastPtyCols = term.cols;
+    lastPtyRows = term.rows;
     invoke("resize_pty", { id: props.ptyId, cols: term.cols, rows: term.rows });
+    // Font/scale change resizes glyphs → the atlas still holds old-size glyphs.
+    // Clear + full redraw so the new metrics render cleanly (no doubled rows).
+    forceRepaint();
   },
 );
 
@@ -695,6 +748,8 @@ watch(
 defineExpose({
   focus() { term?.focus(); },
   refit() { safeFit(); deferredFit(); },
+  // Force a full TUI redraw — un-scramble a garbled alt-screen agent.
+  repaint() { forceRepaint(); },
   // Inject text into the PTY (no trailing newline — user reviews then hits Enter).
   sendText(text: string) {
     const bytes = Array.from(new TextEncoder().encode(text));
