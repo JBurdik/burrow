@@ -443,6 +443,16 @@ const MODELS = [
 const PTY_BASE = 2_000_000;
 let ptyCounter = 0;
 
+// Capture geometry for headless MC PTYs. A headless task has no attached xterm at
+// birth, so it must be CREATED at a fixed width — and every byte the agent emits is
+// produced at THIS width until a modal attaches and resizes it. The replay xterm
+// must therefore render dead history at exactly MC_PTY_COLS (mismatching the width
+// is what scrambled the modal: dumping 120-col TUI frames into a ~95-col fitted grid
+// landed every absolute-cursor redraw off-grid). 120 ≈ the modal's inner width at
+// fontSize 13, so dead history fits without horizontal scroll.
+const MC_PTY_COLS = 120;
+const MC_PTY_ROWS = 34;
+
 function allocPtyId(): number {
   ptyCounter++;
   return PTY_BASE + ptyCounter;
@@ -633,7 +643,7 @@ async function spawnTask(prompt: string, cwd: string, model: string, images: str
   await wireTask(task);
 
   // Headless PTY = a shell; then we type the claude command into it.
-  await invoke("create_pty", { id: ptyId, cwd: task.cwd, cols: 120, rows: 34 });
+  await invoke("create_pty", { id: ptyId, cwd: task.cwd, cols: MC_PTY_COLS, rows: MC_PTY_ROWS });
 
   const modelFlag = model && model !== "default" ? ` --model ${model}` : "";
   const permFlag = skipPerms ? " --dangerously-skip-permissions" : "";
@@ -1104,7 +1114,7 @@ async function resumeTask(t: Task) {
   t.status = "running";
   buffers.set(ptyId, "");
   await wireTask(t);
-  await invoke("create_pty", { id: ptyId, cwd: t.cwd, cols: 120, rows: 34 });
+  await invoke("create_pty", { id: ptyId, cwd: t.cwd, cols: MC_PTY_COLS, rows: MC_PTY_ROWS });
   // Resume under the SAME profile's config dir — sessions are stored per
   // CLAUDE_CONFIG_DIR, so the default binary wouldn't find this session.
   const { env, bin, args: profileArgs } = profileLaunch(t.profileId);
@@ -1188,13 +1198,21 @@ async function openTerminal(t: Task) {
   await nextTick();
   const css = getComputedStyle(document.documentElement);
   const cssVar = (n: string, fb: string) => css.getPropertyValue(n).trim() || fb;
-  // Proven model (mirrors the `tank` web app, which never garbles): let FitAddon
-  // size the grid to the modal, then resize the PTY to MATCH that grid. The agent
-  // always repaints at exactly the cols/rows xterm shows, so no absolute-cursor
-  // misalignment, no overlap. The earlier approach fixed xterm+PTY at 120×34 and
-  // replayed stacked TUI frames — if the modal wasn't exactly 120 cols wide (it
-  // isn't, esp. under the #app zoom) every redraw landed off-grid → permanent
-  // scramble. Integer fontSize keeps cell metrics clean (same fix as XTerm.vue).
+  // Width invariant: an xterm grid renders a byte stream FAITHFULLY only when its
+  // column count equals the width that stream was produced at. Violating it is the
+  // whole bug — dumping 120-col TUI frames (the capture geometry of a headless MC
+  // PTY) into a ~95-col fitted grid lands every absolute-cursor redraw off-grid, so
+  // historical frames overlap into the scramble seen in the modal. So we split by
+  // liveness instead of blindly fitting + replaying:
+  //   • ALIVE  → adopt the FITTED geometry: resize the PTY to it, wipe the grid
+  //              (scrollback included), and SIGWINCH so the agent repaints its whole
+  //              screen clean at the new width. The un-replayable 120-col history is
+  //              dropped on purpose — a live agent always has a current screen to
+  //              repaint, so there's nothing to lose and everything to unscramble.
+  //   • DEAD   → can't repaint (PTY is gone), so render the captured buffer at its
+  //              OWN capture width (MC_PTY_COLS) with NO fit. On-grid, faithful, and
+  //              ≈ the modal's inner width so it fits without horizontal scroll.
+  // Integer fontSize keeps cell metrics clean (same fix as XTerm.vue).
   termInstance = new Terminal({
     cursorBlink: true,
     fontFamily: cssVar("--font-mono", "ui-monospace, SFMono-Regular, Menlo, monospace"),
@@ -1208,40 +1226,36 @@ async function openTerminal(t: Task) {
   termFit = new FitAddon();
   termInstance.loadAddon(termFit);
   termInstance.open(termHost.value!);
-  fitMissionTerm(t.ptyId);
-  // Re-fit after layout + web fonts settle (first fit can measure stale metrics).
-  requestAnimationFrame(() => requestAnimationFrame(() => fitMissionTerm(t.ptyId)));
-  document.fonts?.ready.then(() => fitMissionTerm(t.ptyId)).catch(() => {});
-
-  termInstance.write(buffers.get(t.ptyId) || "");
 
   const onData = termInstance.onData((data) => {
     invoke("write_pty", { id: t.ptyId, data: Array.from(new TextEncoder().encode(data)) }).catch(() => {});
   });
   termInputOff = () => onData.dispose();
 
-  // The raw replay is a *stack* of every past TUI frame. Claude repaints its box
-  // in place, so a bare SIGWINCH redraws on top of those stale rows → garble.
-  // Blank the viewport (ED2 + home, local to xterm — scrollback stays), then nudge
-  // a SIGWINCH so the agent's full repaint lands on a clean screen at the FITTED
-  // size. Toggle cols±1 to guarantee delivery (a same-size resize is a no-op).
-  // PTY is owned solely by this modal, so resizing is safe.
-  if (t.alive && termInstance) {
-    termInstance.write("\x1b[2J\x1b[H");
-    const { cols, rows } = termInstance;
-    invoke("resize_pty", { id: t.ptyId, cols: Math.max(1, cols - 1), rows }).catch(() => {});
-    setTimeout(() => invoke("resize_pty", { id: t.ptyId, cols, rows }).catch(() => {}), 60);
+  if (t.alive) {
+    // Fit to the modal, push that geometry to the PTY, then force a clean repaint.
+    fitMissionTerm(t.ptyId);
+    // Re-fit after layout + web fonts settle (first fit can measure stale metrics).
+    requestAnimationFrame(() => requestAnimationFrame(() => fitMissionTerm(t.ptyId)));
+    document.fonts?.ready.then(() => fitMissionTerm(t.ptyId)).catch(() => {});
+    repaintMissionTerm(t.ptyId);
+    // Keep grid + PTY in lockstep with the modal size (live drag / window resize).
+    termResizeObs = new ResizeObserver(() => fitMissionTerm(t.ptyId));
+    termResizeObs.observe(termHost.value!);
+  } else {
+    // Dead: pin the grid to the capture width and replay the static history on-grid.
+    // No FitAddon, no resize observer — refitting would re-wrap the 120-col frames
+    // and re-introduce the scramble we're avoiding.
+    termInstance.resize(MC_PTY_COLS, MC_PTY_ROWS);
+    termInstance.write(buffers.get(t.ptyId) || "");
   }
-
-  // Keep the grid + PTY in lockstep with the modal size (live drag / window resize).
-  termResizeObs = new ResizeObserver(() => fitMissionTerm(t.ptyId));
-  termResizeObs.observe(termHost.value!);
 }
 
 let lastFitCols = 0;
 let lastFitRows = 0;
 // Fit the modal terminal and push the resulting geometry to the PTY (debounce via
 // dedupe: only resize_pty when cols/rows actually changed, to avoid SIGWINCH spam).
+// Alive-only — a dead task renders at a pinned width and is never fitted.
 function fitMissionTerm(ptyId: number) {
   if (!termInstance || !termFit || !termHost.value) return;
   if (termHost.value.offsetWidth === 0 || termHost.value.offsetHeight === 0) return;
@@ -1251,6 +1265,19 @@ function fitMissionTerm(ptyId: number) {
   lastFitCols = cols;
   lastFitRows = rows;
   invoke("resize_pty", { id: ptyId, cols, rows }).catch(() => {});
+}
+
+// Wipe the grid (scrollback + viewport, local to xterm) and SIGWINCH the PTY so the
+// agent repaints its whole alt-screen onto a clean grid at the current fitted size.
+// `\x1b[3J` clears scrollback too (vs ED2's viewport-only), so no stale 120-col
+// frames survive above the repaint. Toggling cols±1 guarantees SIGWINCH delivery (a
+// same-size resize is a no-op). The PTY is owned solely by this modal → safe.
+function repaintMissionTerm(ptyId: number) {
+  if (!termInstance) return;
+  termInstance.write("\x1b[3J\x1b[2J\x1b[H");
+  const { cols, rows } = termInstance;
+  invoke("resize_pty", { id: ptyId, cols: Math.max(1, cols - 1), rows }).catch(() => {});
+  setTimeout(() => invoke("resize_pty", { id: ptyId, cols, rows }).catch(() => {}), 60);
 }
 
 function sendCtrlC() {
@@ -1328,7 +1355,7 @@ async function reconcileLive() {
     if (t.alive || !live.get(t.ptyId)?.alive) continue;
     try {
       // Re-open the daemon stream for this existing session, then listen again.
-      await invoke("create_pty", { id: t.ptyId, cwd: t.cwd, cols: 120, rows: 34 });
+      await invoke("create_pty", { id: t.ptyId, cwd: t.cwd, cols: MC_PTY_COLS, rows: MC_PTY_ROWS });
       buffers.set(t.ptyId, buffers.get(t.ptyId) || "");
       await wireTask(t);
       t.alive = true;
