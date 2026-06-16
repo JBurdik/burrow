@@ -774,52 +774,76 @@
           <div class="sec-divider" />
 
           <!-- Background image -->
-          <div class="settings-group">
+          <div class="settings-group bg-group">
             <span class="group-label">Background</span>
-            <div class="bg-picker-row">
-              <div class="bg-preview" :style="ui.bgImageUrl ? { backgroundImage: `url('${ui.bgImageUrl}')`, backgroundSize: 'cover', backgroundPosition: 'center' } : {}">
-                <span v-if="!ui.bgImageUrl" class="bg-preview-empty"><PhImage :size="20" weight="thin" /></span>
+
+            <!-- Image picker card -->
+            <div class="bg-card">
+              <div
+                class="bg-thumb"
+                :class="{ 'is-empty': !ui.bgImageUrl }"
+                :style="ui.bgImageUrl ? { backgroundImage: `url('${ui.bgImageUrl}')` } : {}"
+                @click="pickBgImage"
+              >
+                <template v-if="!ui.bgImageUrl">
+                  <PhImage :size="22" weight="thin" />
+                  <span class="bg-thumb-hint">Click to choose</span>
+                </template>
+                <div v-else class="bg-thumb-overlay"><PhPencilSimple :size="16" weight="bold" /></div>
               </div>
-              <div class="bg-picker-controls">
-                <div class="bg-picker-btns">
-                  <button class="bg-btn" @click="pickBgImage">Choose image…</button>
+              <div class="bg-card-body">
+                <span class="bg-card-name">{{ ui.bgImagePath ? bgFileName(ui.bgImagePath) : "No background image" }}</span>
+                <span class="bg-card-sub">{{ ui.bgImagePath ? "Shown behind the workspace" : "PNG, JPG or WebP" }}</span>
+                <div class="bg-card-btns">
+                  <button class="bg-btn bg-btn-primary" @click="pickBgImage">
+                    {{ ui.bgImagePath ? "Replace…" : "Choose image…" }}
+                  </button>
                   <button v-if="ui.bgImagePath" class="bg-btn bg-btn-clear" @click="ui.clearBgImage()">Remove</button>
                 </div>
-                <span class="bg-filename">{{ ui.bgImagePath ? bgFileName(ui.bgImagePath) : "No image selected" }}</span>
-                <template v-if="ui.bgImagePath">
-                  <label class="bg-opacity-label">
-                    Opacity
-                    <span class="bg-opacity-val">{{ Math.round(ui.bgOpacity * 100) }}%</span>
-                  </label>
-                  <input
-                    type="range"
-                    min="0.2"
-                    max="1"
-                    step="0.01"
-                    :value="ui.bgOpacity"
-                    class="bg-opacity-slider"
-                    @input="ui.bgOpacity = parseFloat(($event.target as HTMLInputElement).value)"
-                  />
-
-                  <span class="blur-section-label">Backdrop blur</span>
-                  <div class="blur-grid">
-                    <label v-for="b in blurControls" :key="b.key" class="blur-row">
-                      <span class="blur-name">{{ b.label }}</span>
-                      <input
-                        type="range"
-                        min="0"
-                        max="40"
-                        step="1"
-                        :value="(ui as any)[b.key]"
-                        class="bg-opacity-slider"
-                        @input="(ui as any)[b.key] = parseInt(($event.target as HTMLInputElement).value)"
-                      />
-                      <span class="blur-val">{{ (ui as any)[b.key] }}px</span>
-                    </label>
-                  </div>
-                </template>
               </div>
             </div>
+
+            <template v-if="ui.bgImagePath">
+              <!-- Opacity -->
+              <div class="bg-control">
+                <div class="bg-control-head">
+                  <span class="bg-control-name">Opacity</span>
+                  <span class="bg-control-val">{{ Math.round(ui.bgOpacity * 100) }}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.2"
+                  max="1"
+                  step="0.01"
+                  :value="ui.bgOpacity"
+                  class="bg-slider"
+                  @input="ui.bgOpacity = parseFloat(($event.target as HTMLInputElement).value)"
+                />
+              </div>
+
+              <!-- Backdrop blur -->
+              <div class="bg-control bg-blur-block">
+                <div class="bg-control-head">
+                  <span class="bg-control-name">Backdrop blur</span>
+                  <span class="bg-control-sub">Frosted-glass over the image</span>
+                </div>
+                <div class="blur-grid">
+                  <div v-for="b in blurControls" :key="b.key" class="blur-row">
+                    <span class="blur-name">{{ b.label }}</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="40"
+                      step="1"
+                      :value="(ui as any)[b.key]"
+                      class="bg-slider"
+                      @input="(ui as any)[b.key] = parseInt(($event.target as HTMLInputElement).value)"
+                    />
+                    <span class="blur-val">{{ (ui as any)[b.key] }}px</span>
+                  </div>
+                </div>
+              </div>
+            </template>
           </div>
         </section>
 
@@ -2100,91 +2124,133 @@ const SHORTCUT_GROUPS = [
 .theme-check { color: var(--accent); }
 
 /* Background image picker */
-.bg-picker-row {
+/* Background settings */
+.bg-group { max-width: 560px; }
+
+.bg-card {
   display: flex;
   gap: 14px;
-  align-items: flex-start;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated, #141414);
 }
-.bg-preview {
-  width: 96px;
-  height: 64px;
+.bg-thumb {
+  position: relative;
+  width: 116px;
+  height: 74px;
   border-radius: 7px;
   border: 1px solid var(--border);
-  background: #0a0a0a;
+  background-color: #0a0a0a;
+  background-size: cover;
+  background-position: center;
   flex-shrink: 0;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  overflow: hidden;
+  transition: border-color 0.12s ease;
+}
+.bg-thumb:hover { border-color: var(--accent); }
+.bg-thumb.is-empty { color: var(--text-muted); border-style: dashed; }
+.bg-thumb-hint { font-size: 10px; color: var(--text-muted); }
+.bg-thumb-overlay {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 0.12s ease;
 }
-.bg-preview-empty { color: var(--text-muted); }
-.bg-picker-controls {
+.bg-thumb:hover .bg-thumb-overlay { opacity: 1; }
+
+.bg-card-body {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 3px;
 }
-.bg-picker-btns {
-  display: flex;
-  gap: 6px;
+.bg-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+.bg-card-sub { font-size: 11px; color: var(--text-muted); }
+.bg-card-btns { display: flex; gap: 6px; margin-top: 8px; }
 .bg-btn {
   padding: 5px 12px;
-  border-radius: 5px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: #161616;
   color: var(--text-primary);
   font-size: 12px;
   cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
 .bg-btn:hover { border-color: var(--accent); color: var(--accent); }
-.bg-btn-clear:hover { border-color: var(--red); color: var(--red); }
-.bg-filename {
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 220px;
-}
-.bg-opacity-label {
-  font-size: 11px;
-  color: var(--text-secondary);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.bg-opacity-val {
-  font-size: 11px;
+.bg-btn-primary {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   color: var(--accent);
-  font-variant-numeric: tabular-nums;
 }
-.bg-opacity-slider {
-  width: 100%;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-.blur-section-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-top: 6px;
-}
-.blur-grid {
+.bg-btn-primary:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+.bg-btn-clear:hover { border-color: var(--red); color: var(--red); }
+
+.bg-control {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated, #141414);
+}
+.bg-control-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.bg-control-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.bg-control-sub { font-size: 11px; color: var(--text-muted); }
+.bg-control-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.bg-slider {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.blur-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 2px;
 }
 .blur-row {
   display: grid;
-  grid-template-columns: 1fr 120px 38px;
+  grid-template-columns: 170px 1fr 42px;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
-.blur-name {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
+.blur-name { font-size: 12px; color: var(--text-secondary); }
 .blur-val {
   font-size: 11px;
   color: var(--accent);
