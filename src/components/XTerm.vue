@@ -398,7 +398,7 @@ onMounted(async () => {
     // are the sole source of truth for an agent's running/waiting/done.
     listen<string>(`pty-hook-${props.ptyId}`, (event) => {
       const state = event.payload;
-      if (state === "running" || state === "waiting" || state === "done") {
+      if (state === "running" || state === "waiting" || state === "permission" || state === "done") {
         hookState = state as typeof hookState;
         emit("agentState", state);
       }
@@ -609,6 +609,10 @@ onMounted(async () => {
   // "agent" until the shell returns. Child processes the agent spawns (a pager,
   // git, node) then can't steal the tab name mid-conversation (the rename bug).
   let isAgentSession = false;
+  // Consecutive empty-foreground polls. A single empty read is normal (daemon
+  // race), but a sustained streak on an in-flight agent can mean a dead PTY whose
+  // `done` hook never fired — the stuck-dot watchdog below acts only after this.
+  let emptyForegroundStreak = 0;
   const poll = async () => {
     const proc = await invoke<string>("get_pty_foreground", { id: props.ptyId });
     // Empty foreground = no non-shell process in the group: either a daemon
@@ -619,6 +623,25 @@ onMounted(async () => {
     // we're back at the prompt → clear busy, else the orange dot sticks forever
     // (foreground_name returns "" for a bare shell, so SHELL_RE never fires).
     if (!proc) {
+      emptyForegroundStreak++;
+      // Stuck-state watchdog: an agent leaf still in-flight (per its last hook)
+      // with foreground empty for several polls may be a genuinely dead PTY — the
+      // process was killed/crashed and no Stop hook fired, so the dot would stick
+      // forever. A single empty read is just a transient race, so we only act after
+      // a streak AND confirm the PTY is actually dead in the daemon before settling.
+      if (
+        isAgentSession &&
+        emptyForegroundStreak >= 3 &&
+        (hookState === "running" || hookState === "waiting" || hookState === "permission")
+      ) {
+        const alive = await invoke<{ pty_id: number; alive: boolean }[]>("list_pty_sessions")
+          .then((ss) => ss.find((s) => s.pty_id === props.ptyId)?.alive ?? true)
+          .catch(() => true);
+        if (!alive) {
+          hookState = "idle";
+          emit("interrupt"); // dead PTY, no clean `done` → settle the stuck dot
+        }
+      }
       if (!isAgentSession && lastProcess && !SHELL_RE.test(lastProcess)) {
         lastProcess = "";
         emit("busy", false);
@@ -627,6 +650,7 @@ onMounted(async () => {
       }
       return;
     }
+    emptyForegroundStreak = 0;
     foreground = proc;
     if (proc === lastProcess) return;
     lastProcess = proc;

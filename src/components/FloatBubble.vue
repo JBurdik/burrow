@@ -288,10 +288,10 @@ onMounted(async () => {
 
   unlistenHook = await listen<string>(`pty-hook-${props.ptyId}`, (event) => {
     const s = event.payload;
-    if (s === "running" || s === "waiting" || s === "done") {
+    if (s === "running" || s === "waiting" || s === "permission" || s === "done") {
       if (s === "running") isAgentSession.value = true;
       _leaf.isAgent = true;
-      applyAgentEvent(_leaf, s as "running" | "waiting" | "done", bubbleCtx);
+      applyAgentEvent(_leaf, s as "running" | "waiting" | "permission" | "done", bubbleCtx);
       status.value = _leaf.status;
     }
   });

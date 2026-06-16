@@ -145,16 +145,24 @@ burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
     the sub-agent's status dot would stick orange after it finished.
   </div>
 
-  <h3><code>burrow status &lt;running|waiting|done&gt;</code></h3>
+  <h3><code>burrow status &lt;running|waiting|permission|done&gt;</code></h3>
   <p>
     Reports the current tab's agent state to Burrow's <strong>hook HTTP server</strong> (a <code>POST /hook</code> with
-    <code>{ptyId,state}</code>). Reads <code>BURROW_PTY_ID</code> + the port. <strong>The live
-    <code>&lt;BURROW_HOME_DIR&gt;/hook.port</code> file is authoritative</strong> (the app rewrites it every launch with the
-    current random server port); <code>BURROW_HOOK_PORT</code> is only a fallback. (Env-first was a bug: a daemon-reattached PTY
+    <code>{ptyId,state}</code>). Reads <code>BURROW_PTY_ID</code> + the port. Port resolution is <strong>file-first</strong>: the
+    live <code>&lt;BURROW_HOME_DIR&gt;/hook.port</code> file is authoritative (the app rewrites it every launch with the current
+    random server port), and <code>BURROW_HOOK_PORT</code> is only a fallback. (Env-first was a bug: a daemon-reattached PTY
     carries a stale baked-in port and POSTed to a dead server, so the dot never updated.) A no-op outside Burrow. The frontend
-    turns <code>running</code>/<code>waiting</code>/<code>done</code> into the tab's status dot (orange spinner / blue /
-    green-<em>review</em>).
+    turns <code>running</code>/<code>waiting</code>/<code>permission</code>/<code>done</code> into the tab's status dot (orange
+    spinner / blue / amber-pulse / green-<em>review</em>).
   </p>
+  <div class="callout" style="border-left:3px solid var(--green);padding-left:12px">
+    <strong>Sticky states self-heal a dropped POST.</strong> If the server is momentarily unreachable (the ~3&nbsp;s window the
+    app self-reclaims a stale <code>hook.port</code>), a lost status update would leave the dot stuck. So
+    <code>waiting</code>/<code>permission</code>/<code>done</code> — the states that <em>persist</em> until the next turn — retry up
+    to 3× with a 1&nbsp;s sleep + <code>hook.port</code> re-read between attempts. <code>running</code> takes a single fast
+    attempt: it fires on every tool call and a lost one self-corrects on the very next event, so it must never block the agent
+    with sleeps (e.g. if the app is fully down).
+  </div>
 
   <h3><code>burrow hook</code> <span style="color:var(--muted);font-weight:400;font-size:12px">(internal)</span></h3>
   <p>
@@ -162,13 +170,26 @@ burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
     <code>install_status_hooks</code> merges <strong>one persistent hook into each agent's own global config</strong>
     (<code>~/.claude/settings.json</code>, <code>~/.codex/hooks.json</code> — identical schema), running
     <code>[ -n "$BURROW_PTY_ID" ] &amp;&amp; '…/bin/burrow' hook || true</code>. <code>burrow hook</code> reads the hook JSON on
-    stdin, maps <code>hook_event_name</code> → state (<code>UserPromptSubmit</code>/<code>PreToolUse</code>/<code>PostToolUse</code>→running,
-    <code>Stop</code>/<code>SessionEnd</code>→done) and forwards via <code>burrow status</code>. <code>Notification</code> is
-    <strong>disambiguated by its <code>message</code></strong>: Claude fires it both for a permission prompt (→ waiting) and ~60s
-    after a turn ends, idle at the prompt — <em>"…waiting for your input"</em> (→ done, since the turn is already over). Mapping
-    every <code>Notification</code> to waiting was the "done shows blue" bug. Because it's <strong>global + env-driven</strong>, status works for <em>every</em> agent
-    session — launched-by-button, typed by hand, or reattached after restart — not just per-launch ones. The merge is
-    non-destructive (append + dedupe + <code>.burrow-bak</code>) and a no-op outside Burrow.
+    stdin, maps <code>hook_event_name</code> → state and forwards via <code>burrow status</code>:
+  </p>
+  <ul>
+    <li><code>UserPromptSubmit</code> / <code>PostToolUse</code> → <strong>running</strong></li>
+    <li><code>PreToolUse</code> → <strong>waiting</strong> for the blocking tools <code>AskUserQuestion</code> /
+      <code>ExitPlanMode</code> (a question / a plan to approve), else running</li>
+    <li><code>PermissionRequest</code> → <strong>permission</strong> — the agent is blocked on an allow/deny decision (amber dot +
+      Sidebar bell), distinct from a plain <code>waiting</code></li>
+    <li><code>Stop</code> → <strong>done</strong>, <em>except</em> a Stop carrying still-running <code>background_tasks</code> →
+      running. That's an interim stop (the agent parked on background sub-agents and Claude auto-resumes the same session);
+      reporting done there was the premature-completion bug. The <code>background_tasks</code> status check is scoped to that
+      array slice, so an unrelated <code>"status":"running"</code> elsewhere in the JSON can't false-positive.</li>
+    <li><code>Notification</code> / <code>SubagentStop</code> / <code>SessionEnd</code> → <strong>no-op</strong> (telemetry /
+      idle pings, not a turn boundary). Real permission requests arrive as <code>PermissionRequest</code>, not
+      <code>Notification</code> — so no message-sniffing heuristic is needed.</li>
+  </ul>
+  <p>
+    Because it's <strong>global + env-driven</strong>, status works for <em>every</em> agent session — launched-by-button, typed
+    by hand, or reattached after restart — not just per-launch ones. The merge is non-destructive (append + dedupe +
+    <code>.burrow-bak</code>) and a no-op outside Burrow.
   </p>
   <div class="callout" style="border-left:3px solid var(--green);padding-left:12px">
     <strong>The poll never fabricates "busy" for an agent.</strong> An agent stays the foreground process whether it's
@@ -177,8 +198,14 @@ burrow wait  t1 --timeout 600   # give up after 10 minutes</code></pre>
     that never fired <code>done</code>). The poll is <strong>sticky per agent session</strong> and <strong>ignores an empty
     foreground reading</strong> (a daemon race), so child processes the agent spawns and momentary blanks no longer rename the
     tab to "Terminal N" mid-conversation. <code>XTerm.vue</code> forwards the hook state as one semantic <code>agentState</code>
-    event (running/waiting/done) — a single event has no ordering hazard, so a trailing <code>waiting</code> can't clobber a
-    fresh <code>done</code>.
+    event (running/waiting/permission/done) — a single event has no ordering hazard, so a trailing <code>waiting</code> can't
+    clobber a fresh <code>done</code>.
+    <br><br>
+    <strong>Dead-PTY watchdog.</strong> The one case the shell-return rescue misses is an agent <em>killed or crashed</em> while
+    still foreground — no <code>Stop</code>, no shell return, so an in-flight dot would stick forever. If the foreground reads
+    empty for ≥3 consecutive polls while the last hook state is in-flight (running/waiting/permission), the poll confirms the PTY
+    is actually dead via <code>list_pty_sessions</code> (<code>alive=false</code>) and only then settles the dot. A single empty
+    read is still ignored as a transient race.
   </div>
 
   <h2>How a spawn flows</h2>

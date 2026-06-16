@@ -144,12 +144,12 @@ case "$sub" in
     ;;
 
   status)
-    # burrow status <running|waiting|done>
+    # burrow status <running|waiting|permission|done>
     # Report this tab's agent state to Burrow's hook server. Any agent can call
     # this from a hook/notify program. Needs BURROW_PTY_ID + BURROW_HOOK_PORT
     # (exported into every Burrow PTY). No-op outside Burrow.
     state="$1"
-    [ -n "$state" ] || { echo "burrow status: no state (running|waiting|done)" >&2; exit 1; }
+    [ -n "$state" ] || { echo "burrow status: no state (running|waiting|permission|done)" >&2; exit 1; }
     [ -n "$BURROW_PTY_ID" ] || exit 0
     # Two possible ports, neither reliable alone:
     #   - $BURROW_HOOK_PORT  is baked into the PTY env at creation → CORRECT for a
@@ -159,19 +159,39 @@ case "$sub" in
     #     (e.g. a `tauri:dev` run) can still clobber it, but the live app now
     #     self-reclaims the file when its recorded pid is dead, so it converges
     #     back within ~3s instead of staying stale forever.
-    # So try BOTH (env first), POST to whichever actually answers. -f makes curl
-    # fail on a dead port so we fall through to the next candidate. head -n1 reads
-    # just the port line (the pid on line 2 is for the app's reclaim loop).
+    # So try BOTH (FILE first — it's authoritative: rewritten every launch and
+    # self-reclaimed when stale; env is baked at PTY creation so it's the one that
+    # goes stale after a restart). -f makes curl fail on a dead port so we fall
+    # through to the next candidate. head -n1 reads just the port line (the pid on
+    # line 2 is for the app's reclaim loop). Retry a few times: the live window the
+    # file_port can be momentarily wrong is the ~3s reclaim, so a short retry loop
+    # lets a dropped POST self-heal instead of silently losing the state update.
     file_port=""
     [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
       file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
-    for port in "$BURROW_HOOK_PORT" "$file_port"; do
-      [ -n "$port" ] || continue
-      if curl -sf -X POST "http://127.0.0.1:$port/hook" \
-          -H 'Content-Type: application/json' \
-          -d "{\"ptyId\":$BURROW_PTY_ID,\"state\":\"$state\"}" >/dev/null 2>&1; then
-        break
-      fi
+    # Only the STICKY states (waiting/permission/done) get the slow retry loop: if
+    # one is lost the dot is stuck until the next turn. `running` fires on every
+    # tool call and a lost one self-corrects on the very next event, so it takes a
+    # single fast attempt — never block the agent with sleeps when the app is down.
+    case "$state" in
+      waiting|permission|done) _max=3 ;;
+      *)                       _max=1 ;;
+    esac
+    _attempt=0
+    while [ "$_attempt" -lt "$_max" ]; do
+      for port in "$file_port" "$BURROW_HOOK_PORT"; do
+        [ -n "$port" ] || continue
+        if curl -sf -X POST "http://127.0.0.1:$port/hook" \
+            -H 'Content-Type: application/json' \
+            -d "{\"ptyId\":$BURROW_PTY_ID,\"state\":\"$state\"}" >/dev/null 2>&1; then
+          exit 0
+        fi
+      done
+      # Re-read the file_port — a reclaim may have just rewritten it.
+      [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
+        file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+      _attempt=$((_attempt + 1))
+      [ "$_attempt" -lt "$_max" ] && sleep 1
     done
     exit 0
     ;;
@@ -200,7 +220,7 @@ case "$sub" in
           file_port=""
           [ -n "$BURROW_HOME_DIR" ] && [ -f "$BURROW_HOME_DIR/hook.port" ] && \
             file_port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
-          for port in "$BURROW_HOOK_PORT" "$file_port"; do
+          for port in "$file_port" "$BURROW_HOOK_PORT"; do
             [ -n "$port" ] || continue
             curl -sf -X POST "http://127.0.0.1:$port/session-id" \
               -H 'Content-Type: application/json' \
@@ -219,7 +239,7 @@ case "$sub" in
         esac ;;
       PostToolUse)                state=running ;;
       SessionStart)               exit 0 ;;
-      PermissionRequest)          state=waiting ;;
+      PermissionRequest)          state=permission ;;
       Stop)
         # A Stop carrying still-running background_tasks is an INTERIM stop: the
         # agent spawned background sub-agents and parked waiting on them, and Claude
@@ -227,8 +247,14 @@ case "$sub" in
         # cmux: fullyIdle=false → stay running). Reporting `done` here is the premature
         # -completion bug. Detect a running background task and keep state running; a
         # bare Stop (no pending background work) is a real turn end → done.
-        if printf '%s' "$json" | grep -q '"background_tasks"' \
-           && printf '%s' "$json" | grep -Eq '"status"[ ]*:[ ]*"(running|pending|in_progress)"'; then
+        # Scope the status check to the background_tasks ARRAY only. The old code
+        # grepped the whole document for any "status":"running", so an unrelated
+        # status field elsewhere in the JSON could falsely keep the turn running.
+        # Isolate from `"background_tasks"` up to the first closing `]`, then look
+        # for a live task inside that slice.
+        bg=$(printf '%s' "$json" | sed -n 's/.*\("background_tasks"[^]]*\).*/\1/p')
+        if [ -n "$bg" ] \
+           && printf '%s' "$bg" | grep -Eq '"status"[ ]*:[ ]*"(running|pending|in_progress)"'; then
           state=running
         else
           state=done

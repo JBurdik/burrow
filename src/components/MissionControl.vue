@@ -644,11 +644,14 @@ async function wireTask(task: Task) {
     if (!t) return;
     const prev = t.status;
     if (state === "running") t.status = "running";
-    // A `waiting` is only real while a turn is in flight. After the turn ends,
-    // Claude fires an idle "waiting for your input" Notification ~60s later — that
-    // must NOT drag a finished task back out of `done`/`error`. A genuine
-    // follow-up re-enters via UserPromptSubmit → `running`.
-    else if (state === "waiting") { if (prev === "running") t.status = "waiting"; }
+    // `waiting` (blocking question) and `permission` (allow/deny request) both mean
+    // "needs you" — MC has no separate amber state, so both surface as `waiting`.
+    // Only real while a turn is in flight: after the turn ends Claude can fire a late
+    // idle ping, which must NOT drag a finished task back out of `done`/`error`. A
+    // genuine follow-up re-enters via UserPromptSubmit → `running`.
+    else if (state === "waiting" || state === "permission") {
+      if (prev === "running" || prev === "waiting") t.status = "waiting";
+    }
     else if (state === "done") {
       t.status = "done";
       // Transcript flushes a beat after Stop — read the result shortly after.
@@ -1258,7 +1261,10 @@ async function reconcileLive() {
       buffers.set(t.ptyId, buffers.get(t.ptyId) || "");
       await wireTask(t);
       t.alive = true;
-      if (t.status === "done") t.status = "waiting"; // idle at its prompt, ready for follow-up
+      // Keep a finished task's status as-is on reattach. Flipping done→waiting here
+      // made every reloaded done task read "waiting for input" forever (the stuck-
+      // waiting bug) — and a `done` task already accepts a follow-up (the composer is
+      // only disabled while `running`), so the flip bought nothing.
       saveTask(t);
     } catch { /* leave it read-only */ }
   }
@@ -1294,19 +1300,26 @@ type Activity = { exists: boolean; idle_ms: number; turn_ended: boolean; awaitin
 
 async function reconcileStatuses() {
   for (const t of tasks.value) {
-    // Only forward-settle from `running` — never pull a settled done/waiting back
-    // (the transcript can lag a fresh hook; we don't want to regress it).
-    if (!t.alive || t.status !== "running") continue;
+    // Forward-settle from `running` OR `waiting` — never pull a settled `done`/`error`
+    // back. Including `waiting` heals a task whose blocking question was resolved (or
+    // a `done` hook dropped after a wait): only settles if the transcript shows the
+    // turn truly ended (text reply, no pending tool), so a task genuinely parked on a
+    // question has `turn_ended=false` and stays `waiting`.
+    if (!t.alive || (t.status !== "running" && t.status !== "waiting")) continue;
     let act: Activity;
     try {
       act = await invoke("read_claude_activity", { cwd: t.cwd, sessionId: t.id, configDir: taskConfigDir(t) });
     } catch { continue; }
     if (!act.exists) continue;
     // Parked on a blocking tool (question / plan approval) → waiting for the user.
+    // Guard on a real transition so a task already `waiting` doesn't re-notify/save
+    // every tick (this block now also runs for `waiting` tasks, not just `running`).
     if (act.awaiting_input) {
-      t.status = "waiting";
-      if (!isWatching(t)) notifyTask(t, "waiting");
-      saveTask(t);
+      if (t.status !== "waiting") {
+        t.status = "waiting";
+        if (!isWatching(t)) notifyTask(t, "waiting");
+        saveTask(t);
+      }
       continue;
     }
     // Turn ended (text reply, no pending tool) + transcript idle, but no `done` hook

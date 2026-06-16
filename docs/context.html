@@ -345,6 +345,24 @@
       can style it differently. Ctrl+C clears permission state (same as running/waiting).</p>
     </div>
     <div class="card">
+      <h3>Fix: Status pipeline reliability</h3>
+      <p>Hardened the hook→dot path against silent loss: <strong>(1)</strong> sticky states
+      (<code>waiting</code>/<code>permission</code>/<code>done</code>) in <code>burrow status</code> retry up to 3× with a
+      <code>hook.port</code> re-read, so a POST dropped during the ~3 s port-reclaim window self-heals (<code>running</code> stays
+      a single fast attempt — it self-corrects on the next tool event). <strong>(2)</strong> Port resolution is now
+      <strong>file-first</strong> everywhere (authoritative <code>hook.port</code> over the stale-after-restart env port).
+      <strong>(3)</strong> The <code>background_tasks</code> "interim Stop" check is scoped to that JSON array slice, so an
+      unrelated <code>"status":"running"</code> can't false-positive into a never-ending turn. <strong>(4)</strong> A
+      <strong>dead-PTY watchdog</strong> in the 2 s poll settles a stuck in-flight dot when the foreground reads empty for ≥3
+      polls <em>and</em> <code>list_pty_sessions</code> confirms the PTY is dead — covers an agent killed/crashed with no
+      <code>Stop</code>. See <a href="burrow.html">burrow.html</a>.</p>
+      <p><strong>Mission Control</strong> shares the same <code>pty-hook-{id}</code> channel, so (1) and (2) apply to MC
+      tasks too. MC-specific: its reducer now maps <code>permission</code> → <code>waiting</code> (MC has no amber state); the
+      old <code>done→waiting</code> flip on PTY re-attach was removed (it made every reloaded finished task read "waiting for
+      input" forever); and the transcript fallback (<code>reconcileStatuses</code>) now forward-settles from <code>waiting</code>
+      too, so a resolved blocking question or a dropped post-wait <code>done</code> still lands on <code>done</code>.</p>
+    </div>
+    <div class="card">
       <h3>Feat: OS window title syncs to active tab</h3>
       <p>The macOS window title bar now reflects the active tab: <em>"task description — workspace name"</em>
       when the tab has a distinct title, falling back to just the workspace name or <em>"Burrow"</em>.
