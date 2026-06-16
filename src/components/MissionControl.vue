@@ -93,6 +93,7 @@
           <span class="status-text">· {{ statusLabel(selected) }}</span>
           <span class="handoff-badge" v-if="selected.handedOff" title="this task's live session was handed off to a terminal tab"><PhArrowSquareOut :size="11" weight="bold" /> in tab</span>
           <span class="spacer" />
+          <button class="btn tiny" :class="{ on: ui.missionShowActivity }" @click="ui.missionShowActivity = !ui.missionShowActivity" :title="ui.missionShowActivity ? 'hide thinking + tool activity in the feed' : 'show thinking + tool activity in the feed'"><PhWrench :size="12" /> Activity</button>
           <button class="btn tiny" @click="openTranscript(selected)" title="view the full session transcript"><PhArticle :size="12" /> Transcript</button>
           <button class="btn tiny" @click="openTerminal(selected)" :disabled="!selected.alive || selected.handedOff" title="attach live terminal"><PhTerminal :size="12" /> Terminal</button>
           <button v-if="selected.handedOff" class="btn tiny" @click="focusHandoff(selected)" title="jump to the terminal tab running this task"><PhArrowSquareOut :size="12" /> Focus tab</button>
@@ -101,14 +102,32 @@
         </header>
 
         <div class="convo-full" ref="convoEl">
-          <div v-for="(turn, i) in selected.turns" :key="i" class="turn" :class="turn.role">
-            <span class="role"><PhCaretRight v-if="turn.role === 'user'" :size="13" weight="bold" /><PhRobot v-else :size="14" /></span>
-            <div v-if="turn.role === 'user'" class="ttext">{{ turn.text }}</div>
+          <div v-for="(turn, i) in visibleTurns" :key="i" class="turn" :class="[turn.role, turn.kind || 'text']">
+            <span class="role">
+              <PhBrain v-if="turn.kind === 'thinking'" :size="13" />
+              <PhWrench v-else-if="turn.kind === 'tool_use'" :size="13" />
+              <PhArrowBendDownRight v-else-if="turn.kind === 'tool_result'" :size="13" />
+              <PhCaretRight v-else-if="turn.role === 'user'" :size="13" weight="bold" />
+              <PhRobot v-else :size="14" />
+            </span>
+            <!-- thinking: muted italic stream -->
+            <div v-if="turn.kind === 'thinking'" class="ttext thinking">{{ turn.text }}</div>
+            <!-- tool call: name + collapsible input -->
+            <details v-else-if="turn.kind === 'tool_use'" class="ttext tool-entry">
+              <summary><PhWrench :size="11" /> <span class="tool-name">{{ turn.tool || 'tool' }}</span></summary>
+              <pre v-if="turn.text">{{ turn.text }}</pre>
+            </details>
+            <!-- tool result: collapsible, error-tinted on failure -->
+            <details v-else-if="turn.kind === 'tool_result'" class="ttext tool-entry result" :class="{ err: turn.isError }">
+              <summary>{{ turn.isError ? 'result · error' : 'result' }}</summary>
+              <pre>{{ turn.text }}</pre>
+            </details>
+            <div v-else-if="turn.role === 'user'" class="ttext">{{ turn.text }}</div>
             <!-- eslint-disable-next-line vue/no-v-html -->
             <div v-else class="ttext md-body" v-html="renderMd(turn.text)"></div>
           </div>
           <div v-if="selected.status === 'running'" class="working"><PhRobot :size="13" /> working…</div>
-          <div v-if="selected.turns.length === 1 && selected.status !== 'running'" class="no-result">no result captured yet</div>
+          <div v-if="visibleTurns.length === 1 && selected.status !== 'running'" class="no-result">no result captured yet</div>
         </div>
 
         <!-- Handed off → a terminal tab owns input; lock the bar to avoid two writers. -->
@@ -440,7 +459,11 @@ const activeTerm = inject<() => {
 // turn also captures the transcript result (captureResult), which terminals don't.
 type Status = "running" | "waiting" | "permission" | "done" | "review" | "error" | "idle";
 type Role = "user" | "assistant";
-interface Turn { role: Role; text: string }
+type TurnKind = "text" | "thinking" | "tool_use" | "tool_result";
+// `kind` absent ⇒ plain text (back-compat with turns persisted before live streaming).
+// thinking/tool_use/tool_result are live-only activity entries — streamed from the
+// transcript while a task runs, NOT persisted (saveTask strips them, see below).
+interface Turn { role: Role; text: string; kind?: TurnKind; tool?: string | null; isError?: boolean }
 
 interface Task {
   id: string;        // crypto.randomUUID() — also Claude's --session-id
@@ -569,6 +592,11 @@ const promptTextarea = ref<HTMLTextAreaElement | null>(null);
 const canRun = computed(() => draft.prompt.trim().length > 0 && draft.cwd.trim().length > 0);
 const orderedTasks = computed(() => [...tasks.value].sort((a, b) => b.createdAt - a.createdAt));
 const selected = computed(() => tasks.value.find((t) => t.id === selectedId.value) || null);
+// Detail feed turns, gated by the activity toggle: off → text messages only.
+const visibleTurns = computed<Turn[]>(() => {
+  const ts = selected.value?.turns ?? [];
+  return ui.missionShowActivity ? ts : ts.filter((x) => !x.kind || x.kind === "text");
+});
 
 // A project = a Burrow workspace. Tasks group under their workspace; the label
 // is the workspace name, falling back to the cwd basename for tasks whose
@@ -868,13 +896,22 @@ async function captureResult(t: Task) {
   } catch { /* best-effort */ }
 }
 
-// Live streaming: while a task runs, its JSONL transcript grows one assistant text
-// block at a time (per-message, not per-token). Append any assistant text not yet
-// shown so the detail feed fills in as the turn progresses — instead of staying on
-// "working…" until the final `captureResult`. Dedup by exact text (same spirit as
-// captureResult's lastAssistant check), so re-running each tick is idempotent and
-// captureResult's final append can't double up. Only touches assistant turns —
-// user turns are pushed optimistically (seed + sendFollowup) and left alone.
+// Live streaming: while a task runs, its JSONL transcript grows one block at a time
+// (per-message, not per-token — text, thinking, tool_use, tool_result). Rebuild the
+// detail feed from the transcript each tick so it fills in as the turn progresses,
+// instead of staying on "working…" until the final `captureResult`. The transcript
+// is the source of truth (clean dedup for repeated tool inputs, reload-safe), with
+// ONE exception: a just-submitted follow-up user turn is pushed optimistically by
+// sendFollowup and lags the transcript by <1s — preserve it at the tail so it
+// doesn't flicker out for a tick.
+function turnsEqual(a: Turn[], b: Turn[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].role !== b[i].role || a[i].kind !== b[i].kind || a[i].text !== b[i].text) return false;
+  }
+  return true;
+}
+
 async function syncLiveTurns(t: Task) {
   let rows: TranscriptEntry[];
   try {
@@ -883,20 +920,31 @@ async function syncLiveTurns(t: Task) {
     });
   } catch { return; }
   if (!rows?.length) return;
-  const seen = new Set(t.turns.filter((x) => x.role === "assistant").map((x) => x.text));
-  let appended = false;
-  for (const r of rows) {
-    if (r.role !== "assistant" || r.kind !== "text") continue;
-    const text = (r.text || "").trim();
-    if (!text || seen.has(text)) continue;
-    t.turns.push({ role: "assistant", text });
-    seen.add(text);
-    appended = true;
+  const derived: Turn[] = rows
+    .filter((r) => (r.text && r.text.trim()) || r.kind === "tool_use" || r.kind === "tool_result")
+    .map((r) => ({
+      role: r.role === "assistant" ? "assistant" : "user",
+      text: r.text || "",
+      kind: (r.kind === "image" ? "text" : r.kind) as TurnKind,
+      tool: r.tool,
+      isError: r.isError,
+    }));
+  // Preserve an optimistic follow-up user message not yet flushed to the transcript.
+  // Match by core text (strip our "📎 N images" annotation + collapse whitespace):
+  // the transcript stores the raw prompt — newline-collapsed, image paths appended —
+  // so an exact compare would miss it and duplicate the turn once it lands.
+  const last = t.turns[t.turns.length - 1];
+  if (last?.role === "user" && (!last.kind || last.kind === "text")) {
+    const core = last.text.split("\n📎")[0].replace(/\s+/g, " ").trim();
+    const present = core.length > 0 && derived.some(
+      (d) => d.role === "user" && d.kind === "text" && d.text.replace(/\s+/g, " ").includes(core),
+    );
+    if (!present) derived.push({ role: "user", text: last.text, kind: "text" });
   }
-  if (appended) {
-    if (t.id === selectedId.value) scrollConvo();
-    saveTask(t);
-  }
+  if (turnsEqual(derived, t.turns)) return;
+  t.turns = derived;
+  if (t.id === selectedId.value) scrollConvo();
+  saveTask(t);
 }
 
 function apiErrorReason(e: { status: number | null; message: string }): string {
@@ -1443,6 +1491,14 @@ function closeTerminal() {
 // ── Persistence — shared workspaces.db (mission_tasks table), like every other
 // Burrow feature. Metadata only; live PTYs aren't serializable, so a restored
 // task is read-only (its daemon PTY died with the previous app session).
+// thinking/tool entries are live-only — regenerated from the transcript while a task
+// runs. Persist just the text conversation (user prompts + assistant replies): keeps
+// the DB lean (tool_result text can be a whole file dump) and avoids restoring stale
+// activity for a dead task whose transcript the next session re-reads anyway.
+function persistTurns(turns: Turn[]): Turn[] {
+  return turns.filter((x) => !x.kind || x.kind === "text").map((x) => ({ role: x.role, text: x.text }));
+}
+
 function saveTask(t: Task) {
   invoke("upsert_mission_task", {
     task: {
@@ -1453,7 +1509,7 @@ function saveTask(t: Task) {
       cwd: t.cwd,
       model: t.model,
       status: t.status,
-      turns: JSON.stringify(t.turns),
+      turns: JSON.stringify(persistTurns(t.turns)),
       created_at: t.createdAt,
       handed_off: t.handedOff ? 1 : 0,
       profile_id: t.profileId,
@@ -1795,6 +1851,20 @@ onBeforeUnmount(() => {
 .md-body :deep(strong) { color: var(--text-primary); font-weight: 700; }
 .working { color: var(--yellow); font-size: 12px; padding-left: 28px; display: flex; align-items: center; gap: 6px; animation: pulse 1.4s infinite; }
 .no-result { color: var(--text-muted); font-size: 12px; font-style: italic; padding-left: 28px; }
+/* Live activity entries (thinking + tool calls) in the detail feed. Specificity is
+   bumped (.turn .ttext.X) so these beat the .turn.user/.assistant .ttext bubbles —
+   tool_result rides a role="user" message, so it'd otherwise get the user bubble. */
+.turn.thinking .role { color: var(--text-muted); }
+.turn .ttext.thinking { flex: 1; font-style: italic; opacity: 0.75; color: var(--text-muted); white-space: pre-wrap; background: none; border: none; border-radius: 0; padding: 0; font-family: inherit; }
+.turn .ttext.tool-entry { flex: 1; font-family: var(--font-mono); font-size: 11px; background: color-mix(in srgb, var(--bg-hover) 45%, transparent); border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: 8px; padding: 6px 10px; white-space: normal; }
+.tool-entry summary { cursor: pointer; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; user-select: none; list-style: none; }
+.tool-entry summary::-webkit-details-marker { display: none; }
+.tool-entry .tool-name { color: var(--accent); font-weight: 600; }
+.tool-entry pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; color: var(--text-muted); font-family: var(--font-mono); }
+.tool-entry.result summary { color: var(--text-muted); }
+.tool-entry.result.err { border-color: color-mix(in srgb, var(--red) 50%, transparent); }
+.tool-entry.result.err summary { color: var(--red); }
+.btn.tiny.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 
 /* ── Continue bar (send & continue) ── */
 .continue-bar { border-top: 1px solid var(--border); padding: 12px 20px 16px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-panel); }

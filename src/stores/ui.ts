@@ -59,6 +59,7 @@ interface Prefs {
   floatCorner: string; // which screen corner floating windows snap+stack to
   worktreesDir: string; // parent dir for git worktrees: <dir>/<repo>/<branch>
   mode: "terminal" | "claude" | "git" | "mission" | "dashboard"; // active main-pane mode, switched via activity bar
+  missionShowActivity: boolean; // MC detail feed: show thinking + tool_use/result entries (off = text messages only)
   bgImagePath: string; // absolute path to user wallpaper (empty = none)
   bgOpacity: number; // 0–1 opacity of panels/terminal over the wallpaper
   // Per-element backdrop-blur radius in px (0 = off). Separate so each surface
@@ -96,6 +97,7 @@ const DEFAULT_PREFS: Prefs = {
   floatCorner: "top-right",
   worktreesDir: "~/burrow-worktrees",
   mode: "terminal",
+  missionShowActivity: true,
   bgImagePath: "",
   bgOpacity: 0.82,
   blurPanels: 20,
@@ -144,6 +146,7 @@ export const useUIStore = defineStore("ui", () => {
   const floatCorner = ref(loaded.floatCorner);
   const worktreesDir = ref(loaded.worktreesDir);
   const mode = ref<"terminal" | "claude" | "git" | "mission" | "dashboard">(loaded.mode);
+  const missionShowActivity = ref(loaded.missionShowActivity);
   const bgImagePath = ref(loaded.bgImagePath);
   const bgOpacity = ref(loaded.bgOpacity);
   const blurPanels = ref(loaded.blurPanels);
@@ -277,6 +280,7 @@ export const useUIStore = defineStore("ui", () => {
         floatCorner: floatCorner.value,
         worktreesDir: worktreesDir.value,
         mode: mode.value,
+        missionShowActivity: missionShowActivity.value,
         bgImagePath: bgImagePath.value,
         bgOpacity: bgOpacity.value,
         blurPanels: blurPanels.value,
@@ -295,7 +299,7 @@ export const useUIStore = defineStore("ui", () => {
   watch(
     [uiFont, uiFontSize, uiScale, terminalFont, terminalFontSize, swapPanels, theme,
      soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
-     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir, mode],
+     soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir, mode, missionShowActivity],
     () => {
       savePrefs();
       applyTheme();
@@ -396,6 +400,7 @@ export const useUIStore = defineStore("ui", () => {
     floatCorner,
     worktreesDir,
     mode,
+    missionShowActivity,
     setMode,
     toggleDashboard,
     toggleGitPanel,
