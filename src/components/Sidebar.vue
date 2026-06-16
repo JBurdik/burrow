@@ -434,6 +434,7 @@ function toggleCollapse(id: number) {
 // caret's job only (clicking the row to select shouldn't fold the tab list shut).
 function openWs(item: Workspace) {
   if (isCollapsed(item.id)) setCollapsed(item.id, false);
+  if (ui.mode !== "terminal") ui.setMode("terminal");
   store.open(item);
   mountWorktrees(item.id);
 }
@@ -441,6 +442,7 @@ function openWs(item: Workspace) {
 // Worktree row click: just open/activate it (its terminals are already mounted
 // via mountWorktrees; no per-worktree collapse state to toggle).
 function selectWorktree(wt: Workspace) {
+  if (ui.mode !== "terminal") ui.setMode("terminal");
   store.open(wt);
 }
 
@@ -518,6 +520,7 @@ watch(() => store.workspaces, (wss) => wss.forEach(ws => {
 
 // ── Claude chat sessions ─────────────────────────────────────────────────────
 function newChatSession(workspaceId: number) {
+  if (ui.mode !== "terminal") ui.setMode("terminal");
   if (store.active?.id !== workspaceId) {
     const w = store.workspaces.find((x) => x.id === workspaceId);
     if (w) store.open(w);
@@ -526,6 +529,7 @@ function newChatSession(workspaceId: number) {
 }
 
 function selectChatSession(ws: Workspace, sessionId: number) {
+  if (ui.mode !== "terminal") ui.setMode("terminal");
   if (store.active?.id !== ws.id) store.open(ws);
   termTabs.openChat(ws.id, sessionId);
 }
@@ -575,6 +579,7 @@ async function pickIcon(id: number) {
 // first if needed; its Terminal stays mounted while opened, so the request
 // reaches it once active.
 function selectTab(ws: Workspace, tabId: number) {
+  if (ui.mode !== "terminal") ui.setMode("terminal");
   if (store.active?.id !== ws.id) store.open(ws);
   nextTick(() => termTabs.activate(ws.id, tabId));
 }
