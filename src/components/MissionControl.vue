@@ -93,6 +93,7 @@
           <span class="status-text">· {{ statusLabel(selected) }}</span>
           <span class="handoff-badge" v-if="selected.handedOff" title="this task's live session was handed off to a terminal tab"><PhArrowSquareOut :size="11" weight="bold" /> in tab</span>
           <span class="spacer" />
+          <button class="btn tiny" @click="openTranscript(selected)" title="view the full session transcript"><PhArticle :size="12" /> Transcript</button>
           <button class="btn tiny" @click="openTerminal(selected)" :disabled="!selected.alive || selected.handedOff" title="attach live terminal"><PhTerminal :size="12" /> Terminal</button>
           <button v-if="selected.handedOff" class="btn tiny" @click="focusHandoff(selected)" title="jump to the terminal tab running this task"><PhArrowSquareOut :size="12" /> Focus tab</button>
           <button v-else class="btn tiny" @click="handoffToTab(selected)" :disabled="!selected.alive" title="hand this live session off to a real terminal tab (keeps tracking here)"><PhArrowRight :size="12" /> Hand off</button>
@@ -337,6 +338,59 @@
         <div ref="termHost" class="term-host"></div>
       </div>
     </div>
+
+    <!-- ── Full-transcript dialog ───────────────────────────────────────── -->
+    <div v-if="transcriptOpen" class="tr-modal" @click.self="closeTranscript">
+      <div class="tr-box">
+        <header class="tr-head">
+          <PhArticle :size="15" weight="bold" class="tr-brand" />
+          <span class="tr-title">{{ transcriptTitle }}</span>
+          <span class="tr-count" v-if="transcriptEntries.length">{{ transcriptEntries.length }} entries</span>
+          <span class="spacer" />
+          <button class="btn tiny" @click="reloadTranscript" title="reload from disk"><PhArrowClockwise :size="12" /></button>
+          <button class="btn tiny" @click="closeTranscript">close</button>
+        </header>
+        <div class="tr-body" ref="trBodyEl">
+          <div v-if="transcriptLoading" class="tr-state"><PhArrowClockwise :size="14" class="spin" /> loading transcript…</div>
+          <div v-else-if="!transcriptEntries.length" class="tr-state">No transcript found on disk yet.</div>
+          <template v-else>
+            <div v-for="(e, i) in transcriptEntries" :key="i" class="tr-entry" :class="[e.role, e.kind, { err: e.isError }]">
+              <!-- text / thinking → bubble -->
+              <template v-if="e.kind === 'text' || e.kind === 'thinking'">
+                <div class="tr-gutter">
+                  <PhCaretRight v-if="e.role === 'user'" :size="13" weight="bold" />
+                  <PhBrain v-else-if="e.kind === 'thinking'" :size="14" />
+                  <PhRobot v-else :size="14" />
+                </div>
+                <div class="tr-content">
+                  <div class="tr-role">{{ e.kind === 'thinking' ? 'thinking' : e.role }}</div>
+                  <div v-if="e.kind === 'thinking'" class="tr-text think">{{ e.text }}</div>
+                  <!-- eslint-disable-next-line vue/no-v-html -->
+                  <div v-else-if="e.role === 'assistant'" class="tr-text md-body" v-html="renderMd(e.text)"></div>
+                  <div v-else class="tr-text">{{ e.text }}</div>
+                </div>
+              </template>
+              <!-- tool call → collapsible -->
+              <template v-else-if="e.kind === 'tool_use'">
+                <div class="tr-gutter"><PhWrench :size="13" /></div>
+                <details class="tr-tool">
+                  <summary><span class="tr-tool-name">{{ e.tool }}</span><span class="tr-tool-hint">tool call</span></summary>
+                  <pre class="tr-pre">{{ e.text }}</pre>
+                </details>
+              </template>
+              <!-- tool result → collapsible -->
+              <template v-else-if="e.kind === 'tool_result'">
+                <div class="tr-gutter"><PhArrowBendDownRight :size="13" /></div>
+                <details class="tr-tool result" :class="{ err: e.isError }">
+                  <summary><span class="tr-tool-name">{{ e.isError ? 'error' : 'result' }}</span><span class="tr-tool-hint">{{ trFirstLine(e.text) }}</span></summary>
+                  <pre class="tr-pre">{{ e.text }}</pre>
+                </details>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -353,6 +407,7 @@ import {
   PhArrowRight, PhArrowLeft, PhArrowClockwise, PhTrash, PhImage, PhX, PhWarning,
   PhCaretRight, PhCaretDown, PhCheck, PhArrowSquareOut, PhPaperclip, PhFile,
   PhMagnifyingGlass, PhUserGear, PhStop, PhArrowUp,
+  PhArticle, PhBrain, PhWrench, PhArrowBendDownRight,
 } from "@phosphor-icons/vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useProfilesStore } from "@/stores/profiles";
@@ -1187,6 +1242,61 @@ function clearDead() {
   }
 }
 
+// ── Full-transcript dialog ────────────────────────────────────────────────────
+interface TranscriptEntry {
+  role: "user" | "assistant" | "system";
+  kind: "text" | "thinking" | "tool_use" | "tool_result" | "image";
+  text: string;
+  tool: string | null;
+  isError?: boolean;
+  ts: string | null;
+}
+const transcriptOpen = ref(false);
+const transcriptLoading = ref(false);
+const transcriptEntries = ref<TranscriptEntry[]>([]);
+const transcriptTaskId = ref<string | null>(null);
+const trBodyEl = ref<HTMLElement | null>(null);
+const transcriptTitle = computed(() => tasks.value.find((t) => t.id === transcriptTaskId.value)?.title ?? "Transcript");
+
+function trFirstLine(s: string): string {
+  const line = (s || "").split("\n").find((l) => l.trim()) ?? "";
+  return line.length > 80 ? line.slice(0, 80) + "…" : line;
+}
+
+async function loadTranscript(t: Task) {
+  transcriptLoading.value = true;
+  try {
+    const rows = await invoke<TranscriptEntry[]>("read_claude_transcript", {
+      cwd: t.cwd, sessionId: t.id, configDir: taskConfigDir(t),
+    });
+    transcriptEntries.value = rows ?? [];
+  } catch {
+    transcriptEntries.value = [];
+  } finally {
+    transcriptLoading.value = false;
+  }
+  await nextTick();
+  if (trBodyEl.value) trBodyEl.value.scrollTop = trBodyEl.value.scrollHeight;
+}
+
+function openTranscript(t: Task) {
+  transcriptTaskId.value = t.id;
+  transcriptEntries.value = [];
+  transcriptOpen.value = true;
+  loadTranscript(t);
+}
+
+function reloadTranscript() {
+  const t = tasks.value.find((x) => x.id === transcriptTaskId.value);
+  if (t) loadTranscript(t);
+}
+
+function closeTranscript() {
+  transcriptOpen.value = false;
+  transcriptTaskId.value = null;
+  transcriptEntries.value = [];
+}
+
 // ── Terminal modal ───────────────────────────────────────────────────────────
 const termHost = ref<HTMLElement | null>(null);
 const termTaskId = ref<string | null>(null);
@@ -1736,6 +1846,40 @@ onBeforeUnmount(() => {
 .term-box { width: min(1000px, 80vw); height: min(680px, 78vh); background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 24px 64px -16px #000c; display: flex; flex-direction: column; overflow: hidden; backdrop-filter: var(--blur-overlay, none); -webkit-backdrop-filter: var(--blur-overlay, none); }
 .term-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border); font-size: 13px; }
 .term-host { flex: 1; min-height: 0; padding: 8px; overflow: hidden; }
+
+/* ── Full-transcript dialog ── */
+.tr-modal { position: fixed; inset: 0; background: #000b; display: flex; align-items: center; justify-content: center; z-index: 110; }
+.tr-box { width: min(860px, 90vw); height: min(760px, 86vh); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 24px 64px -16px #000c; display: flex; flex-direction: column; overflow: hidden; backdrop-filter: var(--blur-overlay, none); -webkit-backdrop-filter: var(--blur-overlay, none); }
+.tr-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; }
+.tr-brand { color: var(--accent); flex-shrink: 0; }
+.tr-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-count { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.tr-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.tr-state { color: var(--text-muted); font-size: 13px; text-align: center; padding: 32px 0; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.spin { animation: tr-spin 1s linear infinite; }
+@keyframes tr-spin { to { transform: rotate(360deg); } }
+
+.tr-entry { display: grid; grid-template-columns: 20px 1fr; gap: 8px; align-items: start; }
+.tr-gutter { color: var(--text-muted); display: flex; justify-content: center; padding-top: 2px; }
+.tr-entry.user .tr-gutter { color: var(--accent); }
+.tr-entry.thinking .tr-gutter { color: var(--text-muted); opacity: .7; }
+.tr-content { min-width: 0; }
+.tr-role { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); margin-bottom: 3px; }
+.tr-text { font-size: 13px; line-height: 1.55; color: var(--text-primary); white-space: pre-wrap; word-break: break-word; }
+.tr-text.think { font-style: italic; color: var(--text-secondary); opacity: .85; white-space: pre-wrap; }
+.tr-entry.user .tr-text { background: var(--bg-hover); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+
+/* tool call / result — collapsible */
+.tr-tool { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-base, var(--bg-panel)); overflow: hidden; }
+.tr-tool summary { cursor: pointer; list-style: none; padding: 6px 10px; display: flex; align-items: baseline; gap: 8px; font-size: 12px; user-select: none; }
+.tr-tool summary::-webkit-details-marker { display: none; }
+.tr-tool summary:hover { background: var(--bg-hover); }
+.tr-tool-name { font-family: var(--font-mono); font-weight: 600; color: var(--accent); flex-shrink: 0; }
+.tr-tool.result .tr-tool-name { color: var(--text-secondary); }
+.tr-tool.err .tr-tool-name { color: var(--err, #e5484d); }
+.tr-tool-hint { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-pre { margin: 0; padding: 8px 10px; border-top: 1px solid var(--border); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
+.tr-entry.err .tr-pre { color: var(--err, #e5484d); }
 
 /* ── Composer improvements ── */
 .cm-head { display: flex; align-items: center; font-size: 14px; font-weight: 600; gap: 8px; }

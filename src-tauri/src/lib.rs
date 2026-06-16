@@ -2857,6 +2857,129 @@ fn read_claude_activity(cwd: String, session_id: String, config_dir: Option<Stri
     ClaudeActivity { exists: true, idle_ms, turn_ended, awaiting_input, is_error }
 }
 
+/// One rendered line of a transcript: a single content block flattened out of the
+/// JSONL so the frontend can render the FULL conversation (not just the captured
+/// user/assistant turns Mission Control tracks live). `kind` distinguishes text,
+/// thinking, tool calls and their results so the UI can style each differently.
+#[derive(Debug, Serialize)]
+pub struct TranscriptEntry {
+    /// "user" | "assistant" | "system"
+    pub role: String,
+    /// "text" | "thinking" | "tool_use" | "tool_result" | "image"
+    pub kind: String,
+    /// The body: message text, thinking text, tool input (pretty JSON), or tool result.
+    pub text: String,
+    /// Tool name for `tool_use`; the result's tool name for `tool_result` (when known).
+    pub tool: Option<String>,
+    /// True for a failed tool_result or a synthetic API-error assistant message.
+    #[serde(default)]
+    pub is_error: bool,
+    /// ISO timestamp of the source message, if present.
+    pub ts: Option<String>,
+}
+
+/// Stringify a tool_result `content` (string, or array of text/image blocks).
+fn stringify_result_content(v: &serde_json::Value) -> (String, bool) {
+    if let Some(s) = v.as_str() {
+        return (s.to_string(), false);
+    }
+    if let Some(arr) = v.as_array() {
+        let mut out = String::new();
+        let mut has_image = false;
+        for block in arr {
+            match block.get("type").and_then(|b| b.as_str()) {
+                Some("text") => {
+                    if !out.is_empty() { out.push('\n'); }
+                    out.push_str(block.get("text").and_then(|t| t.as_str()).unwrap_or(""));
+                }
+                Some("image") => has_image = true,
+                _ => {}
+            }
+        }
+        if has_image && out.is_empty() {
+            out.push_str("[image]");
+        }
+        return (out, false);
+    }
+    (String::new(), false)
+}
+
+/// Parse a session's full JSONL transcript into a flat, render-ready list of entries.
+/// Used by Mission Control's "Full transcript" dialog. Returns [] if not found yet.
+#[tauri::command]
+fn read_claude_transcript(cwd: String, session_id: String, config_dir: Option<String>) -> Vec<TranscriptEntry> {
+    let mut out: Vec<TranscriptEntry> = Vec::new();
+    let Some(path) = claude_transcript_path(&cwd, &session_id, config_dir.as_deref()) else { return out };
+    let Ok(content) = std::fs::read_to_string(&path) else { return out };
+    for line in content.lines() {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let ty = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if ty != "user" && ty != "assistant" {
+            continue; // skip summaries / system meta
+        }
+        // Meta entries (e.g. injected reminders) aren't real conversation.
+        if msg.get("isMeta").and_then(|v| v.as_bool()) == Some(true) {
+            continue;
+        }
+        let ts = msg.get("timestamp").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let is_api_err = msg.get("isApiErrorMessage").and_then(|v| v.as_bool()) == Some(true);
+        let body = &msg["message"]["content"];
+        // Plain-string content (most user prompts).
+        if let Some(s) = body.as_str() {
+            if !s.is_empty() {
+                out.push(TranscriptEntry {
+                    role: ty.to_string(), kind: "text".into(), text: s.to_string(),
+                    tool: None, is_error: is_api_err, ts,
+                });
+            }
+            continue;
+        }
+        let Some(arr) = body.as_array() else { continue };
+        for block in arr {
+            match block.get("type").and_then(|v| v.as_str()) {
+                Some("text") => {
+                    let t = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    if !t.is_empty() {
+                        out.push(TranscriptEntry {
+                            role: ty.to_string(), kind: "text".into(), text: t.to_string(),
+                            tool: None, is_error: is_api_err, ts: ts.clone(),
+                        });
+                    }
+                }
+                Some("thinking") => {
+                    let t = block.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+                    if !t.is_empty() {
+                        out.push(TranscriptEntry {
+                            role: ty.to_string(), kind: "thinking".into(), text: t.to_string(),
+                            tool: None, is_error: false, ts: ts.clone(),
+                        });
+                    }
+                }
+                Some("tool_use") => {
+                    let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("tool").to_string();
+                    let input = block.get("input")
+                        .map(|i| serde_json::to_string_pretty(i).unwrap_or_default())
+                        .unwrap_or_default();
+                    out.push(TranscriptEntry {
+                        role: ty.to_string(), kind: "tool_use".into(), text: input,
+                        tool: Some(name), is_error: false, ts: ts.clone(),
+                    });
+                }
+                Some("tool_result") => {
+                    let (text, _) = stringify_result_content(block.get("content").unwrap_or(&serde_json::Value::Null));
+                    let is_error = block.get("is_error").and_then(|v| v.as_bool()) == Some(true);
+                    out.push(TranscriptEntry {
+                        role: ty.to_string(), kind: "tool_result".into(), text,
+                        tool: None, is_error, ts: ts.clone(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 // ── Claude 5h usage ───────────────────────────────────────────────────────────
 
 /// Parse "2026-06-02T07:06:19.987Z" → ms since Unix epoch. No external crates.
@@ -3230,6 +3353,7 @@ pub fn run() {
             read_claude_result,
             read_claude_outcome,
             read_claude_activity,
+            read_claude_transcript,
             list_mission_tasks,
             upsert_mission_task,
             delete_mission_task,
