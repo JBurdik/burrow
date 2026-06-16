@@ -1733,7 +1733,7 @@ onBeforeUnmount(() => {
 .turn .role { flex-shrink: 0; width: 18px; display: flex; justify-content: center; padding-top: 2px; color: var(--text-muted); }
 .turn .ttext { white-space: pre-wrap; }
 .turn.user .ttext { color: var(--text-primary); font-family: var(--font-mono); background: color-mix(in srgb, var(--bg-hover) 70%, transparent); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; flex: 1; }
-.turn.assistant .ttext { color: var(--text-secondary); background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; flex: 1; }
+.turn.assistant .ttext { color: var(--text-secondary); background: color-mix(in srgb, var(--terminal-bg) 55%, transparent); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 8px; padding: 10px 12px; flex: 1; }
 
 /* Markdown body inside assistant turns */
 .md-body { white-space: normal; line-height: 1.6; }
