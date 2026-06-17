@@ -51,6 +51,7 @@
     />
     <ToastStack />
     <UpdateBanner />
+    <Teleport to="body"><PetOverlay v-if="ui.petsEnabled" /></Teleport>
 
     <!-- Keyboard cheatsheet overlay (⌘/) -->
     <Teleport to="body">
@@ -93,6 +94,7 @@ import Settings from "@/components/Settings.vue";
 import Spotlight from "@/components/Spotlight.vue";
 import ToastStack from "@/components/ToastStack.vue";
 import UpdateBanner from "@/components/UpdateBanner.vue";
+import PetOverlay from "@/components/PetOverlay.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
 import { useGitStore } from "@/stores/git";

@@ -75,6 +75,10 @@ interface Prefs {
   ntfyToken: string; // optional access token (Bearer) for protected topics
   ntfyEvents: NtfyEvent[]; // which agent transitions push a notification
   ntfyOnlyWhenAway: boolean; // only push when the app window is unfocused
+  // ── Plugins: Terminal Pets ──
+  petsEnabled: boolean; // master toggle for the free-roam pixel critters overlay
+  petsSpeech: boolean; // pets squeak status quips in speech bubbles
+  petsLeveling: boolean; // pets grow + earn hats the more turns their agent finishes
 }
 
 // Agent transitions that can trigger an ntfy push.
@@ -126,6 +130,9 @@ const DEFAULT_PREFS: Prefs = {
   ntfyToken: "",
   ntfyEvents: ["done", "permission", "error"],
   ntfyOnlyWhenAway: true,
+  petsEnabled: false,
+  petsSpeech: true,
+  petsLeveling: true,
 };
 
 function loadPrefs(): Prefs {
@@ -181,6 +188,9 @@ export const useUIStore = defineStore("ui", () => {
   const ntfyToken = ref(loaded.ntfyToken);
   const ntfyEvents = ref<NtfyEvent[]>(loaded.ntfyEvents);
   const ntfyOnlyWhenAway = ref(loaded.ntfyOnlyWhenAway);
+  const petsEnabled = ref(loaded.petsEnabled);
+  const petsSpeech = ref(loaded.petsSpeech);
+  const petsLeveling = ref(loaded.petsLeveling);
   // In-memory blob URL for the current wallpaper (not persisted).
   const bgImageUrl = ref<string>("");
   const missionActiveCount = ref(0);
@@ -321,6 +331,9 @@ export const useUIStore = defineStore("ui", () => {
         ntfyToken: ntfyToken.value,
         ntfyEvents: ntfyEvents.value,
         ntfyOnlyWhenAway: ntfyOnlyWhenAway.value,
+        petsEnabled: petsEnabled.value,
+        petsSpeech: petsSpeech.value,
+        petsLeveling: petsLeveling.value,
       } satisfies Prefs),
     );
   }
@@ -334,7 +347,8 @@ export const useUIStore = defineStore("ui", () => {
     [uiFont, uiFontSize, uiScale, terminalFont, terminalFontSize, swapPanels, theme,
      soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
      soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir, mode, missionShowActivity,
-     ntfyEnabled, ntfyServer, ntfyTopic, ntfyToken, ntfyEvents, ntfyOnlyWhenAway],
+     ntfyEnabled, ntfyServer, ntfyTopic, ntfyToken, ntfyEvents, ntfyOnlyWhenAway,
+     petsEnabled, petsSpeech, petsLeveling],
     () => {
       savePrefs();
       applyTheme();
@@ -458,5 +472,8 @@ export const useUIStore = defineStore("ui", () => {
     ntfyToken,
     ntfyEvents,
     ntfyOnlyWhenAway,
+    petsEnabled,
+    petsSpeech,
+    petsLeveling,
   };
 });

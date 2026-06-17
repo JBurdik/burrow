@@ -729,6 +729,57 @@
           </div>
         </section>
 
+        <!-- Plugins -->
+        <section v-else-if="active === 'plugins'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Plugins</h2>
+              <span class="sec-sub">Optional fun + experimental add-ons</span>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <div class="settings-group">
+            <span class="group-label">🐾 Terminal Pets</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Enable pets</span>
+                <span class="field-desc">A mixed pixel zoo — cat, mole, slime, ghost, duck — roams the bottom of the window. One critter per active agent; it struts while the agent works, bounces when it needs input, hops when a turn finishes, and shakes red on error.</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" :checked="ui.petsEnabled" @change="ui.petsEnabled = ($event.target as HTMLInputElement).checked" />
+                <span class="toggle-track"><span class="toggle-thumb" /></span>
+              </label>
+            </div>
+
+            <template v-if="ui.petsEnabled">
+              <div class="field">
+                <div class="field-info">
+                  <span class="field-name">Speech bubbles</span>
+                  <span class="field-desc">Pets squeak tiny status quips — “working…”, “need input!”, “done!”</span>
+                </div>
+                <label class="toggle">
+                  <input type="checkbox" :checked="ui.petsSpeech" @change="ui.petsSpeech = ($event.target as HTMLInputElement).checked" />
+                  <span class="toggle-track"><span class="toggle-thumb" /></span>
+                </label>
+              </div>
+              <div class="field">
+                <div class="field-info">
+                  <span class="field-name">Leveling &amp; crowns</span>
+                  <span class="field-desc">Pets level up as their agent finishes turns and earn a ♛ crown once they hit veteran status.</span>
+                </div>
+                <label class="toggle">
+                  <input type="checkbox" :checked="ui.petsLeveling" @change="ui.petsLeveling = ($event.target as HTMLInputElement).checked" />
+                  <span class="toggle-track"><span class="toggle-thumb" /></span>
+                </label>
+              </div>
+              <div class="sec-foot">
+                <span class="sec-sub">Tip: click a pet to give it a poke.</span>
+              </div>
+            </template>
+          </div>
+        </section>
+
         <!-- Keybindings -->
         <section v-else-if="active === 'keybindings'" class="section">
           <div class="sec-head">
@@ -1172,7 +1223,7 @@ import {
   PhListBullets, PhCaretDown, PhFolder, PhPencilSimple, PhCheck, PhBell, PhPlay,
   PhDotsSixVertical, PhArrowClockwise, PhDownloadSimple, PhTerminalWindow,
   PhPlugsConnected, PhBrowser, PhToggleLeft, PhToggleRight, PhArrowSquareOut, PhImage,
-  PhUserGear, PhPaperPlaneTilt,
+  PhUserGear, PhPaperPlaneTilt, PhPawPrint,
 } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -1622,6 +1673,7 @@ const navItems: NavItem[] = [
   { id: "notifications", label: "Notifications", icon: PhBell },
   { id: "integrations", label: "Integrations", icon: PhPlugsConnected },
   { id: "keybindings", label: "Keybindings", icon: PhKeyboard },
+  { id: "plugins", label: "Plugins", icon: PhPawPrint },
   { id: "extensions", label: "Extensions", icon: PhPuzzlePiece },
   { id: "about", label: "About", icon: PhInfo },
 ];
