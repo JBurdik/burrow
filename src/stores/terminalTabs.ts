@@ -24,6 +24,8 @@ type TabRequest = {
   fromIdx?: number;
   toIdx?: number;
   title?: string;
+  /** Optional command to run in a newly-added tab (action: "add"). */
+  cmd?: string;
   nonce: number;
 };
 
@@ -47,8 +49,8 @@ export const useTerminalTabsStore = defineStore("terminalTabs", () => {
   function activate(wsId: number, tabId: number) {
     request.value = { wsId, action: "activate", tabId, nonce: ++nonce };
   }
-  function add(wsId: number) {
-    request.value = { wsId, action: "add", nonce: ++nonce };
+  function add(wsId: number, cmd?: string) {
+    request.value = { wsId, action: "add", cmd, nonce: ++nonce };
   }
   function close(wsId: number, tabId: number) {
     request.value = { wsId, action: "close", tabId, nonce: ++nonce };

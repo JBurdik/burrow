@@ -571,7 +571,10 @@ You are running inside Burrow, which gives you a `burrow` CLI to delegate work t
 - `burrow set-status \"text\"` / `burrow set-status` — show/clear a status label in this tab's header.\n\
 - `burrow trigger-flash` — briefly flash this tab as a visual ping to the user.\n\
 - `burrow diff --last-turn` — git diff from HEAD at the start of the current agent turn.\n\
-- `burrow top` — table of all live Burrow PTY sessions.\n\n\
+- `burrow top` — table of all live Burrow PTY sessions.\n\
+- `burrow list-workspaces` / `burrow list-tabs [--ws ID]` — print workspaces / tabs (tab-separated, ids first).\n\
+- `burrow focus-workspace ID` / `burrow focus-tab ID` — switch the UI to a workspace / tab.\n\
+- `burrow new-tab [--ws ID] [--cmd CMD]` — open a new terminal tab (any workspace).\n\n\
 Do NOT block waiting on sub-agents. Fan out the work, continue your own, then `burrow collect` for a recap. Respect the soft per-workspace concurrency limit `burrow spawn` reports. Sub-agents run interactively on the subscription (never use `claude -p`).";
 
 const BURROW_SKILL_MD: &str = "---\n\
@@ -630,6 +633,19 @@ burrow top                               # table of all live Burrow PTY sessions
 burrow sessions            # list live sub-agent tabs (--count for just the number)\n\
 burrow spawn --cwd /path/to/other/project claude \"...\"\n\
 ```\n\n\
+## Read & control the Burrow UI\n\
+Inspect and drive the app itself from the terminal — list workspaces/tabs, switch focus, open tabs.\n\
+```\n\
+burrow list-workspaces             # print every workspace: <id>\\t<name>\\t<path>\n\
+burrow list-tabs                   # print this workspace's tabs: <pty-id>\\t<title>\n\
+burrow list-tabs --ws 3            # tabs of workspace 3\n\
+burrow focus-workspace 3           # switch Burrow to (and open) workspace 3\n\
+burrow focus-tab 42                # activate the tab with pty id 42 (switches workspace if needed)\n\
+burrow new-tab                     # open an empty terminal tab in this workspace\n\
+burrow new-tab --cmd \"npm test\"   # open a tab running a command\n\
+burrow new-tab --ws 3 --cmd htop   # open a tab in another workspace\n\
+```\n\
+`list-workspaces` / `list-tabs` are READ commands: they print tab-separated rows to stdout (parse the ids for the focus/new-tab commands). `new-tab` differs from `spawn`: `spawn` is for delegating sub-agents in the current project, `new-tab` is a plain UI action that can target any workspace by id.\n\n\
 ## Limits & notes\n\
 - **Soft concurrency limit** (per workspace, default 3, set in Burrow Settings): `burrow spawn` prints the current cap. Respect it — don't exceed it. It is advisory, not enforced, so it's on you.\n\
 - Sub-agents run **interactively on the subscription**. Never pass `-p`/`--print`; never use the Agent SDK.\n\
@@ -1216,6 +1232,22 @@ pub struct SpawnRequest {
     /// tmux shim: window ID (@N) assigned by the shim's new-window/split-window command.
     /// Frontend registers ptyId→winId via register_tmux_win so send-keys can find the PTY.
     pub tmux_win: String,
+    /// Control commands (focus-workspace / new-tab): target workspace id (string,
+    /// empty = the origin workspace). Single-word field name so it survives serde as-is.
+    pub wsid: String,
+    /// Control command (focus-tab): target tab/pty id (string, empty when unused).
+    pub tabid: String,
+}
+
+/// Write a control read-command's answer where the `burrow` CLI is polling for it:
+/// `<session>/<token>.result` (payload) + `<token>.done` (marker). Mirrors the
+/// `burrow capture`/`burrow wait` convention. No-op when token is empty.
+fn write_control_result(app: &AppHandle, token: &str, text: &str) {
+    if token.is_empty() { return; }
+    if let Some(dir) = burrow_session_dir(app) {
+        let _ = std::fs::write(dir.join(format!("{token}.result")), text);
+        let _ = std::fs::write(dir.join(format!("{token}.done")), "");
+    }
 }
 
 #[tauri::command]
@@ -1230,6 +1262,94 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
         if !d.is_dir() || !d.join("ready").exists() { continue; }
         let read = |name: &str| std::fs::read_to_string(d.join(name)).unwrap_or_default();
         let ws = read("ws");          // spawning workspace (request origin)
+
+        // Control commands (list-workspaces/list-tabs/focus-workspace/focus-tab/new-tab)
+        // all route to the ORIGIN workspace — the one the issuing agent runs in
+        // (ws == cwd), which is by definition mounted and polling, so there's no
+        // double-claim race and no "target not mounted" gap. READ commands are answered
+        // right here in Rust (DB query → <token>.result file the CLI polls); UI ACTIONS
+        // are pushed to the frontend for Terminal.vue to perform.
+        let kind_peek = read("kind");
+        if matches!(
+            kind_peek.as_str(),
+            "list-workspaces" | "list-tabs" | "focus-workspace" | "focus-tab" | "new-tab"
+        ) {
+            if ws != cwd { continue; }
+            let token = read("token");
+            let wsid = read("wsid");
+            let tabid = read("tabid");
+            let cmd = read("cmd");
+            match kind_peek.as_str() {
+                "list-workspaces" => {
+                    let text = {
+                        let conn = db.conn.lock().unwrap();
+                        let mut s = String::new();
+                        if let Ok(mut stmt) = conn.prepare(
+                            "SELECT id, name, path FROM workspaces ORDER BY COALESCE(last_opened,0) DESC, created_at DESC",
+                        ) {
+                            if let Ok(rows) = stmt.query_map([], |r| {
+                                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                            }) {
+                                for row in rows.flatten() {
+                                    s.push_str(&format!("{}\t{}\t{}\n", row.0, row.1, row.2));
+                                }
+                            }
+                        }
+                        s
+                    };
+                    write_control_result(&app, &token, &text);
+                }
+                "list-tabs" => {
+                    let text = {
+                        let conn = db.conn.lock().unwrap();
+                        // Resolve target workspace id: explicit --ws, else the origin ws (by path).
+                        let target_id: Option<i64> = if !wsid.is_empty() {
+                            wsid.parse::<i64>().ok()
+                        } else {
+                            conn.query_row(
+                                "SELECT id FROM workspaces WHERE path = ?1",
+                                rusqlite::params![ws],
+                                |r| r.get::<_, i64>(0),
+                            ).ok()
+                        };
+                        let mut s = String::new();
+                        if let Some(id) = target_id {
+                            if let Ok(mut stmt) = conn.prepare(
+                                "SELECT pty_id, COALESCE(title, default_title, '') FROM terminal_tabs WHERE workspace_id = ?1 ORDER BY ord ASC",
+                            ) {
+                                if let Ok(rows) = stmt.query_map(rusqlite::params![id], |r| {
+                                    Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, String>(1)?))
+                                }) {
+                                    for row in rows.flatten() {
+                                        let pid = row.0.map(|v| v.to_string()).unwrap_or_default();
+                                        s.push_str(&format!("{}\t{}\n", pid, row.1));
+                                    }
+                                }
+                            }
+                        }
+                        s
+                    };
+                    write_control_result(&app, &token, &text);
+                }
+                _ => {
+                    // focus-workspace / focus-tab / new-tab → frontend UI action.
+                    out.push(SpawnRequest {
+                        kind: kind_peek.clone(),
+                        cmd,
+                        token: String::new(),
+                        cwd: String::new(),
+                        branch: String::new(),
+                        base: String::new(),
+                        tmux_win: String::new(),
+                        wsid,
+                        tabid,
+                    });
+                }
+            }
+            let _ = std::fs::remove_dir_all(&d);
+            continue;
+        }
+
         let newcwd = read("cwd");     // dir the new tab should run in (may be a worktree)
         // Route the tab to the workspace it will actually run in: prefer the target
         // dir `newcwd` when that dir is itself a workspace (e.g. a worktree), so the
@@ -1258,10 +1378,10 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
         let _ = std::fs::remove_dir_all(&d);
         match kind.as_str() {
             "worktree" if !branch.is_empty() => {
-                out.push(SpawnRequest { kind, cmd: String::new(), token: String::new(), cwd: newcwd, branch, base, tmux_win: String::new() });
+                out.push(SpawnRequest { kind, cmd: String::new(), token: String::new(), cwd: newcwd, branch, base, tmux_win: String::new(), wsid: String::new(), tabid: String::new() });
             }
             _ if !cmd.is_empty() => {
-                out.push(SpawnRequest { kind: "spawn".to_string(), cmd, token, cwd: newcwd, branch: String::new(), base: String::new(), tmux_win });
+                out.push(SpawnRequest { kind: "spawn".to_string(), cmd, token, cwd: newcwd, branch: String::new(), base: String::new(), tmux_win, wsid: String::new(), tabid: String::new() });
             }
             _ => {}
         }

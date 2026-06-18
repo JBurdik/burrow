@@ -106,6 +106,36 @@ burrow collect       # or: every finished sub-agent, no token list</code></pre>
     <code>daemon.sock</code> + <code>daemon.token</code> from <code>BURROW_HOME_DIR</code>.
   </p>
 
+  <h3><code>burrow list-workspaces</code> &nbsp;/&nbsp; <code>burrow list-tabs [--ws ID]</code> <span style="color:var(--muted);font-weight:400;font-size:12px">(read)</span></h3>
+  <p>
+    Inspect the app from the terminal. <code>list-workspaces</code> prints every workspace as
+    <code>&lt;id&gt;\t&lt;name&gt;\t&lt;path&gt;</code>; <code>list-tabs</code> prints a workspace's tabs as
+    <code>&lt;pty_id&gt;\t&lt;title&gt;</code> (default: the workspace this tab belongs to, or <code>--ws ID</code> for another).
+    Both are <strong>read commands</strong>: they drop a request dir carrying a <code>token</code>, then block briefly polling
+    <code>&lt;session&gt;/&lt;token&gt;.result</code> — exactly the channel <code>burrow wait</code> uses. They're answered
+    <strong>entirely in Rust</strong> inside <code>take_spawn_requests</code> (a SQLite query writes the result file); the
+    request never reaches the frontend. Parse the ids out of the output to feed the focus / new-tab commands.
+  </p>
+  <pre><code>burrow list-workspaces           # 1\tagentic-ide\t/Users/me/code/agentic-ide
+burrow list-tabs                  # 42\tclaude — fix auth bug
+burrow list-tabs --ws 3</code></pre>
+
+  <h3><code>burrow focus-workspace &lt;ID&gt;</code> &nbsp;/&nbsp; <code>burrow focus-tab &lt;ID&gt;</code> &nbsp;/&nbsp; <code>burrow new-tab [--ws ID] [--cmd CMD]</code></h3>
+  <p>
+    Drive the UI. <code>focus-workspace</code> switches Burrow to (and opens) a workspace; <code>focus-tab</code> activates a tab
+    by its pty id, switching to its owning workspace first; <code>new-tab</code> opens a fresh terminal tab in the current (or a
+    given) workspace, optionally running a command. These are <strong>UI actions</strong>: same file-based request transport as
+    <code>spawn</code>, routed to the <strong>origin workspace</strong> (<code>ws == BURROW_CWD</code>, always mounted), then
+    pushed to <code>Terminal.vue</code>'s poll which dispatches via the shared <code>workspace</code> / <code>terminalTabs</code>
+    stores (<code>wsStore.open</code>, <code>tabsStore.activate/add</code>). <code>new-tab</code> differs from <code>spawn</code>:
+    <code>spawn</code> delegates a sub-agent in the current project; <code>new-tab</code> is a plain tab open that can target any
+    workspace by id.
+  </p>
+  <pre><code>burrow focus-workspace 3
+burrow focus-tab 42
+burrow new-tab --cmd "npm test"
+burrow new-tab --ws 3 --cmd htop</code></pre>
+
   <h3><code>burrow worktree &lt;branch&gt; [--base-ref REF] [--path DIR]</code></h3>
   <p>
     Create a git worktree off <strong>this workspace's repo</strong> on a new or existing branch, and surface it in the

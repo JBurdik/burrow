@@ -1310,7 +1310,7 @@ watch(
   (req) => {
     if (!req || req.wsId !== props.workspaceId) return;
     if (req.action === "activate" && req.tabId != null) activateTab(req.tabId);
-    else if (req.action === "add") addTab();
+    else if (req.action === "add") addTab(req.cmd || undefined);
     else if (req.action === "close" && req.tabId != null) closeTab(req.tabId);
     else if (req.action === "reorder" && req.fromIdx != null && req.toIdx != null) {
       reorderTabs(req.fromIdx, req.toIdx);
@@ -1396,11 +1396,42 @@ onMounted(() => {
   spawnPoll = setInterval(async () => {
     try {
       const reqs = await invoke<
-        { kind: string; cmd: string; token: string; cwd: string; branch: string; base: string; tmuxWin: string }[]
+        { kind: string; cmd: string; token: string; cwd: string; branch: string; base: string; tmuxWin: string; wsid: string; tabid: string }[]
       >("take_spawn_requests", { cwd: props.cwd });
       for (const r of reqs) {
         if (r.kind === "worktree") {
           await handleWorktreeRequest(r.branch, r.base);
+        } else if (r.kind === "focus-workspace") {
+          // Switch Burrow to (and mount) the requested workspace. wsStore is a shared
+          // singleton, so the origin Terminal can drive the global active workspace.
+          const ws = wsStore.workspaces.find((w) => w.id === Number(r.wsid));
+          if (ws) wsStore.open(ws);
+        } else if (r.kind === "focus-tab") {
+          // Activate a tab by its (pty) id, switching to its owning workspace first.
+          const tabId = Number(r.tabid);
+          let ownerWs: number | undefined;
+          for (const [wid, list] of Object.entries(tabsStore.tabsByWs)) {
+            if (list.some((t) => t.id === tabId)) { ownerWs = Number(wid); break; }
+          }
+          if (ownerWs !== undefined) {
+            if (wsStore.active?.id !== ownerWs) {
+              const ws = wsStore.workspaces.find((w) => w.id === ownerWs);
+              if (ws) wsStore.open(ws);
+            }
+            tabsStore.activate(ownerWs, tabId);
+          }
+        } else if (r.kind === "new-tab") {
+          // Open a new tab in the target workspace (default: this one). Same-workspace
+          // is handled directly; a different workspace is opened then messaged via the
+          // shared tabs store so its own Terminal creates the tab.
+          const targetWs = r.wsid ? Number(r.wsid) : props.workspaceId;
+          if (targetWs === props.workspaceId) {
+            addTab(r.cmd || undefined);
+          } else {
+            const ws = wsStore.workspaces.find((w) => w.id === targetWs);
+            if (ws) wsStore.open(ws);
+            tabsStore.add(targetWs, r.cmd || undefined);
+          }
         } else {
           const leaf = addTab(r.cmd, { cwd: r.cwd || undefined, resultToken: r.token || undefined });
           if (r.tmuxWin) {
