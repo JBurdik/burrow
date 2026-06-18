@@ -2227,10 +2227,15 @@ struct ClaudeState {
     procs: Mutex<std::collections::HashMap<u32, ClaudeProc>>,
 }
 
+// `async` is load-bearing: Tauri runs sync commands on the MAIN thread, so the
+// blocking work here (binary probing, writing the burrow bin, and especially the
+// `claude` fork/exec) would freeze the webview — the beachball when opening a
+// chat. As an async command Tauri schedules it off the main thread instead.
+// There are no `.await` points, so the brief MutexGuard is never held across one.
 #[tauri::command]
-fn claude_start(
+async fn claude_start(
     app: AppHandle,
-    state: State<ClaudeState>,
+    state: State<'_, ClaudeState>,
     id: u32,
     cwd: String,
     resume_session_id: Option<String>,
@@ -2451,11 +2456,14 @@ struct ClaudeAccountInfo {
 #[derive(Default)]
 struct AccountInfoCache(Mutex<Option<ClaudeAccountInfo>>);
 
+// Async so it runs off the main thread: `rx.recv_timeout(4s)` below blocks the
+// caller until `claude status` returns (up to 4s) — on the main thread that's a
+// 4s beachball on first chat open, even though the frontend invokes it via .then().
 #[tauri::command]
-fn claude_get_account(state: State<AccountInfoCache>, cwd: String) -> ClaudeAccountInfo {
+async fn claude_get_account(state: State<'_, AccountInfoCache>, cwd: String) -> Result<ClaudeAccountInfo, String> {
     // Return cached value if already fetched — avoids N concurrent `claude status` spawns.
     if let Some(cached) = state.0.lock().unwrap().clone() {
-        return cached;
+        return Ok(cached);
     }
     let home = std::env::var("HOME").unwrap_or_default();
     let path = std::path::Path::new(&home).join(".claude.json");
@@ -2494,7 +2502,7 @@ fn claude_get_account(state: State<AccountInfoCache>, cwd: String) -> ClaudeAcco
 
     let info = ClaudeAccountInfo { email, display_name, organization_type, rate_limit_tier, status_text };
     *state.0.lock().unwrap() = Some(info.clone());
-    info
+    Ok(info)
 }
 
 // ── Skills manager ────────────────────────────────────────────────────────────
