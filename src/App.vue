@@ -52,6 +52,13 @@
     <ToastStack />
     <UpdateBanner />
     <Teleport to="body"><PetOverlay v-if="ui.petsEnabled" /></Teleport>
+    <Teleport to="body">
+      <FloatChat
+        v-if="ui.floatChatEnabled && ws.active"
+        :cwd="ws.active.path"
+        :ws-id="ws.active.id"
+      />
+    </Teleport>
 
     <!-- Keyboard cheatsheet overlay (⌘/) -->
     <Teleport to="body">
@@ -95,6 +102,7 @@ import Spotlight from "@/components/Spotlight.vue";
 import ToastStack from "@/components/ToastStack.vue";
 import UpdateBanner from "@/components/UpdateBanner.vue";
 import PetOverlay from "@/components/PetOverlay.vue";
+import FloatChat from "@/components/FloatChat.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
 import { useGitStore } from "@/stores/git";
@@ -368,6 +376,9 @@ function onKeydown(e: KeyboardEvent) {
     } else if (e.key === "/") {
       e.preventDefault();
       cheatsheetOpen.value = !cheatsheetOpen.value;
+    } else if (e.key === "j") {
+      e.preventDefault();
+      ui.toggleFloatChat();
     } else if (/^[1-9]$/.test(e.key)) {
       e.preventDefault();
       const idx = parseInt(e.key) - 1;

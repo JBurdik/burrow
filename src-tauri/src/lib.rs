@@ -2087,6 +2087,7 @@ fn claude_start(
     cwd: String,
     resume_session_id: Option<String>,
     permission_mode: Option<String>,
+    append_system_prompt: Option<String>,
 ) -> Result<(), String> {
     if state.procs.lock().unwrap().contains_key(&id) {
         return Ok(());
@@ -2125,6 +2126,12 @@ fn claude_start(
         args.push("--resume".to_string());
         args.push(sid);
     }
+    // Mission-control primer (float chat). Teaches the session it can drive the
+    // app via the `burrow` CLI. Only the float passes this; in-tab chats omit it.
+    if let Some(sys) = append_system_prompt.as_deref().filter(|s| !s.trim().is_empty()) {
+        args.push("--append-system-prompt".to_string());
+        args.push(sys.to_string());
+    }
 
     // Strip env to minimal set — bare GUI PATH + subscription auth via keychain.
     // ANTHROPIC_API_KEY intentionally empty so subscription OAuth is used.
@@ -2134,8 +2141,29 @@ fn claude_start(
             env_map.insert(key.to_string(), v);
         }
     }
-    env_map.insert("PATH".to_string(), augmented_path(&cwd));
+    // PATH: prepend the burrow bin dir so the agent's Bash can run `burrow …`
+    // control commands, then the usual augmented GUI PATH.
+    let path = match ensure_burrow_bin(&app) {
+        Some(bin_dir) => format!("{}:{}", bin_dir.display(), augmented_path(&cwd)),
+        None => augmented_path(&cwd),
+    };
+    env_map.insert("PATH".to_string(), path);
     env_map.insert("ANTHROPIC_API_KEY".to_string(), std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
+
+    // Burrow env so `burrow` control/read commands work from this session's Bash.
+    // Mirrors the PTY-spawn exports. Deliberately NO BURROW_PTY_ID — the chat is
+    // not a tab, so the global status hook stays a no-op for it. BURROW_CWD routes
+    // read/control commands (list-workspaces, focus-*) to the origin workspace.
+    if let Some(sess) = burrow_session_dir(&app) {
+        env_map.insert("BURROW_SESSION_DIR".to_string(), sess.to_string_lossy().to_string());
+    }
+    env_map.insert("BURROW_CWD".to_string(), cwd.clone());
+    if let Some(port) = HOOK_SERVER_PORT.get() {
+        env_map.insert("BURROW_HOOK_PORT".to_string(), port.to_string());
+    }
+    if let Ok(data) = app.path().app_data_dir() {
+        env_map.insert("BURROW_HOME_DIR".to_string(), data.to_string_lossy().to_string());
+    }
 
     let mut child = std::process::Command::new(&bin)
         .args(&args)
