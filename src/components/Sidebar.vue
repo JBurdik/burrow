@@ -481,6 +481,7 @@ function aggStatus(id: number): TermStatus | null {
 // Visual tone for a PR badge: failing CI wins, then state, then draft.
 function prTone(info: PrInfo): string {
   if (info.checks === "fail") return "fail";
+  if (info.checks === "pending") return "pending"; // CI in flight — amber, never green
   if (info.state === "MERGED") return "merged";
   if (info.state === "CLOSED") return "closed";
   if (info.isDraft) return "draft";
@@ -1187,6 +1188,8 @@ function shortPath(p: string): string {
 .pr-closed  .pr-dot { background: #f87171; }
 .pr-fail    { color: #f87171; background: color-mix(in srgb, #f87171 14%, transparent); }
 .pr-fail    .pr-dot { background: #f87171; animation: pulse-unread 1.6s ease-in-out infinite; }
+.pr-pending { color: #fbbf24; background: color-mix(in srgb, #fbbf24 14%, transparent); }
+.pr-pending .pr-dot { background: #fbbf24; animation: pulse-unread 1.6s ease-in-out infinite; }
 
 .ws-term-close {
   opacity: 0;
