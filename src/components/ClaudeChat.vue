@@ -20,6 +20,7 @@
         <PhArrowCounterClockwise :size="13" />
       </button>
       <button
+        v-if="!compact"
         class="chat-header-btn"
         :class="{ 'btn-active': changesVisible }"
         :title="changesVisible ? 'Hide changes' : 'Show changes'"
@@ -252,7 +253,7 @@
     </div><!-- end .chat-main -->
 
     <!-- Changes panel -->
-    <div v-if="changesVisible" class="chat-changes">
+    <div v-if="changesVisible && !compact" class="chat-changes">
       <div class="chg-header">
         <PhGitDiff :size="12" class="chg-header-icon" />
         <span>Changes</span>
@@ -305,7 +306,16 @@ function renderMd(text: string): string {
   return DOMPurify.sanitize(marked.parse(text) as string);
 }
 
-const props = defineProps<{ chatId: number; workspaceId: number; cwd: string }>();
+const props = defineProps<{
+  chatId: number;
+  workspaceId: number;
+  cwd: string;
+  // Compact mode (float chat): hide the heavy chrome (changes panel + diff
+  // sidebar), keep the message stream + input + inline permission gates.
+  compact?: boolean;
+  // Mission-control primer passed to claude_start as --append-system-prompt.
+  appendSystemPrompt?: string;
+}>();
 
 const chats = useClaudeChatsStore();
 const notifStore = useNotificationsStore();
@@ -873,13 +883,14 @@ async function cyclePermMode() {
     cwd: props.cwd,
     resumeSessionId: sessionId.value || null,
     permissionMode: permMode.value,
+    appendSystemPrompt: props.appendSystemPrompt || null,
   }).catch(() => {});
 }
 
 async function abortTurn() {
   await invoke("claude_abort", { id: props.chatId }).catch(() => {});
   // Restart with --resume so session continues
-  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, resumeSessionId: sessionId.value || null, permissionMode: permMode.value }).catch(() => {});
+  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, resumeSessionId: sessionId.value || null, permissionMode: permMode.value, appendSystemPrompt: props.appendSystemPrompt || null }).catch(() => {});
   busy.value = false;
   messageQueue.value = [];
   const last = messages.value[messages.value.length - 1];
@@ -898,7 +909,7 @@ async function clearChat() {
   sessionCost.value = 0;
   localStorage.removeItem(msgKey(props.chatId));
   chats.sync(props.chatId, { claudeSessionId: "", busy: false, messageCount: 0, title: `Chat` });
-  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, permissionMode: permMode.value }).catch(() => {});
+  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, permissionMode: permMode.value, appendSystemPrompt: props.appendSystemPrompt || null }).catch(() => {});
 }
 
 function updateSuggestions() {
@@ -1040,6 +1051,10 @@ function onWindowKeydown(e: KeyboardEvent) {
 
 onMounted(async () => {
   window.addEventListener("keydown", onWindowKeydown);
+  // Float (compact) control chat: pre-allow `burrow` Bash commands so routine
+  // control calls (focus/list/new-tab/spawn) don't prompt every time. User can
+  // still tighten via the perm-mode switch / Deny.
+  if (props.compact) chats.addPermissionRule("Bash:burrow");
   const stored = chats.sessions.find((s) => s.id === props.chatId)?.claudeSessionId ?? "";
   if (stored) sessionId.value = stored;
   await invoke("claude_start", {
@@ -1047,6 +1062,7 @@ onMounted(async () => {
     cwd: props.cwd,
     resumeSessionId: stored || null,
     permissionMode: permMode.value,
+    appendSystemPrompt: props.appendSystemPrompt || null,
   }).catch(() => {});
   unlisten = await listen<string>(`claude-data-${props.chatId}`, (ev) => onLine(ev.payload));
 

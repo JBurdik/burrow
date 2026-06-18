@@ -79,6 +79,9 @@ interface Prefs {
   petsEnabled: boolean; // master toggle for the free-roam pixel critters overlay
   petsSpeech: boolean; // pets squeak status quips in speech bubbles
   petsLeveling: boolean; // pets grow + earn hats the more turns their agent finishes
+  // ── Floating mission-control chat ──
+  floatChatEnabled: boolean; // master toggle for the bottom-right control chat button
+  floatChatOpen: boolean; // expanded (true) vs collapsed to a button (false)
 }
 
 // Agent transitions that can trigger an ntfy push.
@@ -133,6 +136,8 @@ const DEFAULT_PREFS: Prefs = {
   petsEnabled: false,
   petsSpeech: true,
   petsLeveling: true,
+  floatChatEnabled: true,
+  floatChatOpen: false,
 };
 
 function loadPrefs(): Prefs {
@@ -191,6 +196,8 @@ export const useUIStore = defineStore("ui", () => {
   const petsEnabled = ref(loaded.petsEnabled);
   const petsSpeech = ref(loaded.petsSpeech);
   const petsLeveling = ref(loaded.petsLeveling);
+  const floatChatEnabled = ref(loaded.floatChatEnabled);
+  const floatChatOpen = ref(loaded.floatChatOpen);
   // In-memory blob URL for the current wallpaper (not persisted).
   const bgImageUrl = ref<string>("");
   const missionActiveCount = ref(0);
@@ -334,6 +341,8 @@ export const useUIStore = defineStore("ui", () => {
         petsEnabled: petsEnabled.value,
         petsSpeech: petsSpeech.value,
         petsLeveling: petsLeveling.value,
+        floatChatEnabled: floatChatEnabled.value,
+        floatChatOpen: floatChatOpen.value,
       } satisfies Prefs),
     );
   }
@@ -348,7 +357,7 @@ export const useUIStore = defineStore("ui", () => {
      soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
      soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir, mode, missionShowActivity,
      ntfyEnabled, ntfyServer, ntfyTopic, ntfyToken, ntfyEvents, ntfyOnlyWhenAway,
-     petsEnabled, petsSpeech, petsLeveling],
+     petsEnabled, petsSpeech, petsLeveling, floatChatEnabled, floatChatOpen],
     () => {
       savePrefs();
       applyTheme();
@@ -421,6 +430,10 @@ export const useUIStore = defineStore("ui", () => {
     bgImagePath.value = "";
   }
 
+  function toggleFloatChat() {
+    floatChatOpen.value = !floatChatOpen.value;
+  }
+
   return {
     settingsOpen,
     uiFont,
@@ -475,5 +488,8 @@ export const useUIStore = defineStore("ui", () => {
     petsEnabled,
     petsSpeech,
     petsLeveling,
+    floatChatEnabled,
+    floatChatOpen,
+    toggleFloatChat,
   };
 });
