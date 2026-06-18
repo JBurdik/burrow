@@ -210,7 +210,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, inject, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, inject, onMounted, onBeforeUnmount } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
   PhFiles, PhGitBranch, PhGitCommit,
@@ -221,7 +221,7 @@ import { useGitStore, type GitCommit } from "@/stores/git";
 import { useFileTreeStore } from "@/stores/fileTree";
 import FileTreeNode from "./FileTreeNode.vue";
 
-const props = defineProps<{ cwd: string }>();
+const props = withDefaults(defineProps<{ cwd: string; isGit?: boolean }>(), { isGit: true });
 const git = useGitStore();
 const fileTree = useFileTreeStore();
 const activeTab = ref("git");
@@ -243,10 +243,19 @@ async function openCommitDiff(c: GitCommit) {
   activeTerm()?.openDiffInTab(`${c.shortHash} ${c.subject}`, false, out.stdout);
 }
 
-const tabs = [
-  { id: "git",      label: "Git",      icon: PhGitBranch },
-  { id: "explorer", label: "Explorer", icon: PhFiles },
-];
+// Non-git folders are first-class workspaces but expose no Git tab.
+const tabs = computed(() => {
+  const all = [
+    { id: "git",      label: "Git",      icon: PhGitBranch },
+    { id: "explorer", label: "Explorer", icon: PhFiles },
+  ];
+  return props.isGit ? all : all.filter((t) => t.id !== "git");
+});
+
+// Keep the active tab valid: a non-git workspace can't sit on the hidden Git tab.
+watch(() => props.isGit, (isGit) => {
+  if (!isGit && activeTab.value === "git") activeTab.value = "explorer";
+}, { immediate: true });
 
 watch(() => props.cwd, (p) => {
   if (p) {
