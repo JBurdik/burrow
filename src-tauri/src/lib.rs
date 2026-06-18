@@ -3268,15 +3268,15 @@ pub fn run() {
 
             // Vertically center the native traffic lights in the 36px titlebar.
             // (--titlebar-height = 36; button cluster ~16px tall → y ≈ 10.)
+            //
+            // OS vibrancy intentionally NOT applied: it caused system-wide
+            // lag/freezes on this machine. All themes are opaque, so there is
+            // nothing to frost anyway.
             #[cfg(target_os = "macos")]
             {
                 use tauri_plugin_decorum::WebviewWindowExt;
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_traffic_lights_inset(13.0, 10.0);
-                    // OS vibrancy intentionally NOT applied: it caused system-wide
-                    // lag/freezes on this machine. All themes are opaque, so there
-                    // is nothing to frost anyway. (Window is also no longer
-                    // transparent — see tauri.conf.json.)
                 }
             }
 

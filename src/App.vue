@@ -258,8 +258,42 @@ let updateTimer: number | undefined;
 let unlistenFloat: UnlistenFn | null = null;
 let unlistenMenuUpdate: UnlistenFn | null = null;
 
+// Short warm synth arpeggio on app startup — no asset, no user gesture needed in
+// the app webview; fails silently if the AudioContext is blocked.
+function playStartupChime() {
+  try {
+    const AC = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    const now = ctx.currentTime;
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, now);
+    master.gain.exponentialRampToValueAtTime(0.5, now + 0.04);
+    master.gain.exponentialRampToValueAtTime(0.0001, now + 1.6);
+    master.connect(ctx.destination);
+    const notes = [329.63, 415.3, 493.88, 659.25]; // E4 G#4 B4 E5
+    notes.forEach((f, i) => {
+      const t = now + i * 0.085;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.32, t + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+      osc.connect(g).connect(master);
+      osc.start(t);
+      osc.stop(t + 1.0);
+    });
+    ctx.resume();
+  } catch {
+    /* silent */
+  }
+}
+
 onMounted(async () => {
   ws.load();
+  playStartupChime();
   window.addEventListener("keydown", onKeydown);
   window.addEventListener('mousemove', onResizeMove);
   window.addEventListener('mouseup', onResizeUp);
