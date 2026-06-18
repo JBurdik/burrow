@@ -15,6 +15,29 @@
       </button>
     </div>
 
+    <!-- Needs Attention: tabs that need the user to look (error/permission/waiting/review) -->
+    <div v-if="attentionItems.length > 0" class="attention-strip">
+      <div class="attention-header">
+        <PhWarningCircle :size="11" class="attention-header-icon" weight="fill" />
+        <span>Needs Attention</span>
+        <span class="attention-count">{{ attentionItems.length }}</span>
+      </div>
+      <div
+        v-for="item in attentionItems"
+        :key="`att-${item.wsId}-${item.tabId}`"
+        class="attention-row"
+        :class="`attention-${item.status}`"
+        @click="selectFleetItem(item)"
+      >
+        <span class="attention-dot status-dot" :class="`status-${item.status}`">{{ item.status === 'running' ? spinnerFrame : '' }}</span>
+        <div class="attention-info">
+          <span class="attention-tab">{{ item.tabTitle }}</span>
+          <span class="attention-ws">{{ item.wsName }}</span>
+        </div>
+        <PhArrowRight :size="9" class="attention-arrow" />
+      </div>
+    </div>
+
     <!-- Fleet strip: all non-idle agents across all workspaces -->
     <div v-if="fleetItems.length > 0" class="fleet-strip">
       <div class="fleet-header">
@@ -403,6 +426,7 @@ import {
   PhCaretDown,
   PhActivity,
   PhArrowRight,
+  PhWarningCircle,
 } from "@phosphor-icons/vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -413,7 +437,7 @@ import { useClaudeChatsStore } from "@/stores/claudeChats";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { spinnerFrame } from "@/lib/spinner";
 import { usePointerReorder } from "@/composables/usePointerReorder";
-import { aggregateStatus, type TermStatus } from "@/lib/terminalStatus";
+import { aggregateStatus, STATUS_PRIORITY, type TermStatus } from "@/lib/terminalStatus";
 import { useGitStore, type PrInfo } from "@/stores/git";
 
 const store = useWorkspaceStore();
@@ -532,6 +556,26 @@ function selectFleetItem(item: FleetItem) {
   const ws = store.workspaces.find((w) => w.id === item.wsId);
   if (ws) selectTab(ws, item.tabId);
 }
+
+// ── needs-attention strip ───────────────────────────────────────────────────
+// Tabs (across every workspace + worktree) whose status means the user should
+// look: error / permission / waiting / review. Pinned at the top, sorted by
+// STATUS_PRIORITY (most urgent first). Reactive to status changes via tabsByWs.
+const ATTENTION_STATES = new Set<TermStatus>(["error", "permission", "waiting", "review"]);
+
+const attentionItems = computed<FleetItem[]>(() => {
+  const items: FleetItem[] = [];
+  for (const ws of store.workspaces) {
+    for (const tab of termTabs.tabsByWs[ws.id] ?? []) {
+      if (ATTENTION_STATES.has(tab.status)) {
+        items.push({ wsId: ws.id, wsName: ws.name, tabId: tab.id, tabTitle: tab.title, status: tab.status });
+      }
+    }
+  }
+  return items.sort(
+    (a, b) => STATUS_PRIORITY.indexOf(a.status) - STATUS_PRIORITY.indexOf(b.status),
+  );
+});
 
 // ── branch helpers (worktree dialog) ─────────────────────────────────────────
 interface GitOutput { stdout: string; stderr: string; code: number; }
@@ -1483,6 +1527,94 @@ function shortPath(p: string): string {
 }
 
 .fleet-arrow {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+/* ── Needs Attention strip ─────────────────────────────────────── */
+.attention-strip {
+  margin: 0 6px 6px;
+  border-radius: 7px;
+  background: var(--bg-base);
+  border: 1px solid color-mix(in srgb, var(--red) 35%, var(--border));
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.attention-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.attention-header-icon { color: var(--red); flex-shrink: 0; }
+
+.attention-count {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--red) 15%, transparent);
+  color: var(--red);
+  border-radius: 8px;
+  padding: 1px 6px;
+  line-height: 1.6;
+}
+
+.attention-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+.attention-row:last-child { border-bottom: none; }
+.attention-row:hover { background: var(--bg-hover); }
+.attention-row:hover .attention-arrow { opacity: 0.6; }
+
+.attention-dot {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.attention-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.attention-tab {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attention-ws {
+  font-size: 9.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.attention-arrow {
   flex-shrink: 0;
   color: var(--text-muted);
   opacity: 0;

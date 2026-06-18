@@ -22,7 +22,7 @@
 # Sub-agents run INTERACTIVELY on your subscription (plain `claude`, never -p).
 
 sub="$1"
-[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane <args>" >&2; exit 1; }
+[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane|list-workspaces|list-tabs|focus-workspace|focus-tab|new-tab <args>" >&2; exit 1; }
 shift
 
 case "$sub" in
@@ -649,8 +649,124 @@ PY
     exit 1
     ;;
 
+  list-workspaces)
+    # burrow list-workspaces   — print every Burrow workspace (id, name, path).
+    # Read command: drops a request dir Burrow polls, which writes the answer to
+    # <token>.result; we block (briefly) until it appears, print it, then consume it.
+    # File-based like spawn — no controlling tty needed.
+    dir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}"
+    reqdir="$dir/requests"; mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    token="ctl.$$.${RANDOM:-0}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "list-workspaces" > "$d/kind"
+    printf '%s' "$ws"             > "$d/ws"
+    printf '%s' "$token"          > "$d/token"
+    : > "$d/ready"
+    waited=0
+    while [ ! -f "$dir/$token.done" ]; do
+      sleep 1; waited=$((waited + 1))
+      [ "$waited" -ge 15 ] && { echo "burrow list-workspaces: timed out (is Burrow running?)" >&2; exit 1; }
+    done
+    [ -f "$dir/$token.result" ] && cat "$dir/$token.result"
+    rm -f "$dir/$token.done" "$dir/$token.result"
+    exit 0
+    ;;
+
+  list-tabs)
+    # burrow list-tabs [--ws ID]   — print the tabs of a workspace (pty id + title).
+    #   --ws ID   target workspace (default: the workspace this tab belongs to).
+    # Read command (same file-based poll-for-result transport as list-workspaces).
+    wsid=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --ws) wsid="$2"; shift 2 ;;
+        *)    shift ;;
+      esac
+    done
+    dir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}"
+    reqdir="$dir/requests"; mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    token="ctl.$$.${RANDOM:-0}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "list-tabs" > "$d/kind"
+    printf '%s' "$ws"        > "$d/ws"
+    printf '%s' "$token"     > "$d/token"
+    printf '%s' "$wsid"      > "$d/wsid"
+    : > "$d/ready"
+    waited=0
+    while [ ! -f "$dir/$token.done" ]; do
+      sleep 1; waited=$((waited + 1))
+      [ "$waited" -ge 15 ] && { echo "burrow list-tabs: timed out (is Burrow running?)" >&2; exit 1; }
+    done
+    [ -f "$dir/$token.result" ] && cat "$dir/$token.result"
+    rm -f "$dir/$token.done" "$dir/$token.result"
+    exit 0
+    ;;
+
+  focus-workspace)
+    # burrow focus-workspace <ID>   — switch Burrow to (and open) workspace ID.
+    wsid="$1"
+    [ -n "$wsid" ] || { echo "burrow focus-workspace: no workspace ID given" >&2; exit 1; }
+    reqdir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}/requests"
+    mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "focus-workspace" > "$d/kind"
+    printf '%s' "$ws"             > "$d/ws"
+    printf '%s' "$wsid"           > "$d/wsid"
+    : > "$d/ready"
+    echo "burrow: focusing workspace $wsid" >&2
+    exit 0
+    ;;
+
+  focus-tab)
+    # burrow focus-tab <ID>   — activate the tab with that id (pty id), switching to
+    # its workspace if needed.
+    tabid="$1"
+    [ -n "$tabid" ] || { echo "burrow focus-tab: no tab ID given" >&2; exit 1; }
+    reqdir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}/requests"
+    mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "focus-tab" > "$d/kind"
+    printf '%s' "$ws"        > "$d/ws"
+    printf '%s' "$tabid"     > "$d/tabid"
+    : > "$d/ready"
+    echo "burrow: focusing tab $tabid" >&2
+    exit 0
+    ;;
+
+  new-tab)
+    # burrow new-tab [--ws ID] [--cmd CMD]   — open a new terminal tab.
+    #   --ws ID    workspace to open the tab in (default: this workspace).
+    #   --cmd CMD  command to run in the new tab (default: an empty shell).
+    # Unlike `spawn` (which always targets the current project and is meant for
+    # delegating sub-agents), new-tab is a plain UI action and can target any
+    # workspace by id.
+    wsid=""; cmd=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --ws)  wsid="$2"; shift 2 ;;
+        --cmd) cmd="$2";  shift 2 ;;
+        *)     shift ;;
+      esac
+    done
+    reqdir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}/requests"
+    mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "new-tab" > "$d/kind"
+    printf '%s' "$ws"      > "$d/ws"
+    printf '%s' "$wsid"    > "$d/wsid"
+    printf '%s' "$cmd"     > "$d/cmd"
+    : > "$d/ready"
+    echo "burrow: opening a new tab${wsid:+ in workspace $wsid}" >&2
+    exit 0
+    ;;
+
   *)
-    echo "burrow: unknown command '$sub' (use spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane)" >&2
+    echo "burrow: unknown command '$sub' (use spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane|list-workspaces|list-tabs|focus-workspace|focus-tab|new-tab)" >&2
     exit 1
     ;;
 esac
