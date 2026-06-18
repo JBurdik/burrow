@@ -1324,6 +1324,7 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
         if matches!(
             kind_peek.as_str(),
             "list-workspaces" | "list-tabs" | "focus-workspace" | "focus-tab" | "new-tab"
+                | "worktree-remove" | "pr-create" | "pr-list" | "pr-view" | "pr-merge"
         ) {
             if ws != cwd { continue; }
             let token = read("token");
@@ -1379,6 +1380,58 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
                             }
                         }
                         s
+                    };
+                    write_control_result(&app, &token, &text);
+                }
+                "worktree-remove" => {
+                    // Manager deletes a worktree (git worktree + Burrow row). Resolved
+                    // within the origin repo by branch or path. Read command — answered
+                    // in Rust, result polled by the CLI.
+                    let branch = read("branch");
+                    let path = read("path");
+                    let force = read("force") == "1";
+                    let text = match remove_worktree_by(&db, &ws, &branch, &path, force) {
+                        Ok(m) => m,
+                        Err(e) => format!("error: {e}"),
+                    };
+                    write_control_result(&app, &token, &text);
+                }
+                "pr-create" | "pr-list" | "pr-view" | "pr-merge" => {
+                    // PR management via the `gh` CLI. Run in the optional --cwd dir
+                    // (a worktree path) so the right branch is in context, else the
+                    // origin repo. Read command — answered in Rust.
+                    let path = read("path");
+                    let run_dir = if path.is_empty() { ws.clone() } else { path };
+                    let gh_args: Vec<String> = match kind_peek.as_str() {
+                        "pr-create" => {
+                            let title = read("title");
+                            let body = read("body");
+                            let base = read("base");
+                            let head = read("branch");
+                            let mut a = vec!["pr".into(), "create".into(),
+                                "--title".into(), title, "--body".into(), body];
+                            if !base.is_empty() { a.push("--base".into()); a.push(base); }
+                            if !head.is_empty() { a.push("--head".into()); a.push(head); }
+                            a
+                        }
+                        "pr-list" => {
+                            let state = read("state");
+                            let mut a = vec!["pr".into(), "list".into()];
+                            if !state.is_empty() { a.push("--state".into()); a.push(state); }
+                            a
+                        }
+                        "pr-view" => vec!["pr".into(), "view".into(), read("prnum")],
+                        // pr-merge
+                        _ => {
+                            let mut a = vec!["pr".into(), "merge".into(), read("prnum")];
+                            a.push(if read("squash") == "1" { "--squash".into() } else { "--merge".into() });
+                            a
+                        }
+                    };
+                    let argref: Vec<&str> = gh_args.iter().map(|s| s.as_str()).collect();
+                    let text = match gh_in(&run_dir, &argref) {
+                        Ok(o) => if o.trim().is_empty() { "ok".to_string() } else { o },
+                        Err(e) => format!("error: {e}"),
                     };
                     write_control_result(&app, &token, &text);
                 }
@@ -1510,6 +1563,20 @@ async fn run_gh(cwd: String, args: Vec<String>) -> GitOutput {
     })
     .await
     .unwrap_or_else(|e| GitOutput { stdout: String::new(), stderr: e.to_string(), code: -1 })
+}
+
+// Synchronous `gh` shell-out for the Manager's PR commands (answered inline in
+// take_spawn_requests). Mirrors git_in's Result contract.
+fn gh_in(cwd: &str, args: &[&str]) -> Result<String, String> {
+    let gh = gh_binary().ok_or_else(|| "gh not found (install the GitHub CLI)".to_string())?;
+    match std::process::Command::new(gh).args(args).current_dir(cwd).output() {
+        Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr).into_owned();
+            Err(if err.trim().is_empty() { format!("gh exited with {}", out.status.code().unwrap_or(-1)) } else { err })
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 // ── Open path in external app ─────────────────────────────────────────────────
@@ -1767,6 +1834,47 @@ fn remove_worktree(id: i64, force: bool, db: State<DbState>) -> Result<(), Strin
         .execute("DELETE FROM workspaces WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// Resolve a worktree within `repo_path` by branch (preferred) or path, then remove
+// it (git worktree + Burrow DB row). Used by the Manager's `burrow worktree-remove`.
+fn remove_worktree_by(db: &State<DbState>, repo_path: &str, branch: &str, path: &str, force: bool) -> Result<String, String> {
+    let (id, wt_path): (i64, String) = {
+        let conn = db.conn.lock().unwrap();
+        let repo_id: i64 = conn.query_row(
+            "SELECT id FROM workspaces WHERE path = ?1",
+            rusqlite::params![repo_path],
+            |r| r.get(0),
+        ).map_err(|_| "origin repo not found".to_string())?;
+        // Match a child worktree of this repo by branch, else by path.
+        let row = if !branch.is_empty() {
+            conn.query_row(
+                "SELECT id, path FROM workspaces WHERE parent_id = ?1 AND worktree_branch = ?2",
+                rusqlite::params![repo_id, branch],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+        } else {
+            conn.query_row(
+                "SELECT id, path FROM workspaces WHERE parent_id = ?1 AND path = ?2",
+                rusqlite::params![repo_id, path],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+        };
+        row.map_err(|_| format!("worktree '{}' not found under this repo", if branch.is_empty() { path } else { branch }))?
+    };
+
+    let dir_gone = !std::path::Path::new(&wt_path).exists();
+    if dir_gone {
+        let _ = git_in(repo_path, &["worktree", "prune"]);
+    } else {
+        let mut args = vec!["worktree", "remove", wt_path.as_str()];
+        if force { args.push("--force"); }
+        git_in(repo_path, &args)?;
+    }
+    db.conn.lock().unwrap()
+        .execute("DELETE FROM workspaces WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(format!("removed worktree {}", if branch.is_empty() { wt_path } else { branch.to_string() }))
 }
 
 // ── Terminal tab persistence ───────────────────────────────────────────────────

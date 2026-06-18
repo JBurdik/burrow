@@ -765,8 +765,104 @@ PY
     exit 0
     ;;
 
+  worktree-remove)
+    # burrow worktree-remove <branch|path> [--force]
+    #   Delete a git worktree of THIS repo (git worktree remove + its Burrow row).
+    #   Identify it by branch name (preferred) or by its on-disk path. --force
+    #   discards uncommitted changes. Read command: blocks for the result.
+    #   The Manager must confirm with the user before calling this.
+    force=""; target=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --force) force="1"; shift ;;
+        --)      shift; break ;;
+        -*)      echo "burrow worktree-remove: unknown flag $1" >&2; exit 1 ;;
+        *)       target="$1"; shift ;;
+      esac
+    done
+    [ -n "$target" ] || { echo "burrow worktree-remove: no branch/path given" >&2; exit 1; }
+    # A target containing a slash that exists on disk is treated as a path.
+    branch="$target"; path=""
+    case "$target" in */*) [ -e "$target" ] && { path="$target"; branch=""; } ;; esac
+    dir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}"
+    reqdir="$dir/requests"; mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    token="ctl.$$.${RANDOM:-0}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "worktree-remove" > "$d/kind"
+    printf '%s' "$ws"             > "$d/ws"
+    printf '%s' "$token"          > "$d/token"
+    printf '%s' "$branch"         > "$d/branch"
+    printf '%s' "$path"           > "$d/path"
+    printf '%s' "$force"          > "$d/force"
+    : > "$d/ready"
+    waited=0
+    while [ ! -f "$dir/$token.done" ]; do
+      sleep 1; waited=$((waited + 1))
+      [ "$waited" -ge 30 ] && { echo "burrow worktree-remove: timed out (is Burrow running?)" >&2; exit 1; }
+    done
+    [ -f "$dir/$token.result" ] && cat "$dir/$token.result"
+    rm -f "$dir/$token.done" "$dir/$token.result"
+    exit 0
+    ;;
+
+  pr-create|pr-list|pr-view|pr-merge)
+    # PR management via the `gh` CLI (run by Burrow in the right repo/worktree).
+    #   pr-create --title T --body B [--base main] [--head BRANCH] [--cwd DIR]
+    #   pr-list   [--state open|closed|all] [--cwd DIR]
+    #   pr-view   <number> [--cwd DIR]
+    #   pr-merge  <number> [--squash] [--cwd DIR]
+    # --cwd targets a specific worktree dir so gh sees its branch. Read command.
+    title=""; body=""; base=""; head=""; state=""; prnum=""; squash=""; path=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --title)  title="$2"; shift 2 ;;
+        --body)   body="$2";  shift 2 ;;
+        --base)   base="$2";  shift 2 ;;
+        --head)   head="$2";  shift 2 ;;
+        --state)  state="$2"; shift 2 ;;
+        --cwd)    path="$2";  shift 2 ;;
+        --squash) squash="1"; shift ;;
+        --)       shift; break ;;
+        -*)       echo "burrow $sub: unknown flag $1" >&2; exit 1 ;;
+        *)        prnum="$1"; shift ;;
+      esac
+    done
+    if [ "$sub" = "pr-view" ] || [ "$sub" = "pr-merge" ]; then
+      [ -n "$prnum" ] || { echo "burrow $sub: no PR number given" >&2; exit 1; }
+    fi
+    if [ "$sub" = "pr-create" ]; then
+      [ -n "$title" ] || { echo "burrow pr-create: --title is required" >&2; exit 1; }
+    fi
+    dir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}"
+    reqdir="$dir/requests"; mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    token="ctl.$$.${RANDOM:-0}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "$sub"    > "$d/kind"
+    printf '%s' "$ws"     > "$d/ws"
+    printf '%s' "$token"  > "$d/token"
+    printf '%s' "$title"  > "$d/title"
+    printf '%s' "$body"   > "$d/body"
+    printf '%s' "$base"   > "$d/base"
+    printf '%s' "$head"   > "$d/branch"
+    printf '%s' "$state"  > "$d/state"
+    printf '%s' "$prnum"  > "$d/prnum"
+    printf '%s' "$squash" > "$d/squash"
+    printf '%s' "$path"   > "$d/path"
+    : > "$d/ready"
+    waited=0
+    while [ ! -f "$dir/$token.done" ]; do
+      sleep 1; waited=$((waited + 1))
+      [ "$waited" -ge 60 ] && { echo "burrow $sub: timed out (is Burrow running? is gh authed?)" >&2; exit 1; }
+    done
+    [ -f "$dir/$token.result" ] && cat "$dir/$token.result"
+    rm -f "$dir/$token.done" "$dir/$token.result"
+    exit 0
+    ;;
+
   *)
-    echo "burrow: unknown command '$sub' (use spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane|list-workspaces|list-tabs|focus-workspace|focus-tab|new-tab)" >&2
+    echo "burrow: unknown command '$sub' (use spawn|worktree|worktree-remove|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane|list-workspaces|list-tabs|focus-workspace|focus-tab|new-tab|pr-create|pr-list|pr-view|pr-merge)" >&2
     exit 1
     ;;
 esac

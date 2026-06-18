@@ -5,17 +5,44 @@
       <ClaudeIcon :size="16" class="chat-header-icon" />
       <span class="chat-header-title">Claude</span>
       <span class="chat-header-cwd" :title="cwd">{{ cwdDisplay }}</span>
-      <button
-        class="chat-header-btn perm-mode-btn"
-        :class="{ 'btn-danger-active': permMeta.danger, 'btn-active': permMode === 'acceptEdits' }"
-        :title="permMeta.title"
-        @click="cyclePermMode"
-      >
-        <PhShieldWarning v-if="permMode === 'bypassPermissions'" :size="13" weight="bold" />
-        <PhPencilSimple v-else-if="permMode === 'acceptEdits'" :size="13" weight="bold" />
-        <PhShieldCheck v-else :size="13" weight="bold" />
-        <span class="perm-mode-label">{{ permMeta.label }}</span>
-      </button>
+      <div class="perm-mode-dropdown">
+        <button
+          ref="permBtnEl"
+          class="chat-header-btn perm-mode-btn"
+          :class="{ 'btn-danger-active': permMeta.danger, 'btn-active': permMode === 'acceptEdits' }"
+          :title="permMeta.title"
+          @click="togglePermMenu"
+        >
+          <PhShieldWarning v-if="permMode === 'bypassPermissions'" :size="13" weight="bold" />
+          <PhPencilSimple v-else-if="permMode === 'acceptEdits'" :size="13" weight="bold" />
+          <PhShieldCheck v-else :size="13" weight="bold" />
+          <span class="perm-mode-label">{{ permMeta.label }}</span>
+          <PhCaretDown :size="9" weight="bold" class="perm-mode-caret" />
+        </button>
+        <!-- Teleported to body so the float-card's `overflow:hidden` can't clip it. -->
+        <Teleport to="body">
+          <div
+            v-if="permMenuOpen"
+            ref="permMenuEl"
+            class="perm-mode-menu"
+            :style="{ top: permMenuPos.top + 'px', right: permMenuPos.right + 'px' }"
+          >
+            <button
+              v-for="m in PERM_MODES"
+              :key="m"
+              class="perm-mode-item"
+              :class="{ 'perm-mode-item-active': permMode === m, 'perm-mode-item-danger': PERM_META[m].danger }"
+              :title="PERM_META[m].title"
+              @click="selectPermMode(m)"
+            >
+              <PhShieldWarning v-if="m === 'bypassPermissions'" :size="13" weight="bold" />
+              <PhPencilSimple v-else-if="m === 'acceptEdits'" :size="13" weight="bold" />
+              <PhShieldCheck v-else :size="13" weight="bold" />
+              <span>{{ PERM_META[m].label }}</span>
+            </button>
+          </div>
+        </Teleport>
+      </div>
       <button class="chat-header-btn" title="New conversation" @click="clearChat">
         <PhArrowCounterClockwise :size="13" />
       </button>
@@ -291,12 +318,13 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
-import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa } from "@phosphor-icons/vue";
+import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { useNotificationsStore } from "@/stores/notifications";
+import type { TermStatus } from "@/lib/terminalStatus";
 import { useEditorContextStore } from "@/stores/editorContext";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { marked } from "marked";
@@ -412,6 +440,9 @@ const messages = ref<ChatMessage[]>(loadMessages(props.chatId));
 const inputText = ref("");
 const busy = ref(false);
 const messageQueue = ref<string[]>([]);
+// Set before an INTENTIONAL claude restart (mode switch / abort) so the `exit`
+// event that teardown emits doesn't fire a spurious "Claude finished" toast.
+const suppressNextDone = ref(false);
 const pendingImages = ref<string[]>([]); // data URIs
 const sessionId = ref("");
 const turnStats = ref<TurnStats | null>(null);
@@ -439,6 +470,25 @@ const PERM_META: Record<PermMode, { label: string; title: string; danger?: boole
   bypassPermissions: { label: "Bypass", title: "Skip ALL permission checks (click to change)", danger: true },
 };
 const permMeta = computed(() => PERM_META[permMode.value]);
+const PERM_MODES: PermMode[] = ["default", "acceptEdits", "bypassPermissions"];
+const permMenuOpen = ref(false);
+const permBtnEl = ref<HTMLElement | null>(null);
+const permMenuEl = ref<HTMLElement | null>(null);
+// The menu is teleported + position:fixed, so anchor it to the button's rect.
+const permMenuPos = ref({ top: 0, right: 0 });
+function togglePermMenu() {
+  if (!permMenuOpen.value && permBtnEl.value) {
+    const r = permBtnEl.value.getBoundingClientRect();
+    permMenuPos.value = { top: Math.round(r.bottom + 4), right: Math.round(window.innerWidth - r.right) };
+  }
+  permMenuOpen.value = !permMenuOpen.value;
+}
+function onPermMenuOutside(e: MouseEvent) {
+  if (!permMenuOpen.value) return;
+  const t = e.target as Node;
+  if (permBtnEl.value?.contains(t) || permMenuEl.value?.contains(t)) return;
+  permMenuOpen.value = false;
+}
 
 // ── Changes panel ────────────────────────────────────────────────────────────
 interface ChangedFile { path: string; shortPath: string; added: number; deleted: number; status: string }
@@ -508,6 +558,20 @@ async function notifyDone() {
     let granted = await isPermissionGranted();
     if (!granted) { const p = await requestPermission(); granted = p === "granted"; }
     if (granted) sendNotification({ title: "Burrow", body: `✓ ${body}` });
+  }
+}
+
+// Alert the user that Claude is blocked on a permission/question/plan decision:
+// in-app toast always, plus a native OS notification (with sound) when Burrow is
+// not focused — mirrors notifyDone's unfocused path.
+async function notifyPermission(cr: CanUseToolReq) {
+  const target = (cr.input?.command ?? cr.input?.file_path ?? cr.input?.path ?? cr.description ?? "") as string;
+  const body = target ? `${cr.toolName}: ${String(target).slice(0, 80)}` : cr.toolName;
+  notifStore.push({ type: "info", title: "Povolení", body, workspaceId: props.workspaceId });
+  if (!document.hasFocus()) {
+    let granted = await isPermissionGranted();
+    if (!granted) { const p = await requestPermission(); granted = p === "granted"; }
+    if (granted) sendNotification({ title: "Burrow — povolení", body });
   }
 }
 
@@ -631,10 +695,21 @@ function scrollToBottom() {
   });
 }
 
+// Derive the Sidebar status dot from live chat state. Generic tool / file-edit
+// requests are a hard allow/deny gate → "permission" (amber + bell); a question /
+// plan prompt is a soft "waiting"; an in-flight turn is "running".
+function chatStatus(): TermStatus {
+  if (pendingPermission.value || pendingDiff.value) return "permission";
+  if (pendingQuestion.value || pendingPlan.value) return "waiting";
+  if (busy.value) return "running";
+  return "idle";
+}
+
 function syncStore() {
   chats.sync(props.chatId, {
     busy: busy.value,
     messageCount: messages.value.filter((m) => m.role !== "tool").length,
+    status: chatStatus(),
   });
 }
 
@@ -672,6 +747,8 @@ function onLine(line: string) {
     } else {
       pendingPermission.value = cr;
     }
+    notifyPermission(cr);
+    syncStore(); // surface the permission/waiting dot in the Sidebar
     scrollToBottom();
     return;
   }
@@ -739,7 +816,13 @@ function onLine(line: string) {
     syncStore();
     scrollToBottom();
     refreshChanges();
-    notifyDone();
+    // An `exit` from an intentional restart (mode switch / abort) is not a real
+    // turn boundary — skip the "finished" toast/notification once.
+    if (type === "exit" && suppressNextDone.value) {
+      suppressNextDone.value = false;
+    } else {
+      notifyDone();
+    }
     // Flush one queued message (next turn will flush the next one).
     if (messageQueue.value.length > 0) {
       const next = messageQueue.value.shift()!;
@@ -810,6 +893,9 @@ async function respondControl(requestId: string, response: Record<string, unknow
     messages.value.push({ id: nextMsgId++, role: "assistant", text: `Control response failed: ${e}` });
     saveMessages(props.chatId, messages.value);
   }
+  // Callers clear the pending ref before calling us, so this re-derives the dot
+  // (permission/waiting → running/idle) once the gate is answered.
+  syncStore();
 }
 
 // Generic tool permission + diff Accept/Reject (both pull from pendingPermission|pendingDiff).
@@ -871,12 +957,14 @@ function respondPlan(approve: boolean) {
   }
 }
 
-// Cycle the permission mode (header switch): default → acceptEdits → bypassPermissions.
+// Pick a permission mode from the header dropdown (default / acceptEdits / bypassPermissions).
 // Restart claude with --resume so the conversation continues under the new mode.
-async function cyclePermMode() {
-  const order: PermMode[] = ["default", "acceptEdits", "bypassPermissions"];
-  permMode.value = order[(order.indexOf(permMode.value) + 1) % order.length];
+async function selectPermMode(mode: PermMode) {
+  permMenuOpen.value = false;
+  if (mode === permMode.value) return;
+  permMode.value = mode;
   localStorage.setItem(PERM_KEY(props.chatId), permMode.value);
+  suppressNextDone.value = true; // restart below — don't toast on the teardown `exit`
   await invoke("claude_stop", { id: props.chatId }).catch(() => {});
   await invoke("claude_start", {
     id: props.chatId,
@@ -888,6 +976,7 @@ async function cyclePermMode() {
 }
 
 async function abortTurn() {
+  suppressNextDone.value = true; // abort + restart — don't toast on the teardown `exit`
   await invoke("claude_abort", { id: props.chatId }).catch(() => {});
   // Restart with --resume so session continues
   await invoke("claude_start", { id: props.chatId, cwd: props.cwd, resumeSessionId: sessionId.value || null, permissionMode: permMode.value, appendSystemPrompt: props.appendSystemPrompt || null }).catch(() => {});
@@ -1051,6 +1140,7 @@ function onWindowKeydown(e: KeyboardEvent) {
 
 onMounted(async () => {
   window.addEventListener("keydown", onWindowKeydown);
+  window.addEventListener("mousedown", onPermMenuOutside);
   // Float (compact) control chat: pre-allow `burrow` Bash commands so routine
   // control calls (focus/list/new-tab/spawn) don't prompt every time. User can
   // still tighten via the perm-mode switch / Deny.
@@ -1088,6 +1178,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onWindowKeydown);
+  window.removeEventListener("mousedown", onPermMenuOutside);
   unlisten?.();
   invoke("claude_stop", { id: props.chatId }).catch(() => {});
 });
@@ -1312,7 +1403,45 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 .btn-danger-active { color: #ef4444 !important; background: color-mix(in srgb, #ef4444 15%, transparent) !important; }
 .perm-mode-btn { width: auto !important; gap: 4px; padding: 0 7px; }
 .perm-mode-label { font-size: 10px; font-weight: 600; }
+.perm-mode-caret { opacity: .6; margin-left: -1px; }
 .btn-active { color: var(--accent) !important; background: color-mix(in srgb, var(--accent) 12%, transparent) !important; }
+
+/* Permission-mode dropdown */
+.perm-mode-dropdown { position: relative; display: flex; }
+.perm-mode-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 150px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-elevated, var(--bg-secondary));
+  border: 1px solid var(--border-color, var(--border));
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+}
+.perm-mode-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: color .12s, background .12s;
+}
+.perm-mode-item:hover { background: var(--bg-hover); }
+.perm-mode-item-active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.perm-mode-item-danger { color: #ef4444; }
+.perm-mode-item-danger:hover { background: color-mix(in srgb, #ef4444 15%, transparent); }
+.perm-mode-item-danger.perm-mode-item-active { color: #ef4444; background: color-mix(in srgb, #ef4444 15%, transparent); }
 
 /* Permission banner */
 .permission-banner {
