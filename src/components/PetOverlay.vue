@@ -3,8 +3,8 @@
 
   One pet per ACTIVE AGENT tab (flattened across every workspace from the
   terminalTabs store). Species is assigned deterministically by tab id, so the
-  same agent always gets the same critter — a mixed zoo of cat / mole / slime /
-  ghost / duck wandering along the bottom of the window.
+  same agent always gets the same critter — a mixed zoo of cat / turtle / slime /
+  ghost / duck / giraffe wandering along the bottom of the window.
 
   Behaviour is driven by the tab's TermStatus:
     running            → struts back and forth, dust kicks, "working…"
@@ -44,6 +44,20 @@
       <div v-if="p.status === 'idle'" class="pet-z">z</div>
       <div v-if="p.status === 'done' || p.status === 'review'" class="pet-spark">✦</div>
       <div v-if="ui.petsLeveling && p.level > 0" class="pet-lvl">Lv{{ p.level }}</div>
+    </div>
+
+    <!-- Farewell explosion when an agent tab closes: a critter goes out with a
+         bang — radiating shards + a flash + smoke puff + a little "bye!". -->
+    <div v-for="b in booms" :key="`b${b.id}-${b.born}`" class="boom" :style="boomStyle(b)">
+      <div class="boom-flash" />
+      <div class="boom-puff" />
+      <i
+        v-for="n in 8"
+        :key="n"
+        class="boom-shard"
+        :style="{ '--a': `${(n - 1) * 45}deg`, '--c': b.color }"
+      />
+      <div class="boom-bye">bye!</div>
     </div>
   </div>
 </template>
@@ -94,30 +108,27 @@ const SPECIES: Species[] = [
       </g>`,
   },
   {
-    name: "mole",
+    name: "turtle",
     svg: `
-      <ellipse cx="14" cy="41" rx="4.2" ry="3.2" fill="#c49a6c"/>
-      <ellipse cx="34" cy="41" rx="4.2" ry="3.2" fill="#c49a6c"/>
-      <g stroke="#7c5e3c" stroke-width="1" stroke-linecap="round">
-        <line x1="11.5" y1="41" x2="10.5" y2="44.5"/><line x1="14" y1="42" x2="14" y2="45.5"/><line x1="16.5" y1="41" x2="17.5" y2="44.5"/>
-        <line x1="31.5" y1="41" x2="30.5" y2="44.5"/><line x1="34" y1="42" x2="34" y2="45.5"/><line x1="36.5" y1="41" x2="37.5" y2="44.5"/>
+      <ellipse cx="11" cy="40" rx="4" ry="3" fill="#7ec850"/>
+      <ellipse cx="37" cy="40" rx="4" ry="3" fill="#7ec850"/>
+      <ellipse cx="24" cy="40" rx="13" ry="4.5" fill="#3f7a2e" opacity=".25"/>
+      <path d="M9 36 Q9 18 24 18 Q39 18 39 36 Z" fill="#5aa83a"/>
+      <path d="M9 36 Q9 18 24 18 Q39 18 39 36 Z" fill="none" stroke="#3f7a2e" stroke-width="1.4"/>
+      <g stroke="#3f7a2e" stroke-width="1.2" fill="none" stroke-linecap="round">
+        <path d="M24 18 L24 36"/><path d="M14 33 Q19 23 24 24"/><path d="M34 33 Q29 23 24 24"/>
       </g>
-      <ellipse cx="24" cy="27" rx="15" ry="15" fill="#a8794f"/>
-      <ellipse cx="24" cy="40" rx="12" ry="4.5" fill="#7c5e3c" opacity=".25"/>
-      <ellipse cx="24" cy="33" rx="10" ry="9" fill="#c49a6c"/>
-      <circle cx="12" cy="29" r="2.6" fill="#ffa3b8" opacity=".55"/>
-      <circle cx="36" cy="29" r="2.6" fill="#ffa3b8" opacity=".55"/>
-      <ellipse cx="17" cy="22" rx="3.3" ry="4" fill="#fff"/>
-      <ellipse cx="31" cy="22" rx="3.3" ry="4" fill="#fff"/>
-      <circle cx="17.6" cy="22.6" r="2.1" fill="#241c2b"/>
-      <circle cx="31.6" cy="22.6" r="2.1" fill="#241c2b"/>
-      <circle cx="18.5" cy="21.6" r=".8" fill="#fff"/>
-      <circle cx="32.5" cy="21.6" r=".8" fill="#fff"/>
-      <ellipse cx="24" cy="30.5" rx="5.6" ry="4.6" fill="#f4a6b8"/>
-      <ellipse cx="22.6" cy="29" rx="2" ry="1.4" fill="#fff" opacity=".55"/>
-      <circle cx="22.4" cy="31" r="1" fill="#c76b86"/>
-      <circle cx="25.6" cy="31" r="1" fill="#c76b86"/>
-      <path d="M21 35 Q24 37.2 27 35" stroke="#7c5e3c" stroke-width="1.2" fill="none" stroke-linecap="round"/>`,
+      <polygon points="18,29 24,26 30,29 27,34 21,34" fill="#7ec850" opacity=".5"/>
+      <ellipse cx="24" cy="40" rx="8" ry="5.5" fill="#9bdc6a"/>
+      <ellipse cx="18" cy="38" rx="3.1" ry="3.6" fill="#9bdc6a"/>
+      <circle cx="18" cy="37.6" r="1.7" fill="#241c2b"/>
+      <circle cx="18.6" cy="36.9" r=".6" fill="#fff"/>
+      <ellipse cx="30" cy="38" rx="3.1" ry="3.6" fill="#9bdc6a"/>
+      <circle cx="30" cy="37.6" r="1.7" fill="#241c2b"/>
+      <circle cx="30.6" cy="36.9" r=".6" fill="#fff"/>
+      <path d="M22 41.5 Q24 43 26 41.5" stroke="#3f7a2e" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+      <circle cx="15" cy="41" r="1.6" fill="#ffa3b8" opacity=".6"/>
+      <circle cx="33" cy="41" r="1.6" fill="#ffa3b8" opacity=".6"/>`,
   },
   {
     name: "slime",
@@ -163,6 +174,32 @@ const SPECIES: Species[] = [
       <circle cx="22" cy="14.1" r=".95" fill="#fff"/>
       <circle cx="27" cy="20" r="2.6" fill="#ffb37a" opacity=".7"/>`,
   },
+  {
+    name: "giraffe",
+    svg: `
+      <g stroke="#c9892f" stroke-width="2.6" stroke-linecap="round">
+        <line x1="20" y1="40" x2="20" y2="46"/><line x1="29" y1="40" x2="29" y2="46"/>
+      </g>
+      <rect x="16" y="30" width="17" height="12" rx="5" fill="#f4c560"/>
+      <ellipse cx="24.5" cy="41.5" rx="9" ry="3" fill="#c9892f" opacity=".22"/>
+      <path d="M22 32 Q19 20 26 10" fill="none" stroke="#f4c560" stroke-width="7" stroke-linecap="round"/>
+      <g fill="#b5701f">
+        <circle cx="20" cy="33" r="2.1"/><circle cx="28" cy="35" r="2.3"/>
+        <circle cx="22" cy="26" r="1.8"/><circle cx="24" cy="20" r="1.6"/>
+        <circle cx="29" cy="38" r="1.6"/>
+      </g>
+      <path d="M24 14 Q21 9 25 6 Q30 8 30 13 Z" fill="#f4c560"/>
+      <ellipse cx="30" cy="11" rx="4.5" ry="4" fill="#f7d488"/>
+      <path d="M33 11 Q37 11 37 13 Q35 14 32 13 Z" fill="#dba35a"/>
+      <g stroke="#c9892f" stroke-width="1.6" stroke-linecap="round">
+        <line x1="26" y1="7" x2="25" y2="3"/><line x1="30" y1="6.5" x2="30" y2="2.5"/>
+      </g>
+      <circle cx="25" cy="3" r="1.6" fill="#7c5e3c"/><circle cx="30" cy="2.5" r="1.6" fill="#7c5e3c"/>
+      <ellipse cx="22" cy="6" rx="2.4" ry="3" fill="#f4c560"/>
+      <circle cx="29" cy="10" r="1.7" fill="#241c2b"/>
+      <circle cx="29.6" cy="9.4" r=".6" fill="#fff"/>
+      <circle cx="33" cy="13" r="1.4" fill="#ffb37a" opacity=".7"/>`,
+  },
 ];
 
 const SPRITES = SPECIES.map(
@@ -172,7 +209,10 @@ const SPRITES = SPECIES.map(
 // Which way each sprite is drawn (1 = right). Front-facing critters are 1 (a
 // flip is invisible); the duck is in profile facing LEFT, so it's -1 — its
 // render flip = facing * FACE keeps the beak pointing where it walks.
-const FACE = [1, 1, 1, 1, -1]; // cat, mole, slime, ghost, duck
+const FACE = [1, 1, 1, 1, -1, 1]; // cat, turtle, slime, ghost, duck, giraffe
+
+// Shard tint per species (matches each sprite's body) for the farewell boom.
+const BOOM_COLOR = ["#f6a23c", "#5aa83a", "#5be08a", "#edf0ff", "#ffd23f", "#f4c560"];
 
 // ── Runtime state per pet (preserved across re-renders, keyed by tab id) ───────
 interface PetRT {
@@ -203,6 +243,12 @@ interface PetView {
 
 const pets = ref<PetView[]>([]);
 
+// ── Farewell explosions ───────────────────────────────────────────────────────
+// When a pet's tab closes the critter "explodes". A boom lives ~0.7s then clears.
+interface Boom { id: number; born: number; x: number; color: string }
+const booms = ref<Boom[]>([]);
+const BOOM_LIFE = 42; // frames (~0.7s @ 60fps)
+
 const QUIP: Partial<Record<TermStatus, string>> = {
   running: "working…",
   waiting: "need input!",
@@ -231,8 +277,19 @@ function step() {
   const w = viewport();
   const live = roster();
   const liveIds = new Set(live.map((r) => r.id));
-  // Drop runtime for pets whose tab vanished.
-  for (const id of [...rt.keys()]) if (!liveIds.has(id)) rt.delete(id);
+  // Drop runtime for pets whose tab vanished — and send them off with a bang.
+  for (const id of [...rt.keys()]) {
+    if (!liveIds.has(id)) {
+      const r = rt.get(id)!;
+      if (ui.petsEnabled) {
+        const species = ((id % SPECIES.length) + SPECIES.length) % SPECIES.length;
+        booms.value.push({ id, born: now, x: r.x, color: BOOM_COLOR[species] });
+      }
+      rt.delete(id);
+    }
+  }
+  // Expire spent explosions.
+  if (booms.value.length) booms.value = booms.value.filter((b) => now - b.born < BOOM_LIFE);
 
   const views: PetView[] = [];
   for (const { id, wsId, status } of live) {
@@ -309,6 +366,11 @@ function poke(p: PetView) {
 
 function petStyle(p: PetView) {
   return { left: `${p.x}px`, width: `${SPRITE_W}px`, height: `${SPRITE_H}px` };
+}
+
+function boomStyle(b: Boom) {
+  // Centre the burst on where the critter's body was.
+  return { left: `${b.x + SPRITE_W / 2}px`, bottom: `${4 + SPRITE_H / 2}px` };
 }
 
 function tabTitle(p: PetView): string {
@@ -491,5 +553,87 @@ onBeforeUnmount(() => cancelAnimationFrame(raf));
   color: #fde047;
   animation: pet-zfloat 1s ease-in-out infinite;
   pointer-events: none;
+}
+
+/* ── Farewell explosion (tab closed) ─────────────────────────────────────────
+   Anchored at the critter's old body centre; everything radiates from 0,0. */
+.boom {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* central flash — bright pop that fades fast */
+.boom-flash {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff 0%, #fde047 45%, transparent 72%);
+  animation: boom-flash 0.4s ease-out forwards;
+}
+@keyframes boom-flash {
+  0%   { transform: scale(0.2); opacity: 1; }
+  60%  { transform: scale(1.6); opacity: 0.9; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+/* lingering smoke puff that swells and dissolves */
+.boom-puff {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(190, 190, 200, 0.55), transparent 70%);
+  animation: boom-puff 0.7s ease-out forwards;
+}
+@keyframes boom-puff {
+  0%   { transform: scale(0.3) translateY(0); opacity: 0; }
+  30%  { opacity: 0.7; }
+  100% { transform: scale(1.7) translateY(-10px); opacity: 0; }
+}
+
+/* 8 shards flung outward along --a, tinted to the critter --c */
+.boom-shard {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 2px;
+  background: var(--c, #fde047);
+  transform: rotate(var(--a)) translateX(0);
+  animation: boom-shard 0.6s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+@keyframes boom-shard {
+  0%   { transform: rotate(var(--a)) translateX(2px) scale(1.2); opacity: 1; }
+  100% { transform: rotate(var(--a)) translateX(30px) scale(0.2); opacity: 0; }
+}
+
+.boom-bye {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -100%);
+  white-space: nowrap;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-base, #fff);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  animation: boom-bye 0.7s ease-out forwards;
+}
+@keyframes boom-bye {
+  0%   { opacity: 0; transform: translate(-50%, -60%) scale(0.6); }
+  35%  { opacity: 1; transform: translate(-50%, -120%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -180%) scale(1); }
 }
 </style>
