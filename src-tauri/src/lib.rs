@@ -1246,6 +1246,46 @@ fn clean_daemon(daemon: State<DaemonState>) -> usize {
     reaped
 }
 
+/// Kill ORPHANED PTY sessions: alive in the daemon but referenced by no tab —
+/// the residue of a tab closed in a past run whose PTY was never reaped, which is
+/// what lets a fresh tab collide onto a stale session ("old terminal reappears").
+///
+/// Safety: a session is killed only when ALL hold:
+///  - it is `alive` (dead ones are handled by `clean_daemon`);
+///  - `pty_id < 1_000_000` — never touch Mission Control's offset id-space;
+///  - its id is in neither `keep_ids` (every live tab/pane id the frontend knows)
+///    nor the `terminal_tabs` table (every persisted leaf, incl. split panes and
+///    not-yet-opened workspaces). So a reattachable or just-created session stays.
+#[tauri::command]
+fn kill_orphan_sessions(keep_ids: Vec<u32>, daemon: State<DaemonState>, db: State<DbState>) -> usize {
+    let Some(client) = daemon.client() else { return 0 };
+    let mut keep: std::collections::HashSet<u32> = keep_ids.into_iter().collect();
+    {
+        let conn = db.conn.lock().unwrap();
+        // `stmt` is a local declared after `conn`, so it drops before `conn` — avoids
+        // the borrow outliving the lock guard (E0597 when using `if let` on the Result).
+        let mut stmt = conn.prepare("SELECT pty_id FROM terminal_tabs WHERE pty_id IS NOT NULL").ok();
+        if let Some(stmt) = stmt.as_mut() {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, i64>(0)) {
+                for pid in rows.flatten() { keep.insert(pid as u32); }
+            }
+        }
+    }
+    let Ok(resp) = client.cmd(json!({"cmd": "ListSessions"})) else { return 0 };
+    let mut killed = 0;
+    for s in resp["sessions"].as_array().cloned().unwrap_or_default() {
+        if s["alive"].as_bool() != Some(true) { continue; }
+        let Some(pid) = s["pty_id"].as_u64() else { continue };
+        let pid = pid as u32;
+        if pid >= 1_000_000 { continue; }      // Mission Control range — leave alone
+        if keep.contains(&pid) { continue; }    // live or persisted tab — keep
+        let _ = client.cmd(json!({"cmd": "KillPty", "pty_id": pid}));
+        client.stop_stream(pid);
+        killed += 1;
+    }
+    killed
+}
+
 /// Hard-restart the daemon: kill its process (taking all live PTYs with it) and
 /// spawn a fresh one, swapping the connected client in place. Returns the new pid.
 #[tauri::command]
@@ -3677,6 +3717,7 @@ pub fn run() {
             system_stats,
             daemon_stats,
             clean_daemon,
+            kill_orphan_sessions,
             restart_daemon,
             take_spawn_requests,
             reinstall_status_hooks,
