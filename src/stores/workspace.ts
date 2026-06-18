@@ -10,6 +10,9 @@ export interface Workspace {
   last_opened: number | null;
   parent_id?: number | null;
   worktree_branch?: string | null;
+  // Whether the directory is a git repo. Non-git folders hide all git UI.
+  // Older payloads may omit it — treat undefined as git (back-compat).
+  is_git?: boolean;
 }
 
 export const useWorkspaceStore = defineStore("workspace", () => {

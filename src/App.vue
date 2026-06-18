@@ -2,7 +2,7 @@
   <div class="ide-root">
     <TitleBar
       :workspace-name="ws.active?.name"
-      :branch="git.branch"
+      :branch="ws.active?.is_git === false ? '' : git.branch"
       :folder-path="ws.active?.path"
       :right-panel-visible="ui.rightPanelVisible"
       @back="ws.close()"
@@ -38,7 +38,7 @@
         <MissionControl v-else-if="ui.mode === 'mission'" class="mission-main-panel" />
       </div>
       <div v-show="ui.rightPanelVisible" class="resize-handle panel-resize-right" @mousedown="startResize('right', $event)" />
-      <RightPanel v-show="ui.rightPanelVisible" class="panel-right" :cwd="ws.active?.path ?? ''" />
+      <RightPanel v-show="ui.rightPanelVisible" class="panel-right" :cwd="ws.active?.path ?? ''" :is-git="ws.active?.is_git !== false" />
     </div>
     <Spotlight
       ref="spotlightRef"

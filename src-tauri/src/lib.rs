@@ -87,6 +87,17 @@ pub struct Workspace {
     pub last_opened: Option<i64>,
     pub parent_id: Option<i64>,
     pub worktree_branch: Option<String>,
+    /// Whether this workspace's directory is a git repo. Non-git folders are
+    /// first-class workspaces but hide all git UI (branch, worktrees, diff panel).
+    pub is_git: bool,
+}
+
+/// Detect whether `path` lives inside a git work tree. Uses `git rev-parse` so it
+/// correctly handles plain repos, submodules, and worktrees (where `.git` is a file).
+fn is_git_repo(path: &str) -> bool {
+    git_in(path, &["rev-parse", "--is-inside-work-tree"])
+        .map(|out| out.trim() == "true")
+        .unwrap_or(false)
 }
 
 // ── burrow CLI ────────────────────────────────────────────────────────────────
@@ -1443,7 +1454,7 @@ fn read_dir_shallow(path: String) -> Result<Vec<DirEntry>, String> {
 fn list_workspaces(db: State<DbState>) -> Result<Vec<Workspace>, String> {
     let conn = db.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT id, name, path, created_at, last_opened, parent_id, worktree_branch FROM workspaces ORDER BY COALESCE(last_opened, 0) DESC, created_at DESC")
+        .prepare("SELECT id, name, path, created_at, last_opened, parent_id, worktree_branch, is_git FROM workspaces ORDER BY COALESCE(last_opened, 0) DESC, created_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| Ok(Workspace {
@@ -1454,6 +1465,7 @@ fn list_workspaces(db: State<DbState>) -> Result<Vec<Workspace>, String> {
             last_opened: row.get(4)?,
             parent_id: row.get(5)?,
             worktree_branch: row.get(6)?,
+            is_git: row.get(7)?,
         }))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -1465,12 +1477,13 @@ fn list_workspaces(db: State<DbState>) -> Result<Vec<Workspace>, String> {
 fn create_workspace(name: String, path: String, db: State<DbState>) -> Result<Workspace, String> {
     let conn = db.conn.lock().unwrap();
     let now = unix_now();
+    let is_git = is_git_repo(&path);
     conn.execute(
-        "INSERT OR IGNORE INTO workspaces (name, path, created_at) VALUES (?1, ?2, ?3)",
-        rusqlite::params![name, path, now],
+        "INSERT OR IGNORE INTO workspaces (name, path, created_at, is_git) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![name, path, now, is_git],
     ).map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
-    Ok(Workspace { id, name, path, created_at: now, last_opened: None, parent_id: None, worktree_branch: None })
+    Ok(Workspace { id, name, path, created_at: now, last_opened: None, parent_id: None, worktree_branch: None, is_git })
 }
 
 #[tauri::command]
@@ -1581,6 +1594,7 @@ fn create_worktree(
         last_opened: None,
         parent_id: Some(parent_id),
         worktree_branch: Some(branch),
+        is_git: true,
     })
 }
 
@@ -2403,6 +2417,8 @@ fn init_db(app: &AppHandle) -> Result<Connection, rusqlite::Error> {
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN cwd TEXT");
     let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN parent_id INTEGER");
     let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN worktree_branch TEXT");
+    // Existing rows predate folder-workspaces and were all git repos → default 1.
+    let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN is_git INTEGER NOT NULL DEFAULT 1");
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN default_title TEXT");
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN session_id TEXT");
     let _ = conn.execute_batch("ALTER TABLE mission_tasks ADD COLUMN handed_off INTEGER");
