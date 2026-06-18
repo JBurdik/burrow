@@ -73,9 +73,10 @@
 import { ref, computed, watch, nextTick } from "vue";
 import {
   PhTerminal, PhSparkle, PhCode, PhGitBranch, PhRobot,
-  PhFolderOpen, PhGear, PhPlus, PhColumns, PhPalette, PhKeyboard, PhGlobe,
+  PhFolderOpen, PhGear, PhPlus, PhColumns, PhPalette, PhKeyboard, PhGlobe, PhPlayCircle,
 } from "@phosphor-icons/vue";
 import { useAgentsStore } from "@/stores/agents";
+import { useScriptsStore } from "@/stores/scripts";
 import { useWorkspaceStore } from "@/stores/workspace";
 import type { Component } from "vue";
 
@@ -94,6 +95,7 @@ const selectedId = ref("");
 const inputRef = ref<HTMLInputElement | null>(null);
 
 const agentsStore = useAgentsStore();
+const scriptsStore = useScriptsStore();
 const wsStore = useWorkspaceStore();
 
 const ICON_MAP: Record<string, Component> = {
@@ -141,6 +143,24 @@ const sections = computed(() => {
       dim: i !== 0,
       action: () => { emit("launch", agentsStore.commandLine(a)); close(); },
     }));
+
+  const scriptItems: SpotlightItem[] = scriptsStore.scriptsFor(wsStore.active?.id)
+    .filter((s) => scriptsStore.commandLine(s) && (!q || s.name.toLowerCase().includes(q) || scriptsStore.commandLine(s).toLowerCase().includes(q)))
+    .map((s) => {
+      const color = s.color || "#34d399";
+      return {
+        id: `script-${s.id}`,
+        title: `Run ${s.name}`,
+        desc: scriptsStore.commandLine(s),
+        icon: PhPlayCircle as Component,
+        iconColor: color,
+        iconBg: hexBg(color),
+        iconBorder: `${color}33`,
+        shortcut: undefined,
+        dim: true,
+        action: () => { emit("launch", scriptsStore.commandLine(s)); close(); },
+      };
+    });
 
   const recentWorkspaces = [...wsStore.workspaces]
     .sort((a, b) => (b.last_opened ?? 0) - (a.last_opened ?? 0))
@@ -203,6 +223,7 @@ const sections = computed(() => {
 
   return [
     { key: "agents", label: "AGENTS", items: agentItems },
+    { key: "scripts", label: "SCRIPTS", items: scriptItems },
     { key: "recent", label: "RECENT", items: recentItems },
     { key: "commands", label: "COMMANDS", items: commandItems },
   ].filter((s) => s.items.length > 0);

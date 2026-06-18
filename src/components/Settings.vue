@@ -326,6 +326,113 @@
           </div>
         </section>
 
+        <!-- Scripts -->
+        <section v-else-if="active === 'scripts'" class="section">
+          <div class="sec-head">
+            <div class="sec-titles">
+              <h2 class="sec-title">Scripts</h2>
+              <span class="sec-sub">Named, multi-step commands run sequentially in a new terminal tab</span>
+            </div>
+          </div>
+          <div class="sec-divider" />
+
+          <p class="profile-help">
+            A script is an ordered list of steps. They run one after another —
+            with <strong>&amp;&amp;</strong> so each step starts only if the previous
+            <em>succeeded</em>, or with <strong>;</strong> (Continue on error) so every
+            step runs regardless. Launch from the toolbar's <strong>Scripts</strong> menu
+            or by name in <strong>⌘P</strong>.
+          </p>
+
+          <!-- Active repo scripts -->
+          <div class="settings-group">
+            <div class="scripts-group-head">
+              <span class="group-label">
+                {{ activeWsId != null ? `This repo — ${activeWsName}` : "This repo" }}
+              </span>
+              <button class="add-btn" :disabled="activeWsId == null" @click="activeWsId != null && scriptsStore.addRepo(activeWsId)">
+                <PhPlus :size="11" /> Add Script
+              </button>
+            </div>
+            <p v-if="activeWsId == null" class="cfg-hint">Open a workspace to add repo-specific scripts.</p>
+
+            <div
+              v-for="s in (activeWsId != null ? scriptsStore.repoScripts[activeWsId] || [] : [])"
+              :key="s.id"
+              class="script-card"
+            >
+              <div class="sc-head">
+                <label class="dot-label" title="Pick color">
+                  <span class="dot" :style="{ background: s.color || '#34d399' }" />
+                  <input type="color" class="color-input" :value="s.color || '#34d399'" @input="s.color = val($event)" />
+                </label>
+                <input class="inp sc-name" :value="s.name" placeholder="Script name" @input="s.name = val($event)" />
+                <label class="sc-toggle" title="Continue on error — chain steps with ; instead of &&">
+                  <input type="checkbox" :checked="s.continueOnError" @change="s.continueOnError = ($event.target as HTMLInputElement).checked" />
+                  <span class="toggle-track"><span class="toggle-thumb" /></span>
+                  <span class="sc-toggle-label">Continue on error</span>
+                </label>
+                <span class="spacer" />
+                <button class="row-del" title="Remove script" @click="activeWsId != null && scriptsStore.removeRepo(activeWsId, s.id)">
+                  <PhTrash :size="13" />
+                </button>
+              </div>
+              <div class="sc-steps">
+                <div v-for="(_, i) in s.steps" :key="i" class="sc-step">
+                  <span class="sc-step-idx">{{ i + 1 }}</span>
+                  <input class="inp mono sc-step-inp" :value="s.steps[i]" placeholder="npm install" @input="setStep(s, i, val($event))" />
+                  <button class="sc-step-btn" title="Move up" :disabled="i === 0" @click="moveStep(s, i, i - 1)"><PhArrowUp :size="12" /></button>
+                  <button class="sc-step-btn" title="Move down" :disabled="i === s.steps.length - 1" @click="moveStep(s, i, i + 1)"><PhArrowDown :size="12" /></button>
+                  <button class="sc-step-btn del" title="Remove step" @click="removeStep(s, i)"><PhX :size="12" /></button>
+                </div>
+                <button class="add-btn sc-add-step" @click="addStep(s)"><PhPlus :size="11" /> Add step</button>
+              </div>
+              <div class="sc-preview"><span class="sc-preview-label">Runs:</span> <code>{{ scriptPreview(s) }}</code></div>
+            </div>
+          </div>
+
+          <!-- Global scripts -->
+          <div class="settings-group">
+            <div class="scripts-group-head">
+              <span class="group-label">Global — all workspaces</span>
+              <button class="add-btn" @click="scriptsStore.addGlobal()">
+                <PhPlus :size="11" /> Add Script
+              </button>
+            </div>
+
+            <div v-for="s in scriptsStore.globalScripts" :key="s.id" class="script-card">
+              <div class="sc-head">
+                <label class="dot-label" title="Pick color">
+                  <span class="dot" :style="{ background: s.color || '#34d399' }" />
+                  <input type="color" class="color-input" :value="s.color || '#34d399'" @input="s.color = val($event)" />
+                </label>
+                <input class="inp sc-name" :value="s.name" placeholder="Script name" @input="s.name = val($event)" />
+                <label class="sc-toggle" title="Continue on error — chain steps with ; instead of &&">
+                  <input type="checkbox" :checked="s.continueOnError" @change="s.continueOnError = ($event.target as HTMLInputElement).checked" />
+                  <span class="toggle-track"><span class="toggle-thumb" /></span>
+                  <span class="sc-toggle-label">Continue on error</span>
+                </label>
+                <span class="spacer" />
+                <button class="row-del" title="Remove script" @click="scriptsStore.removeGlobal(s.id)">
+                  <PhTrash :size="13" />
+                </button>
+              </div>
+              <div class="sc-steps">
+                <div v-for="(_, i) in s.steps" :key="i" class="sc-step">
+                  <span class="sc-step-idx">{{ i + 1 }}</span>
+                  <input class="inp mono sc-step-inp" :value="s.steps[i]" placeholder="npm install" @input="setStep(s, i, val($event))" />
+                  <button class="sc-step-btn" title="Move up" :disabled="i === 0" @click="moveStep(s, i, i - 1)"><PhArrowUp :size="12" /></button>
+                  <button class="sc-step-btn" title="Move down" :disabled="i === s.steps.length - 1" @click="moveStep(s, i, i + 1)"><PhArrowDown :size="12" /></button>
+                  <button class="sc-step-btn del" title="Remove step" @click="removeStep(s, i)"><PhX :size="12" /></button>
+                </div>
+                <button class="add-btn sc-add-step" @click="addStep(s)"><PhPlus :size="11" /> Add step</button>
+              </div>
+              <div class="sc-preview"><span class="sc-preview-label">Runs:</span> <code>{{ scriptPreview(s) }}</code></div>
+            </div>
+            <div v-if="scriptsStore.globalScripts.length === 0" class="tbl-empty">No global scripts yet.</div>
+          </div>
+        </section>
+
         <!-- Claude Profiles -->
         <section v-else-if="active === 'profiles'" class="section">
           <div class="sec-head">
@@ -1223,7 +1330,7 @@ import {
   PhListBullets, PhCaretDown, PhFolder, PhPencilSimple, PhCheck, PhBell, PhPlay,
   PhDotsSixVertical, PhArrowClockwise, PhDownloadSimple, PhTerminalWindow,
   PhPlugsConnected, PhBrowser, PhToggleLeft, PhToggleRight, PhArrowSquareOut, PhImage,
-  PhUserGear, PhPaperPlaneTilt, PhPawPrint,
+  PhUserGear, PhPaperPlaneTilt, PhPawPrint, PhPlayCircle, PhArrowUp, PhArrowDown,
 } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -1231,6 +1338,7 @@ import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import OpenAIIcon from "@/components/icons/OpenAIIcon.vue";
 import GitHubCopilotIcon from "@/components/icons/GitHubCopilotIcon.vue";
 import { useAgentsStore, type AgentIcon } from "@/stores/agents";
+import { useScriptsStore, type Script } from "@/stores/scripts";
 import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore, UI_FONTS, TERMINAL_FONTS, NTFY_EVENTS, type NtfyEvent } from "@/stores/ui";
@@ -1243,6 +1351,7 @@ import { usePointerReorder } from "@/composables/usePointerReorder";
 defineEmits<{ close: [] }>();
 
 const store = useAgentsStore();
+const scriptsStore = useScriptsStore();
 const profilesStore = useProfilesStore();
 async function pickProfileConfigDir(id: string) {
   try {
@@ -1253,6 +1362,26 @@ async function pickProfileConfigDir(id: string) {
 const wsStore = useWorkspaceStore();
 const ui = useUIStore();
 const update = useUpdateStore();
+
+// ── Scripts ──
+// The active repo's scripts are scoped to the active workspace.
+const activeWsId = computed(() => wsStore.active?.id ?? null);
+const activeWsName = computed(() => wsStore.active?.name ?? "");
+
+// Step helpers mutate the reactive Script in place — the store's deep watcher
+// persists the change.
+function addStep(s: Script) { s.steps.push(""); }
+function removeStep(s: Script, i: number) {
+  s.steps.splice(i, 1);
+  if (s.steps.length === 0) s.steps.push("");
+}
+function moveStep(s: Script, from: number, to: number) {
+  if (to < 0 || to >= s.steps.length) return;
+  const [item] = s.steps.splice(from, 1);
+  s.steps.splice(to, 0, item);
+}
+function setStep(s: Script, i: number, value: string) { s.steps[i] = value; }
+function scriptPreview(s: Script): string { return scriptsStore.commandLine(s) || "—"; }
 
 // ── Integrations: ntfy.sh ──
 const ntfyTesting = ref(false);
@@ -1665,6 +1794,7 @@ const navItems: NavItem[] = [
   { id: "general", label: "General", icon: PhSlidersHorizontal },
   { id: "workspaces", label: "Workspaces", icon: PhFolderOpen },
   { id: "agents", label: "Agents", icon: PhRobot },
+  { id: "scripts", label: "Scripts", icon: PhPlayCircle },
   { id: "profiles", label: "Claude Profiles", icon: PhUserGear },
   { id: "skills", label: "Skills", icon: PhSparkle },
   { id: "mcp", label: "MCP Servers", icon: PhPlugsConnected },
@@ -2840,4 +2970,58 @@ const SHORTCUT_GROUPS = [
 .mcp-config { width: 100%; box-sizing: border-box; }
 .mcp-form-foot { display: flex; align-items: center; gap: 8px; }
 .mcp-err { font-size: 11px; color: var(--red); }
+
+/* ── Scripts ── */
+.scripts-group-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.scripts-group-head .group-label { margin: 0; }
+.scripts-group-head .add-btn { margin-left: auto; }
+
+.script-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-base) 50%, transparent);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.sc-head { display: flex; align-items: center; gap: 8px; }
+.sc-name { flex: 0 1 200px; font-weight: 500; }
+.sc-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.sc-toggle input { display: none; }
+.sc-toggle-label { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+
+.sc-steps { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+.sc-step { display: flex; align-items: center; gap: 6px; }
+.sc-step-idx {
+  width: 18px; height: 18px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: var(--text-muted);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 4px;
+}
+.sc-step-inp { flex: 1; }
+.sc-step-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; flex-shrink: 0;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: transparent; color: var(--text-muted); cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.sc-step-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text-primary); }
+.sc-step-btn:disabled { opacity: 0.3; cursor: default; }
+.sc-step-btn.del:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
+.sc-add-step { margin-top: 4px; align-self: flex-start; }
+
+.sc-preview {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex; align-items: baseline; gap: 6px;
+  overflow: hidden;
+}
+.sc-preview-label { flex-shrink: 0; }
+.sc-preview code {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 </style>
