@@ -521,9 +521,13 @@ function prTitle(info: PrInfo): string {
 // process and failures cache null, so this never blocks the UI. 60s cadence.
 let prTimer: number | undefined;
 function refreshAllPrs() {
-  for (const ws of store.workspaces) {
-    if (ws.path) git.fetchPr(ws.id, ws.path);
-  }
+  // Run through the store's concurrency-capped pool (max 3 gh in flight) so a
+  // many-workspace sweep can't spawn N blocking gh subprocesses at once.
+  git.fetchPrs(
+    store.workspaces
+      .filter((ws) => ws.path)
+      .map((ws) => ({ wsId: ws.id, cwd: ws.path })),
+  );
 }
 
 // Count of tabs with "review" status across ALL workspaces (agent finished while
@@ -598,15 +602,29 @@ onMounted(() => {
     if (!isCollapsed(ws.id)) { store.open(ws); mountWorktrees(ws.id); }
   });
   document.addEventListener("click", () => { ctxMenu.value = null; wtCtxMenu.value = null; });
-  refreshAllPrs();
-  prTimer = window.setInterval(refreshAllPrs, 60_000);
+  // Defer the first PR sweep off the critical startup path. Firing gh for every
+  // workspace synchronously here saturated the Tauri command workers and stalled
+  // the real startup invokes (list_workspaces, session restore, create_pty) → the
+  // window painted gray for seconds. Let the UI paint first, then poll on the 60s
+  // cadence. requestIdleCallback when available; ~2.5s timeout fallback.
+  const startPrs = () => { refreshAllPrs(); prTimer = window.setInterval(refreshAllPrs, 60_000); };
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(startPrs, { timeout: 2500 });
+  } else {
+    window.setTimeout(startPrs, 2500);
+  }
 });
 onUnmounted(() => { if (prTimer) clearInterval(prTimer); });
 // Re-poll when the workspace list changes (new repo/worktree added).
 watch(() => store.workspaces.length, refreshAllPrs);
-watch(() => store.workspaces, (wss) => wss.forEach(ws => {
+// Watch only the STRUCTURE of the workspace set (its id list), not every nested
+// property. A deep watch here re-ran ensureOpen + mountWorktrees over ALL
+// workspaces on any mutation (e.g. a PR-status or tab change), piling git
+// subprocesses on a workspace switch. Keyed on the joined ids, it fires only
+// when workspaces are actually added/removed — same behavior, far fewer runs.
+watch(() => store.workspaces.map(ws => ws.id).join(","), () => store.workspaces.forEach(ws => {
   if (!ws.parent_id && !isCollapsed(ws.id)) { store.ensureOpen(ws); mountWorktrees(ws.id); }
-}), { deep: true });
+}));
 
 // ── Claude chat sessions ─────────────────────────────────────────────────────
 function newChatSession(workspaceId: number) {

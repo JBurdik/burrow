@@ -144,6 +144,23 @@ export const useGitStore = defineStore("git", () => {
     }
   }
 
+  // Batch PR refresh with a small concurrency cap. prInFlight dedupes; this pool
+  // bounds how many gh subprocesses run at once so a 10-workspace sweep can't fire
+  // 10 blocking gh calls in parallel (the startup gray-screen saturation). 3 in
+  // flight keeps the badges fresh without flooding the command workers.
+  const PR_POOL = 3;
+  async function fetchPrs(items: Array<{ wsId: number; cwd: string }>) {
+    const queue = items.filter((it) => it.cwd && !prInFlight.has(it.wsId));
+    let i = 0;
+    const worker = async () => {
+      while (i < queue.length) {
+        const it = queue[i++];
+        await fetchPr(it.wsId, it.cwd);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PR_POOL, queue.length) }, worker));
+  }
+
   async function refresh(silent = false) {
     if (!cwd.value) return;
     if (!silent) loading.value = true;
@@ -367,6 +384,6 @@ export const useGitStore = defineStore("git", () => {
     setCwd, refresh, stageFile, unstageFile, unstageAll, stageAll, commit, showDiff, clearDiff, fetchAllDiff, gitInit,
     push, pull, refreshLog,
     branches, fetching, fetchBranches, switchBranch, createBranch, fetch, discardFile,
-    prByWs, fetchPr,
+    prByWs, fetchPr, fetchPrs,
   };
 });
