@@ -1294,6 +1294,35 @@ fn run_git(cwd: String, args: Vec<String>) -> GitOutput {
     }
 }
 
+// ── gh CLI (PR status) ────────────────────────────────────────────────────────
+// Locate the GitHub CLI. Returns None when gh isn't installed so callers can
+// degrade gracefully (no PR badge) instead of erroring.
+fn gh_binary() -> Option<String> {
+    for p in &["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"] {
+        if std::path::Path::new(p).exists() { return Some(p.to_string()); }
+    }
+    None
+}
+
+// Shell out to `gh` in `cwd`. Mirrors GitOutput so the frontend reuses the same
+// shape. code = -1 + stderr "gh not found" when the CLI is missing; the store
+// treats any non-zero code as "no PR info" and shows nothing.
+#[tauri::command]
+fn run_gh(cwd: String, args: Vec<String>) -> GitOutput {
+    let gh = match gh_binary() {
+        Some(g) => g,
+        None => return GitOutput { stdout: String::new(), stderr: "gh not found".into(), code: -1 },
+    };
+    match std::process::Command::new(gh).args(&args).current_dir(&cwd).output() {
+        Ok(out) => GitOutput {
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            code: out.status.code().unwrap_or(-1),
+        },
+        Err(e) => GitOutput { stdout: String::new(), stderr: e.to_string(), code: -1 },
+    }
+}
+
 // ── Open path in external app ─────────────────────────────────────────────────
 // target: "finder" (reveal in Finder/Explorer), "vscode", "zed".
 #[cfg(target_os = "macos")]
@@ -3324,6 +3353,7 @@ pub fn run() {
             get_config_dirs,
             set_config_dirs,
             run_git,
+            run_gh,
             open_path_in,
             read_dir_shallow,
             list_workspaces,

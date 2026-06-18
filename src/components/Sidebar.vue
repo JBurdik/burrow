@@ -70,6 +70,14 @@
             <div class="ws-name">{{ item.name }}</div>
             <div class="ws-path">{{ shortPath(item.path) }}</div>
           </div>
+          <span
+            v-if="git.prByWs[item.id]"
+            class="pr-badge"
+            :class="`pr-${prTone(git.prByWs[item.id]!)}`"
+            :title="prTitle(git.prByWs[item.id]!)"
+          >
+            <span class="pr-dot" />#{{ git.prByWs[item.id]!.number }}
+          </span>
           <button class="ws-delete" title="Remove" data-no-drag @click.stop="store.remove(item.id)">
             <PhX :size="10" />
           </button>
@@ -197,6 +205,14 @@
             >
               <PhGitBranch :size="11" class="ws-term-icon" />
               <span class="ws-term-label">{{ wt.worktree_branch || wt.name }}</span>
+              <span
+                v-if="git.prByWs[wt.id]"
+                class="pr-badge"
+                :class="`pr-${prTone(git.prByWs[wt.id]!)}`"
+                :title="prTitle(git.prByWs[wt.id]!)"
+              >
+                <span class="pr-dot" />#{{ git.prByWs[wt.id]!.number }}
+              </span>
               <span
                 v-if="aggStatus(wt.id)"
                 class="status-dot"
@@ -370,7 +386,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, watch } from "vue";
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from "vue";
 import {
   PhFolderPlus,
   PhFolder,
@@ -398,7 +414,7 @@ import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { spinnerFrame } from "@/lib/spinner";
 import { usePointerReorder } from "@/composables/usePointerReorder";
 import { aggregateStatus, type TermStatus } from "@/lib/terminalStatus";
-import { useGitStore } from "@/stores/git";
+import { useGitStore, type PrInfo } from "@/stores/git";
 
 const store = useWorkspaceStore();
 const termTabs = useTerminalTabsStore();
@@ -461,6 +477,30 @@ function aggStatus(id: number): TermStatus | null {
   return s === "idle" ? null : s;
 }
 
+// ── PR status badge ──────────────────────────────────────────────────────────
+// Visual tone for a PR badge: failing CI wins, then state, then draft.
+function prTone(info: PrInfo): string {
+  if (info.checks === "fail") return "fail";
+  if (info.state === "MERGED") return "merged";
+  if (info.state === "CLOSED") return "closed";
+  if (info.isDraft) return "draft";
+  return "open";
+}
+function prTitle(info: PrInfo): string {
+  const state = info.isDraft && info.state === "OPEN" ? "draft" : info.state.toLowerCase();
+  const checks = info.checks === "none" ? "" : ` · checks ${info.checks}`;
+  return `PR #${info.number} (${state})${checks}`;
+}
+
+// Poll PR status for every workspace + worktree that has a path. gh runs out of
+// process and failures cache null, so this never blocks the UI. 60s cadence.
+let prTimer: number | undefined;
+function refreshAllPrs() {
+  for (const ws of store.workspaces) {
+    if (ws.path) git.fetchPr(ws.id, ws.path);
+  }
+}
+
 // Count of tabs with "review" status across ALL workspaces (agent finished while
 // user wasn't watching). Drives the unread badge in the sidebar header.
 const unreadCount = computed(() => {
@@ -513,7 +553,12 @@ onMounted(() => {
     if (!isCollapsed(ws.id)) { store.open(ws); mountWorktrees(ws.id); }
   });
   document.addEventListener("click", () => { ctxMenu.value = null; wtCtxMenu.value = null; });
+  refreshAllPrs();
+  prTimer = window.setInterval(refreshAllPrs, 60_000);
 });
+onUnmounted(() => { if (prTimer) clearInterval(prTimer); });
+// Re-poll when the workspace list changes (new repo/worktree added).
+watch(() => store.workspaces.length, refreshAllPrs);
 watch(() => store.workspaces, (wss) => wss.forEach(ws => {
   if (!ws.parent_id && !isCollapsed(ws.id)) { store.ensureOpen(ws); mountWorktrees(ws.id); }
 }), { deep: true });
@@ -1108,6 +1153,40 @@ function shortPath(p: string): string {
 }
 
 /* Status dot styles in status-dots.css — no local overrides needed. */
+
+/* ── PR badge ──────────────────────────────────────────────────── */
+.pr-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  line-height: 1;
+  padding: 1px 5px 1px 4px;
+  border-radius: 7px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+}
+.pr-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+.pr-open    { color: #4ade80; background: color-mix(in srgb, #4ade80 12%, transparent); }
+.pr-open    .pr-dot { background: #4ade80; }
+.pr-draft   { color: #9ca3af; background: rgba(255, 255, 255, 0.06); }
+.pr-draft   .pr-dot { background: #9ca3af; }
+.pr-merged  { color: #a78bfa; background: color-mix(in srgb, #a78bfa 14%, transparent); }
+.pr-merged  .pr-dot { background: #a78bfa; }
+.pr-closed  { color: #f87171; background: color-mix(in srgb, #f87171 12%, transparent); }
+.pr-closed  .pr-dot { background: #f87171; }
+.pr-fail    { color: #f87171; background: color-mix(in srgb, #f87171 14%, transparent); }
+.pr-fail    .pr-dot { background: #f87171; animation: pulse-unread 1.6s ease-in-out infinite; }
 
 .ws-term-close {
   opacity: 0;
