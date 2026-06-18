@@ -1143,15 +1143,28 @@ async function closeTab(tabId: number) {
   }
 
   // Explicitly kill PTYs so the daemon drops them (not a detach — user closed the
-  // tab). Editor/diff leaves have no PTY — skip them.
-  for (const leaf of leaves) {
-    if (leaf.leafType === "editor" || leaf.leafType === "diff" || leaf.leafType === "chat") continue;
-    invoke("kill_pty", { id: leaf.id }).catch(() => {});
-    unregisterLeafListeners(leaf.id);
-  }
+  // tab). Editor/diff leaves have no PTY — skip them. AWAIT each kill: fire-and-forget
+  // raced app-quit — if the user closed a tab then quit before the daemon processed
+  // the kill, the session survived alive and reattached+replayed its ring buffer on
+  // next launch ("old session in a new terminal"). Awaiting guarantees the kill lands
+  // before we drop the tab and re-persist.
+  await Promise.all(
+    leaves
+      .filter((l) => l.leafType !== "editor" && l.leafType !== "diff" && l.leafType !== "chat")
+      .map((l) => {
+        const p = invoke("kill_pty", { id: l.id }).catch(() => {});
+        unregisterLeafListeners(l.id);
+        return p;
+      }),
+  );
 
   const idx = tabs.value.findIndex((t) => t.id === tabId);
   tabs.value.splice(idx, 1);
+
+  // Persist NOW rather than waiting on the reactive watcher's next tick — same
+  // app-quit race: the SQLite DELETE+INSERT must land so the closed tab can't be
+  // restored on next launch.
+  persist();
 
   if (activeTabId.value === tabId && tabs.value.length > 0) {
     const newTab = tabs.value[Math.max(0, idx - 1)];
@@ -1185,11 +1198,13 @@ async function closePane(leafId: number) {
     if (!ok) return;
   }
   if (leaf && leaf.leafType !== "editor" && leaf.leafType !== "diff" && leaf.leafType !== "chat") {
-    invoke("kill_pty", { id: leafId }).catch(() => {});
+    // Await the kill (see closeTab) so it lands before re-persist / app-quit.
+    await invoke("kill_pty", { id: leafId }).catch(() => {});
     unregisterLeafListeners(leafId);
   }
   const newRoot = removeLeaf(tab.root, leafId)!;
   tab.root = newRoot;
+  persist();
   if (focusedLeafId.value === leafId) {
     const remaining = getAllLeaves(newRoot);
     focusedLeafId.value = remaining[0].id;
@@ -1334,11 +1349,25 @@ onMounted(async () => {
   // Build set of alive PTY ids from daemon for quick lookup
   const alivePtys = new Set(daemonSessions.filter((s) => s.alive).map((s) => s.pty_id));
 
-  if (saved.length) {
-    // Advance counter past max saved id so new tabs don't collide
-    const maxSavedId = Math.max(...saved.map((s) => s.pty_id ?? 0));
-    initPtyCounter(maxSavedId);
+  // Advance the global pty-id counter past EVERY id the daemon still knows about
+  // (alive or not) AND every saved tab — not just saved tabs. A tab closed in a
+  // past session leaves its PTY in the daemon but drops out of `saved`; if the
+  // counter only cleared the saved max, a fresh tab could be handed that orphan's
+  // id and `create_pty` would re-attach to the dead/closed session instead of
+  // starting clean. Done unconditionally so a workspace with no saved tabs but
+  // live orphan sessions still can't collide.
+  // Exclude Mission Control's offset id-space (>= PTY_BASE = 2_000_000): those are
+  // a separate range on purpose, and counting them would shove normal tabs up into
+  // the MC range. Anything below MC_RANGE_START is a normal tab id.
+  const MC_RANGE_START = 1_000_000;
+  const maxDaemonId = daemonSessions.reduce(
+    (m, s) => (s.pty_id != null && s.pty_id < MC_RANGE_START ? Math.max(m, s.pty_id) : m),
+    0,
+  );
+  const maxSavedId = saved.reduce((m, s) => Math.max(m, s.pty_id ?? 0), 0);
+  initPtyCounter(Math.max(maxSavedId, maxDaemonId));
 
+  if (saved.length) {
     saved.forEach((s) => {
       // Use saved pty_id when the session is alive in daemon, otherwise get fresh id
       const useSavedId = s.pty_id != null && alivePtys.has(s.pty_id);
