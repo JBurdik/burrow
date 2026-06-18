@@ -478,6 +478,10 @@ function tabIsAgent(tab: Tab): boolean {
   return (focused ?? leaves[0])?.isAgent ?? false;
 }
 
+function isChat(_tab: Tab): boolean {
+  return false;
+}
+
 // A single-leaf editor tab shows a file icon + dirty dot instead of a status dot.
 function tabIsEditor(tab: Tab): boolean {
   return tab.root.type === "leaf" && tab.root.leafType === "editor";
