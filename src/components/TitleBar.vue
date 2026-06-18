@@ -179,6 +179,14 @@
           <button class="tb-menu-item" :disabled="busy" @click="cleanDaemon">
             <PhBroom :size="14" />Clean dead sessions
           </button>
+          <button
+            class="tb-menu-item"
+            :disabled="busy"
+            title="Kill alive PTYs that no open or saved tab references (closed-tab leftovers)"
+            @click="killOrphans"
+          >
+            <PhSkull :size="14" />Kill orphaned sessions
+          </button>
           <button class="tb-menu-item danger" :disabled="busy" @click="restartDaemon">
             <PhArrowsClockwise :size="14" />Restart daemon
           </button>
@@ -203,7 +211,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus } from "@phosphor-icons/vue";
+import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus, PhSkull } from "@phosphor-icons/vue";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useGitStore } from "@/stores/git";
@@ -413,6 +421,24 @@ async function cleanDaemon() {
     await refreshStats();
   } catch (e) {
     actionMsg.value = "Clean failed";
+    console.error(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function killOrphans() {
+  busy.value = true;
+  try {
+    // Every pty id the UI currently knows is live (across all opened workspaces).
+    // Rust unions this with the saved terminal_tabs rows so reattachable / not-yet-
+    // opened sessions are never killed — only true closed-tab leftovers.
+    const keepIds = Object.values(termTabs.tabsByWs).flat().map((t) => t.id);
+    const n = await invoke<number>("kill_orphan_sessions", { keepIds });
+    actionMsg.value = n ? `Killed ${n} orphaned session${n === 1 ? "" : "s"}` : "No orphaned sessions";
+    await refreshStats();
+  } catch (e) {
+    actionMsg.value = "Kill failed";
     console.error(e);
   } finally {
     busy.value = false;
