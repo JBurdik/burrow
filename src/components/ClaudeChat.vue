@@ -155,7 +155,18 @@
         :class="[`role-${msg.role}`, { partial: msg.partial }]"
       >
         <template v-if="msg.role === 'user'">
-          <div class="bubble bubble-user">{{ msg.text }}</div>
+          <div class="bubble bubble-user">
+            <div v-if="msg.images && msg.images.length > 0" class="msg-images">
+              <img
+                v-for="(img, i) in msg.images"
+                :key="i"
+                :src="img"
+                class="msg-img"
+                :alt="`Image ${i + 1}`"
+              />
+            </div>
+            {{ msg.text }}
+          </div>
         </template>
         <template v-else-if="msg.role === 'tool'">
           <div class="bubble bubble-tool">
@@ -369,6 +380,7 @@ interface ChatMessage {
   id: number;
   role: "user" | "assistant" | "tool" | "thinking";
   text: string;
+  images?: string[]; // data URIs for user messages with attached images
   partial?: boolean;
 }
 
@@ -861,7 +873,8 @@ async function sendMessage(forcedText?: string) {
     }
   }
 
-  messages.value.push({ id: nextMsgId++, role: "user", text });
+  const msgImages = pendingImages.value.length > 0 ? [...pendingImages.value] : undefined;
+  messages.value.push({ id: nextMsgId++, role: "user", text, images: msgImages });
   busy.value = true;
 
   // Auto-title from first user message
@@ -1621,6 +1634,20 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 
 .role-user { display: flex; justify-content: flex-end; }
 .bubble-user { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+.msg-img {
+  max-width: 200px;
+  max-height: 160px;
+  object-fit: cover;
+  border-radius: 5px;
+  display: block;
+}
 
 .role-assistant { display: flex; justify-content: flex-start; }
 .bubble-assistant {
