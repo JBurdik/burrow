@@ -79,11 +79,62 @@
   <h1>Burrow — Changelog</h1>
   <div class="tagline">Historie verzí v češtině. Co se změnilo a proč.</div>
 
+  <!-- v2.10.0 -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v2.10.0</span>
+      <span class="tag tag-latest">nejnovější</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Manager — plovoucí orchestrátor per projekt</div>
+      <ul>
+        <li><strong>Z Mission Control chatu je „Manager"</strong> — plovoucí kartička (kulaté tlačítko vpravo dole) je teď perzistentní <strong>per kořenové repo</strong>: drží stejnou session i když přepneš na jiný worktree téhož repa, místo aby byla pokaždé prázdná. Skrytá session se navíc nezobrazuje v seznamu chatů v postranním panelu.</li>
+        <li><strong>Orchestrace přes <code>burrow</code> CLI</strong> — Manager má systémový prompt a sám spouští příkazy: <strong>vytvoř worktree</strong>, <strong>nasaď agenta</strong> (<code>burrow spawn --cwd …</code>), <strong>smaž worktree</strong> (po potvrzení) a <strong>spravuj PR</strong>.</li>
+        <li><strong>Nové CLI příkazy</strong> — <code>burrow worktree-remove &lt;branch|path&gt; [--force]</code> (smaže git worktree i jeho Burrow řádek) a správa PR přes <code>gh</code>: <code>burrow pr-create</code> / <code>pr-list</code> / <code>pr-view</code> / <code>pr-merge</code>. Odpovídá rovnou Rust, žádné <code>claude -p</code> ani Agent SDK.</li>
+      </ul>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Claude chat — UX</div>
+      <ul>
+        <li><strong>Jeden seznam v postranním panelu</strong> — chaty a terminálové taby už nejsou ve dvou oddělených sekcích; jsou v <strong>jednom seznamu</strong>, odlišené jen ikonou (Claude vs terminál/robot). „New chat" je v hlavičce projektu.</li>
+        <li><strong>Režim oprávnění jako dropdown</strong> — přepínač Ask / Auto-edit / Bypass v záhlaví chatu je nově <strong>rozbalovací menu</strong> (přímý výběr libovolného režimu) místo cyklícího tlačítka.</li>
+        <li><strong>Upozornění na žádost o povolení</strong> — když Claude čeká na souhlas, objeví se <strong>toast</strong> + (mimo focus) <strong>nativní OS notifikace se zvukem</strong> + <strong>status bod/zvonek</strong> u chatu v postranním panelu.</li>
+      </ul>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Údržba session</div>
+      <ul>
+        <li><strong>„Kill orphaned sessions"</strong> — nové tlačítko ve stats dropdownu (📊 v titlebaru) zabije <strong>živé PTY, které nedrží žádný tab</strong> (pozůstatky zavřených tabů). Bezpečné: nikdy nesáhne na Mission Control range ani na session, kterou drží otevřený/uložený tab (vč. split panes a neotevřených projektů). Odlišné od „Clean dead sessions", které uklízí jen mrtvé.</li>
+      </ul>
+    </div>
+
+    <div class="section fix">
+      <div class="section-label">Opravy &amp; výkon</div>
+      <ul>
+        <li><strong>Konec beachballu při otevření chatu</strong> — <code>claude_start</code> i <code>claude_get_account</code> byly synchronní Tauri commandy běžící na <strong>hlavním vlákně</strong>; blokující fork/exec <code>claude</code> a 4s <code>claude status</code> tak na první otevření chatu zmrazily UI a roztočily kurzor. Nově jsou <strong>asynchronní</strong>, mimo hlavní vlákno.</li>
+        <li><strong>Nové taby se nereattachují na zavřenou session</strong> — tab zavřený v minulém běhu nechal svoji PTY žít v daemonu a vypadl ze seznamu uložených; čítač pty-id pak mohl novému tabu přidělit to samé id a <code>create_pty</code> se připojil na <strong>starou session</strong> („objevil se starý terminál"). Dvě opravy: čítač se posouvá za <strong>každou</strong> session v daemonu (vč. orphanů, mimo MC range), a zavření tabu nově <strong>počká na <code>kill_pty</code></strong> + uloží stav, takže orphani nevznikají.</li>
+        <li><strong>Žádný falešný toast „dokončeno" při přepnutí režimu</strong> — přepnutí permission režimu (a abort) restartuje <code>claude</code>; teardown <code>exit</code> už nevyhodí notifikaci o dokončení tahu.</li>
+      </ul>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Drobnosti</div>
+      <ul>
+        <li><strong>Terminal pets — rozlučková exploze</strong> — zavření agentského tabu odpálí jeho zvířátko (rozletující se střípky, záblesk, „bye!"). Přibyla žirafa, krtek vyměněn za želvu.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
   <!-- v2.9.0 -->
   <div class="release">
     <div class="release-header">
       <span class="version">v2.9.0</span>
-      <span class="tag tag-latest">nejnovější</span>
       <span class="date">červen 2026</span>
     </div>
 
