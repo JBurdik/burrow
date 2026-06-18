@@ -149,6 +149,9 @@ case "$sub" in
     #   --model M    active model        (state=session)
     #   --source S   startup|resume|...  (state=session)
     #   --title  T   session title       (state=session)
+    #   --pid    P   agent process pid   (any state; enables the liveness sweep —
+    #                Burrow kill(pid,0)-polls it to clear a stuck dot when the agent
+    #                dies. Sent with $(hostname) so a remote/SSH pid is ignored.)
     # Report this tab's agent state to Burrow's hook server. Any agent can call
     # this from a hook/notify program. Needs BURROW_PTY_ID + BURROW_HOOK_PORT
     # (exported into every Burrow PTY). No-op outside Burrow.
@@ -156,13 +159,14 @@ case "$sub" in
     [ -n "$state" ] || { echo "burrow status: no state (running|waiting|permission|done|error|session)" >&2; exit 1; }
     shift
     # Optional metadata — only error/session use any of these.
-    detail=""; s_model=""; s_source=""; s_title=""
+    detail=""; s_model=""; s_source=""; s_title=""; pid=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --detail) detail="$2";   shift 2 ;;
         --model)  s_model="$2";  shift 2 ;;
         --source) s_source="$2"; shift 2 ;;
         --title)  s_title="$2";  shift 2 ;;
+        --pid)    pid="$2";      shift 2 ;;
         *)        shift ;;
       esac
     done
@@ -193,6 +197,16 @@ case "$sub" in
     [ -n "$s_model" ]  && payload="$payload,\"model\":\"$(_esc "$s_model")\""
     [ -n "$s_source" ] && payload="$payload,\"source\":\"$(_esc "$s_source")\""
     [ -n "$s_title" ]  && payload="$payload,\"title\":\"$(_esc "$s_title")\""
+    # PID-based liveness (supacode-style): include the agent process pid + the host
+    # it lives on so Burrow can kill(pid,0)-poll it and clear a stuck dot the instant
+    # the agent dies. `host` gates the sweep: Burrow only trusts the pid when it
+    # matches its OWN hostname (a pid reported over SSH is a REMOTE pid — checking it
+    # locally would be meaningless / a false positive). Only sent when --pid given
+    # (the hook passes the agent pid; ad-hoc `burrow status` calls omit it).
+    if [ -n "$pid" ]; then
+      host=$(hostname 2>/dev/null)
+      payload="$payload,\"pid\":$pid,\"host\":\"$(_esc "$host")\""
+    fi
     payload="$payload}"
     # Only the STICKY states (waiting/permission/done/error/session) get the slow
     # retry loop: if one is lost the dot/metadata is stuck until the next turn.
@@ -228,6 +242,15 @@ case "$sub" in
     # via `burrow status`. No-op outside Burrow (BURROW_PTY_ID unset). Best-effort
     # string parse, no jq/node needed.
     [ -n "$BURROW_PTY_ID" ] || exit 0
+    # Durable agent pid for the liveness sweep. Claude/Codex run the hook as
+    # `sh -c '<burrow hook>'`, so OUR $PPID is that throwaway wrapper shell (it exits
+    # the instant the hook returns — using it would falsely clear a LIVE agent). The
+    # wrapper's parent IS the long-lived agent process (claude/codex), so climb one
+    # level: `ps -o ppid= -p $PPID`. Fall back to $PPID if ps is unavailable.
+    agent_pid=$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' \t\n')
+    case "$agent_pid" in
+      ''|*[!0-9]*) agent_pid="$PPID" ;;
+    esac
     json=$(cat)
     ev=$(printf '%s' "$json" | sed -n 's/.*"hook_event_name"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
     tool=$(printf '%s' "$json" | sed -n 's/.*"tool_name"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
@@ -270,14 +293,14 @@ case "$sub" in
         s_source=$(printf '%s' "$json" | sed -n 's/.*"source"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
         s_model=$(printf '%s' "$json" | sed -n 's/.*"model"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
         s_title=$(printf '%s' "$json" | sed -n 's/.*"session_title"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
-        burrow status session --model "$s_model" --source "$s_source" --title "$s_title"
+        burrow status session --model "$s_model" --source "$s_source" --title "$s_title" --pid "$agent_pid"
         exit 0 ;;
       StopFailure)
         # The turn ended on an API error (rate_limit, billing_error, server_error,
         # …). error_type holds the matcher value; pass it through as the detail.
         etype=$(printf '%s' "$json" | sed -n 's/.*"error_type"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
         [ -n "$etype" ] || etype=unknown
-        burrow status error --detail "$etype"
+        burrow status error --detail "$etype" --pid "$agent_pid"
         exit 0 ;;
       PermissionRequest)          state=permission ;;
       Stop)
@@ -316,7 +339,7 @@ case "$sub" in
       # SubagentStop is a sub-agent internal event, not a top-level turn end.
       SubagentStop|SessionEnd|*) exit 0 ;;
     esac
-    burrow status "$state"
+    burrow status "$state" --pid "$agent_pid"
     exit 0
     ;;
 
