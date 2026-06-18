@@ -50,20 +50,26 @@ const ui = useUIStore();
 const chats = useClaudeChatsStore();
 const wsStore = useWorkspaceStore();
 
+// activeWsId tracks which workspace the Manager is currently anchored to.
+// It only updates when the Manager session is idle so that switching workspaces
+// while a task is in progress doesn't interrupt the running claude process.
+const activeWsId = ref<number>(props.wsId);
+const activeCwd = ref<string>(props.cwd);
+
 // The Manager is anchored to the ROOT repo, not the active worktree. Worktrees
 // are their own workspace rows (parent_id set); keying the session by the root id
 // keeps the same Manager session alive as you switch between a repo's worktrees,
 // instead of showing an empty one per worktree.
 const root = computed(() => {
-  const w = wsStore.workspaces.find((x) => x.id === props.wsId);
+  const w = wsStore.workspaces.find((x) => x.id === activeWsId.value);
   if (w?.parent_id) {
     const parent = wsStore.workspaces.find((x) => x.id === w.parent_id);
     if (parent) return parent;
   }
   return w ?? null;
 });
-const rootId = computed(() => root.value?.id ?? props.wsId);
-const rootCwd = computed(() => root.value?.path ?? props.cwd);
+const rootId = computed(() => root.value?.id ?? activeWsId.value);
+const rootCwd = computed(() => root.value?.path ?? activeCwd.value);
 const rootName = computed(() => root.value?.name ?? "this repo");
 
 // One persistent Manager session per ROOT repo, reused across open/collapse,
@@ -77,6 +83,21 @@ function saveMap(m: Record<number, number>) {
 }
 
 const controlChatId = ref<number | null>(null);
+
+// When the active workspace changes, adopt it only if the Manager is idle.
+// If a task is running, defer until it finishes so we don't kill claude mid-turn.
+watch(
+  () => [props.wsId, props.cwd] as const,
+  ([wsId, cwd]) => {
+    const busy = controlChatId.value
+      ? chats.sessions.find((s) => s.id === controlChatId.value)?.busy
+      : false;
+    if (!busy) {
+      activeWsId.value = wsId;
+      activeCwd.value = cwd;
+    }
+  },
+);
 
 function ensureControlSession(repoId: number) {
   const map = loadMap();
@@ -128,6 +149,11 @@ watch(
   () => session.value?.busy,
   (now, prev) => {
     if (prev && !now && !ui.floatChatOpen) finishedWhileCollapsed.value = true;
+    // Adopt a deferred workspace switch that was blocked by an in-progress task.
+    if (prev && !now) {
+      activeWsId.value = props.wsId;
+      activeCwd.value = props.cwd;
+    }
   },
 );
 
@@ -166,8 +192,18 @@ App / navigation:
 - \`burrow focus-workspace <ID>\` / \`burrow focus-tab <ID>\` — switch the UI.
 
 Orchestration (your core job):
-- \`burrow worktree <branch> [--base-ref REF]\` — create a git worktree (nested under the repo).
-- \`burrow spawn [--cwd DIR] <command...>\` — launch an agent (e.g. \`claude\`) in a new tab. To put an agent on a fresh worktree, create the worktree first, then \`burrow spawn --cwd <worktree-path> claude\`.
+- \`burrow worktree <branch> [--base-ref REF]\` — create a git worktree (nested under the repo). Returns the new worktree path.
+- \`burrow spawn [--token T] [--cwd DIR] <command...>\` — launch an agent in a new Burrow tab. The agent runs **interactively** (never use \`claude -p\` or \`--print\`). Examples:
+  - Fire-and-forget: \`burrow spawn --cwd /path/to/worktree claude\`
+  - With result capture: pick a token, e.g. \`T=feat-auth\`, then \`burrow spawn --token $T --cwd /path/to/worktree claude\`, then \`burrow wait $T\` to block until it finishes and print its output.
+  - Full pattern — spawn agent on a new worktree and wait for it:
+    \`\`\`sh
+    burrow worktree feat/auth
+    # note the printed path, e.g. /path/to/repo/worktrees/feat/auth
+    burrow spawn --token auth-agent --cwd /path/to/repo/worktrees/feat/auth claude
+    burrow wait auth-agent
+    \`\`\`
+- \`burrow wait <token> [--timeout S]\` — block until the spawned agent with that token finishes; prints its result. Default timeout is 300 s.
 - \`burrow worktree-remove <branch|path> [--force]\` — delete a worktree (git worktree + its Burrow row). **Always ask the user to confirm before removing a worktree**, and only after the work on it is merged or no longer needed.
 
 Pull requests (via the \`gh\` CLI under the hood):

@@ -18,13 +18,6 @@
     </button>
     <button
       class="ab-btn"
-      title="New Claude chat"
-      @click="newChat()"
-    >
-      <ClaudeIcon :size="18" />
-    </button>
-    <button
-      class="ab-btn"
       :class="{ active: ui.mode === 'git' }"
       title="Git panel"
       @click="ui.toggleGitPanel()"
@@ -45,7 +38,6 @@
 
 <script setup lang="ts">
 import { PhTerminal, PhGitBranch, PhRocketLaunch, PhSquaresFour } from "@phosphor-icons/vue";
-import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { useUIStore } from "@/stores/ui";
@@ -59,11 +51,6 @@ function newTerminal() {
   // terminal first instead of silently adding a hidden tab.
   if (ui.mode !== 'terminal') { ui.setMode('terminal'); return; }
   if (ws.active) termTabs.add(ws.active.id);
-}
-
-function newChat() {
-  if (ui.mode !== 'terminal') { ui.setMode('terminal'); return; }
-  if (ws.active) termTabs.openChat(ws.active.id);
 }
 
 function toggleMission() {

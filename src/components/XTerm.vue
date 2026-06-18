@@ -345,6 +345,9 @@ onMounted(async () => {
   applyCounterZoom();
   safeFit();
   deferredFit();
+  // Ring-buffer replay from the daemon streams in after the rAF-deferred fit.
+  // A further delayed repaint clears any stale atlas glyphs without a SIGWINCH.
+  setTimeout(() => forceRepaint(), 350);
 
   // OSC title sequences set by the shell or programs (e.g. vim, tmux, Claude).
   // The interactive shell (zsh/bash) sets the OSC title to the cwd or last

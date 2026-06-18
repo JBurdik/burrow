@@ -83,6 +83,8 @@ interface Prefs {
   // ── Floating mission-control chat ──
   floatChatEnabled: boolean; // master toggle for the bottom-right control chat button
   floatChatOpen: boolean; // expanded (true) vs collapsed to a button (false)
+  sidebarWidth: number; // left sidebar panel width in px
+  rightPanelWidth: number; // right panel width in px
 }
 
 // Agent transitions that can trigger an ntfy push.
@@ -140,6 +142,8 @@ const DEFAULT_PREFS: Prefs = {
   petsLeveling: true,
   floatChatEnabled: true,
   floatChatOpen: false,
+  sidebarWidth: 220,
+  rightPanelWidth: 300,
 };
 
 function loadPrefs(): Prefs {
@@ -201,6 +205,8 @@ export const useUIStore = defineStore("ui", () => {
   const petsLeveling = ref(loaded.petsLeveling);
   const floatChatEnabled = ref(loaded.floatChatEnabled);
   const floatChatOpen = ref(loaded.floatChatOpen);
+  const sidebarWidth = ref(loaded.sidebarWidth ?? 220);
+  const rightPanelWidth = ref(loaded.rightPanelWidth ?? 300);
   // In-memory blob URL for the current wallpaper (not persisted).
   const bgImageUrl = ref<string>("");
   const missionActiveCount = ref(0);
@@ -352,6 +358,8 @@ export const useUIStore = defineStore("ui", () => {
         petsLeveling: petsLeveling.value,
         floatChatEnabled: floatChatEnabled.value,
         floatChatOpen: floatChatOpen.value,
+        sidebarWidth: sidebarWidth.value,
+        rightPanelWidth: rightPanelWidth.value,
       } satisfies Prefs),
     );
   }
@@ -366,7 +374,8 @@ export const useUIStore = defineStore("ui", () => {
      soundEnabled, soundDoneEnabled, soundWaitingEnabled, soundDoneId, soundDoneCustomPath,
      soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir, mode, missionShowActivity,
      ntfyEnabled, ntfyServer, ntfyTopic, ntfyToken, ntfyEvents, ntfyOnlyWhenAway,
-     petsEnabled, petsSpeech, petsLeveling, floatChatEnabled, floatChatOpen],
+     petsEnabled, petsSpeech, petsLeveling, floatChatEnabled, floatChatOpen,
+     sidebarWidth, rightPanelWidth],
     () => {
       savePrefs();
       applyTheme();
@@ -501,5 +510,7 @@ export const useUIStore = defineStore("ui", () => {
     floatChatEnabled,
     floatChatOpen,
     toggleFloatChat,
+    sidebarWidth,
+    rightPanelWidth,
   };
 });

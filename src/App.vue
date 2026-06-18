@@ -113,50 +113,9 @@ import { matchesShortcut } from "@/lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-const sidebarWidth = ref(220);
-const rightPanelWidth = ref(300);
-
-const panelStyles = computed(() => ({
-  '--sidebar-width': sidebarWidth.value + 'px',
-  '--right-panel-width': rightPanelWidth.value + 'px',
-}));
-
 let resizing: 'left' | 'right' | null = null;
 let resizeStartX = 0;
 let resizeStartWidth = 0;
-
-function startResize(side: 'left' | 'right', e: MouseEvent) {
-  resizing = side;
-  resizeStartX = e.clientX;
-  resizeStartWidth = side === 'left' ? sidebarWidth.value : rightPanelWidth.value;
-  e.preventDefault();
-}
-
-function onResizeMove(e: MouseEvent) {
-  if (!resizing) return;
-  const delta = e.clientX - resizeStartX;
-  if (!ui.swapPanels) {
-    // Normal: [Sidebar][resize-left][main][resize-right][RightPanel]
-    if (resizing === 'left') {
-      sidebarWidth.value = Math.min(400, Math.max(150, resizeStartWidth + delta));
-    } else {
-      rightPanelWidth.value = Math.min(500, Math.max(200, resizeStartWidth - delta));
-    }
-  } else {
-    // Swapped visual: [RightPanel][resize-right][main][resize-left][Sidebar]
-    // 'right' handle is on visual left → drag right = RightPanel wider (+delta)
-    // 'left' handle is on visual right → drag left = Sidebar wider (-delta)
-    if (resizing === 'right') {
-      rightPanelWidth.value = Math.min(500, Math.max(200, resizeStartWidth + delta));
-    } else {
-      sidebarWidth.value = Math.min(400, Math.max(150, resizeStartWidth - delta));
-    }
-  }
-}
-
-function onResizeUp() {
-  resizing = null;
-}
 
 const ws = useWorkspaceStore();
 const ui = useUIStore();
@@ -164,6 +123,40 @@ const git = useGitStore();
 const agents = useAgentsStore();
 const update = useUpdateStore();
 const tabsStore = useTerminalTabsStore();
+
+const panelStyles = computed(() => ({
+  '--sidebar-width': ui.sidebarWidth + 'px',
+  '--right-panel-width': ui.rightPanelWidth + 'px',
+}));
+
+function startResize(side: 'left' | 'right', e: MouseEvent) {
+  resizing = side;
+  resizeStartX = e.clientX;
+  resizeStartWidth = side === 'left' ? ui.sidebarWidth : ui.rightPanelWidth;
+  e.preventDefault();
+}
+
+function onResizeMove(e: MouseEvent) {
+  if (!resizing) return;
+  const delta = e.clientX - resizeStartX;
+  if (!ui.swapPanels) {
+    if (resizing === 'left') {
+      ui.sidebarWidth = Math.min(400, Math.max(150, resizeStartWidth + delta));
+    } else {
+      ui.rightPanelWidth = Math.min(500, Math.max(200, resizeStartWidth - delta));
+    }
+  } else {
+    if (resizing === 'right') {
+      ui.rightPanelWidth = Math.min(500, Math.max(200, resizeStartWidth + delta));
+    } else {
+      ui.sidebarWidth = Math.min(400, Math.max(150, resizeStartWidth - delta));
+    }
+  }
+}
+
+function onResizeUp() {
+  resizing = null;
+}
 
 // Sync OS window title: "<tab title> — <workspace>" so macOS Mission Control /
 // Alt+Tab shows meaningful context. Lazy Tauri import so browser dev doesn't crash.
@@ -193,6 +186,13 @@ watch(
   (m) => {
     if (m === "terminal") nextTick(() => activeTerm()?.refitAll());
   },
+);
+
+// When the active workspace changes, repaint its terminals — they may have been
+// v-show:false while inactive and missed a resize, leaving stale glyph renders.
+watch(
+  () => ws.active?.id,
+  () => { nextTick(() => activeTerm()?.repaintAll()); },
 );
 
 const spotlightRef = ref<InstanceType<typeof Spotlight> | null>(null);
