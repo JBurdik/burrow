@@ -26,6 +26,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
 import { lspExtension } from "@/lib/lsp";
 import { useUIStore } from "@/stores/ui";
+import { useEditorContextStore } from "@/stores/editorContext";
 
 const props = defineProps<{ leafId: number; path: string; cwd: string }>();
 const emit = defineEmits<{
@@ -36,8 +37,24 @@ const emit = defineEmits<{
 }>();
 
 const ui = useUIStore();
+const editorCtx = useEditorContextStore();
 const host = ref<HTMLElement | null>(null);
 const placeholder = ref<string>("");
+
+// Publish the current selection (or clear it) to the shared editor-context store
+// so the Claude chat can offer "share selection". Lines are 1-based.
+function publishSelection(state: EditorState) {
+  editorCtx.setActivePath(props.path);
+  const range = state.selection.main;
+  if (range.empty) { editorCtx.clear(); return; }
+  const text = state.sliceDoc(range.from, range.to);
+  editorCtx.setSelection({
+    path: props.path,
+    startLine: state.doc.lineAt(range.from).number,
+    endLine: state.doc.lineAt(range.to).number,
+    text,
+  });
+}
 
 // CM owns its own DOM + state. NEVER wrap in ref/reactive — Vue's proxy corrupts
 // CM internals. Bare module-local handle.
@@ -241,6 +258,7 @@ onMounted(async () => {
       themeCompartment.of(editorTheme()),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) recomputeDirty();
+        if (u.selectionSet || u.focusChanged) publishSelection(u.state);
       }),
       // High precedence so ⌘S beats CM defaults and never reaches the OS
       // "save page" dialog (run returns true → preventDefault).

@@ -15,6 +15,7 @@ const SESSIONS_KEY = "burrow.claude.sessions";
 const ACTIVE_KEY = "burrow.claude.active";
 const COUNTER_KEY = "burrow.claude.nextId";
 const TURNS_KEY = "burrow.claude.turns";
+const RULES_KEY = "burrow.claude.permRules";
 
 export interface TurnEvent {
   ts: number;
@@ -49,11 +50,34 @@ function loadCounter(): number {
   return parseInt(localStorage.getItem(COUNTER_KEY) ?? "1", 10);
 }
 
+function loadRules(): string[] {
+  try {
+    const raw = localStorage.getItem(RULES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
 export const useClaudeChatsStore = defineStore("claudeChats", () => {
   const sessions = ref<ClaudeSession[]>(loadSessions());
   const activeByWs = ref<Record<number, number>>(loadActive());
   let nextId = loadCounter();
   const turns = ref<TurnEvent[]>(loadTurns());
+  // "Allow always" rules — opaque match keys (e.g. "Bash:git" or "Write").
+  // Matched against the key(s) derived from an incoming can_use_tool request.
+  const permissionRules = ref<string[]>(loadRules());
+
+  function addPermissionRule(key: string) {
+    if (!key || permissionRules.value.includes(key)) return;
+    permissionRules.value.push(key);
+    localStorage.setItem(RULES_KEY, JSON.stringify(permissionRules.value));
+  }
+  function hasPermissionRule(keys: string[]): boolean {
+    return keys.some((k) => permissionRules.value.includes(k));
+  }
+  function clearPermissionRules() {
+    permissionRules.value = [];
+    localStorage.removeItem(RULES_KEY);
+  }
 
   function persist() {
     const toSave = sessions.value.map((s) => ({ ...s, busy: false }));
@@ -172,5 +196,9 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
     setActive,
     remove,
     sync,
+    permissionRules,
+    addPermissionRule,
+    hasPermissionRule,
+    clearPermissionRules,
   };
 });

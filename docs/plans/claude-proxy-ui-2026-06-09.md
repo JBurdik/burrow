@@ -1,5 +1,17 @@
 # Claude Code message proxy → rich UI (PoC plan)
 
+> **SUPERSEDED (2026-06-18).** The reverse-proxy idea below was never shipped. The live
+> implementation (`ClaudeChat.vue` + `claude_*` in `lib.rs`) drives `claude` directly in
+> **bidirectional stream-json** mode — `--input-format stream-json --output-format
+> stream-json` with NO `-p` and NO Agent SDK package, so the subscription is preserved
+> without a proxy. Interactive control (permission allow/deny + always, ExitPlanMode plan
+> approval, AskUserQuestion multi-choice, Edit/Write diff accept-reject) flows over the SDK
+> **control protocol** on stdio: the hidden flag `--permission-prompt-tool stdio` routes
+> every blocking decision to us as a `can_use_tool` control_request, answered via
+> `claude_respond_control` (`{behavior:"allow",updatedInput}` / `{behavior:"deny",message}`;
+> AskUserQuestion answers ride in `updatedInput.answers`). Editor context (@-mention file
+> completion, share-selection) added too. Kept for history only.
+
 **Date:** 2026-06-09
 **Goal:** Render Claude Code's conversation (user/assistant/tool/thinking blocks + token
 usage) in a native Burrow UI instead of (or beside) the raw xterm, **while keeping the

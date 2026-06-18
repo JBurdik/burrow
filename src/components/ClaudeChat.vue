@@ -6,12 +6,15 @@
       <span class="chat-header-title">Claude</span>
       <span class="chat-header-cwd" :title="cwd">{{ cwdDisplay }}</span>
       <button
-        class="chat-header-btn"
-        :class="{ 'btn-danger-active': dangerousMode }"
-        :title="dangerousMode ? 'Dangerous mode ON — click to disable' : 'Enable dangerous mode (skip all permissions)'"
-        @click="toggleDangerousMode"
+        class="chat-header-btn perm-mode-btn"
+        :class="{ 'btn-danger-active': permMeta.danger, 'btn-active': permMode === 'acceptEdits' }"
+        :title="permMeta.title"
+        @click="cyclePermMode"
       >
-        <PhShieldWarning :size="13" weight="bold" />
+        <PhShieldWarning v-if="permMode === 'bypassPermissions'" :size="13" weight="bold" />
+        <PhPencilSimple v-else-if="permMode === 'acceptEdits'" :size="13" weight="bold" />
+        <PhShieldCheck v-else :size="13" weight="bold" />
+        <span class="perm-mode-label">{{ permMeta.label }}</span>
       </button>
       <button class="chat-header-btn" title="New conversation" @click="clearChat">
         <PhArrowCounterClockwise :size="13" />
@@ -27,19 +30,87 @@
       </button>
     </div>
 
-    <!-- Permission prompt -->
+    <!-- Permission prompt (Bash / generic tool) -->
     <div v-if="pendingPermission" class="permission-banner">
       <PhShieldWarning :size="14" class="perm-icon" />
       <div class="perm-body">
-        <span class="perm-title">Permission required</span>
+        <span class="perm-title">{{ pendingPermission.toolName }} wants to run</span>
         <code class="perm-detail">{{ permissionDetail }}</code>
       </div>
-      <button class="perm-btn perm-allow" @click="respondPermission(true)" title="Allow (Y)">
+      <button class="perm-btn perm-allow" @click="respondPermission(true)" title="Allow once (Y)">
         Allow <kbd class="perm-kbd">Y</kbd>
+      </button>
+      <button class="perm-btn perm-always" @click="respondPermission(true, { always: true })" title="Always allow this tool">
+        Always
       </button>
       <button class="perm-btn perm-deny" @click="respondPermission(false)" title="Deny (N)">
         Deny <kbd class="perm-kbd">N</kbd>
       </button>
+    </div>
+
+    <!-- File edit: diff preview with Accept / Reject -->
+    <div v-if="pendingDiff && diffPreview" class="diff-banner">
+      <div class="diff-banner-head">
+        <PhGitDiff :size="13" class="perm-icon" />
+        <span class="perm-title">{{ pendingDiff.toolName }}</span>
+        <code class="perm-detail" :title="diffPreview.path">{{ diffPreview.path }}</code>
+        <span class="diff-spacer" />
+        <button class="perm-btn perm-allow" @click="respondPermission(true)" title="Accept (Y)">Accept <kbd class="perm-kbd">Y</kbd></button>
+        <button class="perm-btn perm-always" @click="respondPermission(true, { always: true })" title="Always allow this tool">Always</button>
+        <button class="perm-btn perm-deny" @click="respondPermission(false)" title="Reject (N)">Reject <kbd class="perm-kbd">N</kbd></button>
+      </div>
+      <pre v-if="diffPreview.isWrite" class="diff-banner-body"><span
+        v-for="(line, i) in diffPreview.content.split('\n')" :key="i" class="diff-line diff-add">{{ line }}</span></pre>
+      <pre v-else class="diff-banner-body"><span
+        v-for="(line, i) in diffPreview.oldStr.split('\n')" :key="'o'+i" class="diff-line diff-del">{{ line }}</span><span
+        v-for="(line, i) in diffPreview.newStr.split('\n')" :key="'n'+i" class="diff-line diff-add">{{ line }}</span></pre>
+    </div>
+
+    <!-- ExitPlanMode: plan approval -->
+    <div v-if="pendingPlan" class="plan-banner">
+      <div class="plan-head">
+        <PhListChecks :size="14" class="perm-icon" />
+        <span class="perm-title">Claude proposed a plan</span>
+      </div>
+      <!-- eslint-disable-next-line vue/no-v-html -->
+      <div class="plan-body md-body" v-html="planMd" />
+      <textarea
+        v-model="planFeedback"
+        class="plan-feedback"
+        rows="1"
+        placeholder="Optional feedback if you keep planning…"
+      />
+      <div class="plan-actions">
+        <button class="perm-btn perm-allow" @click="respondPlan(true)">Approve plan</button>
+        <button class="perm-btn perm-deny" @click="respondPlan(false)" title="Keep planning (Esc)">Keep planning</button>
+      </div>
+    </div>
+
+    <!-- AskUserQuestion: multi-choice -->
+    <div v-if="pendingQuestion" class="question-banner">
+      <div v-for="(q, qi) in questionSpecs" :key="qi" class="question-block">
+        <div class="question-head">
+          <span v-if="q.header" class="question-chip">{{ q.header }}</span>
+          <span class="question-text">{{ q.question }}</span>
+          <span v-if="q.multiSelect" class="question-multi">choose any</span>
+        </div>
+        <div class="question-options">
+          <button
+            v-for="(opt, oi) in q.options"
+            :key="oi"
+            class="question-opt"
+            :class="{ picked: isPicked(q.question, opt.label) }"
+            @click="toggleOption(q.question, opt.label, !!q.multiSelect)"
+          >
+            <span class="opt-label">{{ opt.label }}</span>
+            <span v-if="opt.description" class="opt-desc">{{ opt.description }}</span>
+          </button>
+        </div>
+      </div>
+      <div class="question-actions">
+        <button class="perm-btn perm-allow" :disabled="!canSubmitQuestion" @click="submitQuestion">Submit</button>
+        <button class="perm-btn perm-deny" @click="cancelQuestion" title="Dismiss (Esc)">Skip</button>
+      </div>
     </div>
 
     <div ref="scrollEl" class="chat-messages">
@@ -98,6 +169,20 @@
       </div>
     </div>
 
+    <!-- @-mention file suggestions dropdown -->
+    <div v-if="atSuggestions.length > 0" class="cmd-suggestions">
+      <div
+        v-for="(p, i) in atSuggestions"
+        :key="p"
+        class="cmd-suggestion"
+        :class="{ selected: i === atIdx }"
+        @mousedown.prevent="applyAtSuggestion(p)"
+      >
+        <span class="cmd-name">@{{ p.slice(p.lastIndexOf('/') + 1) }}</span>
+        <span class="cmd-desc">{{ p }}</span>
+      </div>
+    </div>
+
     <!-- Image previews above input -->
     <div v-if="pendingImages.length > 0" class="pending-images">
       <div v-for="(img, i) in pendingImages" :key="i" class="pending-img-wrap">
@@ -120,6 +205,14 @@
         @input="onInput"
         @paste="onPaste"
       />
+      <button
+        v-if="editorCtx.selection"
+        class="chat-share-btn"
+        :title="`Add selection: ${relPath(editorCtx.selection.path)}#L${editorCtx.selection.startLine}-L${editorCtx.selection.endLine}`"
+        @click="shareSelection"
+      >
+        <PhTextAa :size="14" weight="bold" />
+      </button>
       <button v-if="busy" class="chat-abort-btn" title="Abort" @click="abortTurn">
         <PhStop :size="14" weight="bold" />
       </button>
@@ -197,12 +290,13 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
-import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhGitDiff, PhArrowsClockwise } from "@phosphor-icons/vue";
+import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { useNotificationsStore } from "@/stores/notifications";
+import { useEditorContextStore } from "@/stores/editorContext";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -215,6 +309,23 @@ const props = defineProps<{ chatId: number; workspaceId: number; cwd: string }>(
 
 const chats = useClaudeChatsStore();
 const notifStore = useNotificationsStore();
+const editorCtx = useEditorContextStore();
+
+// Relative-to-cwd path for a shared selection's @-reference.
+function relPath(abs: string): string {
+  if (props.cwd && abs.startsWith(props.cwd + "/")) return abs.slice(props.cwd.length + 1);
+  return abs.split("/").pop() ?? abs;
+}
+
+// Insert the current editor selection as a fenced context block + @file#range header.
+function shareSelection() {
+  const sel = editorCtx.selection;
+  if (!sel) return;
+  const ref = `@${relPath(sel.path)}#L${sel.startLine}-L${sel.endLine}`;
+  const block = `${ref}\n\`\`\`\n${sel.text}\n\`\`\`\n`;
+  inputText.value = inputText.value ? `${inputText.value}\n${block}` : block;
+  nextTick(() => { inputEl.value?.focus(); autoResize(); });
+}
 
 interface ChatMessage {
   id: number;
@@ -240,6 +351,24 @@ const BUILTIN_COMMANDS: Command[] = [
 const allCommands = ref<Command[]>([...BUILTIN_COMMANDS]);
 const suggestions = ref<Command[]>([]);
 const suggestionIdx = ref(0);
+
+// @-mention file completion — lazy repo file list (git ls-files), filtered on `@query`.
+const fileList = ref<string[]>([]);
+let fileListLoaded = false;
+const atSuggestions = ref<string[]>([]);
+const atIdx = ref(0);
+
+async function ensureFileList() {
+  if (fileListLoaded) return;
+  fileListLoaded = true;
+  try {
+    const out = await invoke<{ stdout: string }>("run_git", {
+      cwd: props.cwd,
+      args: ["ls-files", "--cached", "--others", "--exclude-standard"],
+    });
+    fileList.value = out.stdout.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 20000);
+  } catch { fileList.value = []; }
+}
 
 interface TurnStats { inputTokens: number; outputTokens: number; costUsd: number }
 
@@ -283,8 +412,23 @@ const suggestionsEl = ref<HTMLElement | null>(null);
 let unlisten: UnlistenFn | null = null;
 
 // Dangerous mode (bypass all permissions) — persisted per chatId
-const DANGEROUS_KEY = (id: number) => `burrow.claude.dangerous.${id}`;
-const dangerousMode = ref(localStorage.getItem(DANGEROUS_KEY(props.chatId)) === "1");
+// Permission mode (per-chat, persisted). Mirrors the VS Code extension's mode picker.
+type PermMode = "default" | "acceptEdits" | "bypassPermissions";
+const PERM_KEY = (id: number) => `burrow.claude.permMode.${id}`;
+function loadPermMode(id: number): PermMode {
+  const v = localStorage.getItem(PERM_KEY(id));
+  if (v === "acceptEdits" || v === "bypassPermissions" || v === "default") return v;
+  // Migrate the old boolean "dangerous mode" flag → bypassPermissions.
+  if (localStorage.getItem(`burrow.claude.dangerous.${id}`) === "1") return "bypassPermissions";
+  return "default";
+}
+const permMode = ref<PermMode>(loadPermMode(props.chatId));
+const PERM_META: Record<PermMode, { label: string; title: string; danger?: boolean }> = {
+  default: { label: "Ask", title: "Ask before edits & commands (click to change)" },
+  acceptEdits: { label: "Auto-edit", title: "Auto-accept file edits; still ask for other tools (click to change)" },
+  bypassPermissions: { label: "Bypass", title: "Skip ALL permission checks (click to change)", danger: true },
+};
+const permMeta = computed(() => PERM_META[permMode.value]);
 
 // ── Changes panel ────────────────────────────────────────────────────────────
 interface ChangedFile { path: string; shortPath: string; added: number; deleted: number; status: string }
@@ -364,14 +508,67 @@ function diffLineClass(line: string) {
   return "diff-ctx";
 }
 
-interface PendingPermission { requestId: string; request: Record<string, unknown> }
-const pendingPermission = ref<PendingPermission | null>(null);
+// A `can_use_tool` control_request from claude. Every blocking surface (permission,
+// ExitPlanMode, AskUserQuestion, file edits) arrives on this one channel; we route by toolName.
+interface CanUseToolReq {
+  requestId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  description?: string;
+  suggestions: Array<Record<string, unknown>>;
+  toolUseId?: string;
+}
+const pendingPermission = ref<CanUseToolReq | null>(null); // Bash / generic tool
+const pendingQuestion = ref<CanUseToolReq | null>(null);   // AskUserQuestion
+const pendingPlan = ref<CanUseToolReq | null>(null);       // ExitPlanMode
+const pendingDiff = ref<CanUseToolReq | null>(null);       // Edit / Write / MultiEdit / NotebookEdit
+
+// AskUserQuestion working selection: question text → chosen option label(s).
+const questionAnswers = ref<Record<string, string[]>>({});
+// ExitPlanMode "keep planning" feedback.
+const planFeedback = ref("");
 
 const permissionDetail = computed(() => {
-  const r = pendingPermission.value?.request;
-  if (!r) return "";
-  // Show command for bash, path for file ops, type otherwise
-  return (r.command ?? r.path ?? r.type ?? JSON.stringify(r).slice(0, 120)) as string;
+  const cr = pendingPermission.value;
+  if (!cr) return "";
+  const r = cr.input;
+  return (r.command ?? r.file_path ?? r.path ?? cr.description ?? JSON.stringify(r).slice(0, 120)) as string;
+});
+
+// Match keys for "Allow always" rules. Bash gets a command-prefix key so allowing
+// `git` once doesn't blanket-allow every Bash call.
+function ruleKeys(toolName: string, input: Record<string, unknown>): string[] {
+  const keys = [toolName];
+  if (toolName === "Bash" && typeof input.command === "string") {
+    const first = (input.command as string).trim().split(/\s+/)[0];
+    if (first) keys.push(`Bash:${first}`);
+  }
+  return keys;
+}
+
+const planMd = computed(() => {
+  const p = pendingPlan.value?.input?.plan;
+  return typeof p === "string" ? renderMd(p) : "";
+});
+interface QuestionSpec { question: string; header?: string; multiSelect?: boolean; options: Array<{ label: string; description?: string }> }
+const questionSpecs = computed<QuestionSpec[]>(() =>
+  ((pendingQuestion.value?.input?.questions ?? []) as QuestionSpec[]));
+const canSubmitQuestion = computed(() =>
+  questionSpecs.value.every((q) => (questionAnswers.value[q.question] ?? []).length > 0));
+
+// Diff preview for a pending Edit/Write. For Write/NotebookEdit it's full content;
+// for Edit it's old→new strings.
+const diffPreview = computed(() => {
+  const cr = pendingDiff.value;
+  if (!cr) return null;
+  const i = cr.input;
+  return {
+    path: (i.file_path ?? i.path ?? cr.description ?? "") as string,
+    isWrite: cr.toolName === "Write" || cr.toolName === "NotebookEdit",
+    content: (i.content ?? "") as string,
+    oldStr: (i.old_string ?? "") as string,
+    newStr: (i.new_string ?? "") as string,
+  };
 });
 const model = ref("");
 const accountInfo = ref<AccountInfo | null>(null);
@@ -439,10 +636,33 @@ function onLine(line: string) {
   const type = event.type as string;
 
   if (type === "control_request") {
-    pendingPermission.value = {
+    const req = (event.request ?? {}) as Record<string, unknown>;
+    if (req.subtype !== "can_use_tool") return; // other control subtypes: ignore (fail-open)
+    const cr: CanUseToolReq = {
       requestId: event.request_id as string,
-      request: (event.request ?? {}) as Record<string, unknown>,
+      toolName: (req.tool_name as string) ?? "",
+      input: (req.input ?? {}) as Record<string, unknown>,
+      description: req.description as string | undefined,
+      suggestions: (req.permission_suggestions ?? []) as Array<Record<string, unknown>>,
+      toolUseId: req.tool_use_id as string | undefined,
     };
+    // Auto-allow when an "always" rule matches — no UI.
+    if (chats.hasPermissionRule(ruleKeys(cr.toolName, cr.input))) {
+      respondControl(cr.requestId, { behavior: "allow", updatedInput: cr.input });
+      return;
+    }
+    if (cr.toolName === "AskUserQuestion") {
+      questionAnswers.value = {};
+      pendingQuestion.value = cr;
+    } else if (cr.toolName === "ExitPlanMode") {
+      planFeedback.value = "";
+      pendingPlan.value = cr;
+    } else if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(cr.toolName)) {
+      pendingDiff.value = cr;
+    } else {
+      pendingPermission.value = cr;
+    }
+    scrollToBottom();
     return;
   }
 
@@ -571,35 +791,95 @@ async function sendMessage(forcedText?: string) {
   }
 }
 
-async function respondPermission(allow: boolean) {
-  if (!pendingPermission.value) return;
-  const { requestId } = pendingPermission.value;
-  pendingPermission.value = null;
+// Reply to a can_use_tool control_request. `response` is the inner decision object
+// ({behavior:"allow",updatedInput} | {behavior:"deny",message}); the Rust side wraps it.
+async function respondControl(requestId: string, response: Record<string, unknown>) {
   try {
-    await invoke("claude_respond_permission", { id: props.chatId, requestId, allow });
+    await invoke("claude_respond_control", { id: props.chatId, requestId, response });
   } catch (e) {
-    messages.value.push({ id: nextMsgId++, role: "assistant", text: `Permission response failed: ${e}` });
+    messages.value.push({ id: nextMsgId++, role: "assistant", text: `Control response failed: ${e}` });
     saveMessages(props.chatId, messages.value);
   }
 }
 
-async function toggleDangerousMode() {
-  dangerousMode.value = !dangerousMode.value;
-  localStorage.setItem(DANGEROUS_KEY(props.chatId), dangerousMode.value ? "1" : "0");
-  // Restart process with new permission mode (keep session via --resume)
+// Generic tool permission + diff Accept/Reject (both pull from pendingPermission|pendingDiff).
+function respondPermission(allow: boolean, opts?: { always?: boolean; updatedInput?: Record<string, unknown>; message?: string }) {
+  const cr = pendingPermission.value ?? pendingDiff.value;
+  if (!cr) return;
+  pendingPermission.value = null;
+  pendingDiff.value = null;
+  if (allow) {
+    if (opts?.always) {
+      const keys = ruleKeys(cr.toolName, cr.input);
+      chats.addPermissionRule(keys[keys.length - 1]);
+    }
+    respondControl(cr.requestId, { behavior: "allow", updatedInput: opts?.updatedInput ?? cr.input });
+  } else {
+    respondControl(cr.requestId, { behavior: "deny", message: opts?.message || "User denied this action." });
+  }
+}
+
+function toggleOption(question: string, label: string, multi: boolean) {
+  const cur = questionAnswers.value[question] ?? [];
+  if (multi) {
+    questionAnswers.value[question] = cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label];
+  } else {
+    questionAnswers.value[question] = cur.includes(label) ? [] : [label];
+  }
+}
+function isPicked(question: string, label: string) {
+  return (questionAnswers.value[question] ?? []).includes(label);
+}
+
+function submitQuestion() {
+  const cr = pendingQuestion.value;
+  if (!cr || !canSubmitQuestion.value) return;
+  pendingQuestion.value = null;
+  // The tool reads input.answers keyed by question text; multi-select joins with ", ".
+  const answers: Record<string, string> = {};
+  for (const [q, labels] of Object.entries(questionAnswers.value)) {
+    if (labels.length) answers[q] = labels.join(", ");
+  }
+  respondControl(cr.requestId, { behavior: "allow", updatedInput: { ...cr.input, answers } });
+}
+function cancelQuestion() {
+  const cr = pendingQuestion.value;
+  if (!cr) return;
+  pendingQuestion.value = null;
+  // allow with empty answers → tool reports "did not answer" (clean dismiss, no error).
+  respondControl(cr.requestId, { behavior: "allow", updatedInput: { ...cr.input, answers: {} } });
+}
+
+function respondPlan(approve: boolean) {
+  const cr = pendingPlan.value;
+  if (!cr) return;
+  pendingPlan.value = null;
+  if (approve) {
+    respondControl(cr.requestId, { behavior: "allow", updatedInput: cr.input });
+  } else {
+    respondControl(cr.requestId, { behavior: "deny", message: planFeedback.value.trim() || "Keep planning — do not exit plan mode yet." });
+  }
+}
+
+// Cycle the permission mode (header switch): default → acceptEdits → bypassPermissions.
+// Restart claude with --resume so the conversation continues under the new mode.
+async function cyclePermMode() {
+  const order: PermMode[] = ["default", "acceptEdits", "bypassPermissions"];
+  permMode.value = order[(order.indexOf(permMode.value) + 1) % order.length];
+  localStorage.setItem(PERM_KEY(props.chatId), permMode.value);
   await invoke("claude_stop", { id: props.chatId }).catch(() => {});
   await invoke("claude_start", {
     id: props.chatId,
     cwd: props.cwd,
     resumeSessionId: sessionId.value || null,
-    bypassPermissions: dangerousMode.value,
+    permissionMode: permMode.value,
   }).catch(() => {});
 }
 
 async function abortTurn() {
   await invoke("claude_abort", { id: props.chatId }).catch(() => {});
   // Restart with --resume so session continues
-  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, resumeSessionId: sessionId.value || null, bypassPermissions: dangerousMode.value }).catch(() => {});
+  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, resumeSessionId: sessionId.value || null, permissionMode: permMode.value }).catch(() => {});
   busy.value = false;
   messageQueue.value = [];
   const last = messages.value[messages.value.length - 1];
@@ -618,7 +898,7 @@ async function clearChat() {
   sessionCost.value = 0;
   localStorage.removeItem(msgKey(props.chatId));
   chats.sync(props.chatId, { claudeSessionId: "", busy: false, messageCount: 0, title: `Chat` });
-  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, bypassPermissions: dangerousMode.value }).catch(() => {});
+  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, permissionMode: permMode.value }).catch(() => {});
 }
 
 function updateSuggestions() {
@@ -646,10 +926,57 @@ function scrollSuggestionIntoView(idx: number) {
   });
 }
 
+// ── @-mention: complete a file path from the repo file list ─────────────────
+function atQueryBeforeCursor(): string | null {
+  const el = inputEl.value;
+  const pos = el?.selectionStart ?? inputText.value.length;
+  const upto = inputText.value.slice(0, pos);
+  const m = upto.match(/(?:^|\s)@([^\s@]*)$/);
+  return m ? m[1] : null;
+}
+
+async function updateAtSuggestions() {
+  const q = atQueryBeforeCursor();
+  if (q === null) { atSuggestions.value = []; return; }
+  await ensureFileList();
+  if (atQueryBeforeCursor() !== q) return; // cursor moved while loading
+  const ql = q.toLowerCase();
+  atSuggestions.value = fileList.value
+    .filter((p) => p.toLowerCase().includes(ql))
+    .sort((a, b) => {
+      const ab = a.slice(a.lastIndexOf("/") + 1).toLowerCase();
+      const bb = b.slice(b.lastIndexOf("/") + 1).toLowerCase();
+      return (Number(!ab.startsWith(ql)) - Number(!bb.startsWith(ql))) || a.length - b.length;
+    })
+    .slice(0, 8);
+  atIdx.value = 0;
+}
+
+function applyAtSuggestion(path: string) {
+  const el = inputEl.value;
+  const pos = el?.selectionStart ?? inputText.value.length;
+  const upto = inputText.value.slice(0, pos);
+  const after = inputText.value.slice(pos);
+  const m = upto.match(/@([^\s@]*)$/);
+  if (!m) return;
+  const base = upto.slice(0, upto.length - m[0].length);
+  inputText.value = `${base}@${path} ${after}`;
+  atSuggestions.value = [];
+  nextTick(() => { inputEl.value?.focus(); autoResize(); });
+}
+
 function onKeydown(e: KeyboardEvent) {
-  if (pendingPermission.value) {
+  if (pendingPermission.value || pendingDiff.value) {
     if (e.key === "y" || e.key === "Y") { e.preventDefault(); respondPermission(true); return; }
     if (e.key === "n" || e.key === "N") { e.preventDefault(); respondPermission(false); return; }
+  }
+  if (pendingQuestion.value && e.key === "Escape") { e.preventDefault(); cancelQuestion(); return; }
+  if (pendingPlan.value && e.key === "Escape") { e.preventDefault(); respondPlan(false); return; }
+  if (atSuggestions.value.length > 0) {
+    if (e.key === "ArrowDown") { e.preventDefault(); atIdx.value = Math.min(atIdx.value + 1, atSuggestions.value.length - 1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); atIdx.value = Math.max(atIdx.value - 1, 0); return; }
+    if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); applyAtSuggestion(atSuggestions.value[atIdx.value]); return; }
+    if (e.key === "Escape") { atSuggestions.value = []; return; }
   }
   if (suggestions.value.length > 0) {
     if (e.key === "ArrowDown") {
@@ -677,6 +1004,7 @@ function onKeydown(e: KeyboardEvent) {
 function onInput() {
   autoResize();
   updateSuggestions();
+  updateAtSuggestions();
 }
 
 function onPaste(e: ClipboardEvent) {
@@ -704,7 +1032,7 @@ function autoResize() {
 }
 
 function onWindowKeydown(e: KeyboardEvent) {
-  if (!pendingPermission.value) return;
+  if (!pendingPermission.value && !pendingDiff.value) return;
   if (document.activeElement === inputEl.value) return; // handled by onKeydown
   if (e.key === "y" || e.key === "Y") { e.preventDefault(); respondPermission(true); }
   if (e.key === "n" || e.key === "N") { e.preventDefault(); respondPermission(false); }
@@ -718,7 +1046,7 @@ onMounted(async () => {
     id: props.chatId,
     cwd: props.cwd,
     resumeSessionId: stored || null,
-    bypassPermissions: dangerousMode.value,
+    permissionMode: permMode.value,
   }).catch(() => {});
   unlisten = await listen<string>(`claude-data-${props.chatId}`, (ev) => onLine(ev.payload));
 
@@ -966,6 +1294,8 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 }
 .chat-header-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
 .btn-danger-active { color: #ef4444 !important; background: color-mix(in srgb, #ef4444 15%, transparent) !important; }
+.perm-mode-btn { width: auto !important; gap: 4px; padding: 0 7px; }
+.perm-mode-label { font-size: 10px; font-weight: 600; }
 .btn-active { color: var(--accent) !important; background: color-mix(in srgb, var(--accent) 12%, transparent) !important; }
 
 /* Permission banner */
@@ -1013,7 +1343,9 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 .perm-btn:hover { filter: brightness(1.1); }
 .perm-btn:active { filter: brightness(0.9); }
 .perm-allow { background: #16a34a; color: #fff; }
+.perm-always { background: color-mix(in srgb, #16a34a 22%, var(--bg-panel)); color: var(--text-primary); }
 .perm-deny  { background: #b91c1c; color: #fff; }
+.perm-btn:disabled { opacity: 0.4; cursor: default; filter: none; }
 .perm-kbd {
   font-size: 9px;
   font-family: var(--font-mono);
@@ -1023,6 +1355,89 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   padding: 1px 4px;
   line-height: 1.4;
 }
+
+/* ── File-edit diff banner ─────────────────────────────────────────────── */
+.diff-banner {
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-top: 1px solid color-mix(in srgb, #6366f1 30%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, #6366f1 45%, transparent);
+  animation: perm-slide-in 0.15s ease-out;
+}
+.diff-banner-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
+.diff-banner-head .perm-icon { color: #818cf8; }
+.diff-spacer { flex: 1; }
+.diff-banner-body {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 6px 12px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.diff-banner-body .diff-line { display: block; white-space: pre-wrap; word-break: break-all; }
+
+/* ── ExitPlanMode banner ───────────────────────────────────────────────── */
+.plan-banner {
+  flex-shrink: 0;
+  padding: 10px 12px;
+  background: color-mix(in srgb, #10b981 8%, var(--bg-panel));
+  border-top: 1px solid color-mix(in srgb, #10b981 30%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, #10b981 45%, transparent);
+  animation: perm-slide-in 0.15s ease-out;
+}
+.plan-head { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+.plan-head .perm-icon { color: #10b981; }
+.plan-body { max-height: 260px; overflow: auto; font-size: 12px; color: var(--text-primary); }
+.plan-feedback {
+  width: 100%;
+  margin: 8px 0;
+  resize: vertical;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.1));
+  border-radius: 5px;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 6px 8px;
+  box-sizing: border-box;
+}
+.plan-actions, .question-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* ── AskUserQuestion banner ────────────────────────────────────────────── */
+.question-banner {
+  flex-shrink: 0;
+  padding: 10px 12px;
+  background: color-mix(in srgb, #3b82f6 8%, var(--bg-panel));
+  border-top: 1px solid color-mix(in srgb, #3b82f6 30%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, #3b82f6 45%, transparent);
+  animation: perm-slide-in 0.15s ease-out;
+}
+.question-block { margin-bottom: 10px; }
+.question-head { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; flex-wrap: wrap; }
+.question-chip {
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  background: color-mix(in srgb, #3b82f6 25%, transparent); color: #93c5fd;
+  border-radius: 4px; padding: 2px 6px;
+}
+.question-text { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.question-multi { font-size: 9px; color: var(--text-secondary); font-style: italic; }
+.question-options { display: flex; flex-direction: column; gap: 5px; }
+.question-opt {
+  display: flex; flex-direction: column; gap: 1px; text-align: left;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.12));
+  border-radius: 6px; padding: 7px 10px; cursor: pointer;
+  transition: border-color .1s, background .1s;
+}
+.question-opt:hover { border-color: color-mix(in srgb, #3b82f6 55%, transparent); }
+.question-opt.picked {
+  border-color: #3b82f6;
+  background: color-mix(in srgb, #3b82f6 16%, var(--bg-base));
+}
+.opt-label { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.opt-desc { font-size: 10px; color: var(--text-secondary); }
 
 .chat-messages {
   flex: 1;
@@ -1322,6 +1737,21 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 }
 .chat-send-btn:hover:not(:disabled) { background: var(--accent-dim); }
 .chat-send-btn:disabled { opacity: 0.4; cursor: default; }
+.chat-share-btn {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 7px;
+  color: var(--accent);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  transition: background .12s;
+}
+.chat-share-btn:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }
 .chat-send-queued {
   background: color-mix(in srgb, var(--accent) 20%, transparent) !important;
   color: var(--accent) !important;

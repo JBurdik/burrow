@@ -1865,7 +1865,7 @@ fn claude_start(
     id: u32,
     cwd: String,
     resume_session_id: Option<String>,
-    bypass_permissions: Option<bool>,
+    permission_mode: Option<String>,
 ) -> Result<(), String> {
     if state.procs.lock().unwrap().contains_key(&id) {
         return Ok(());
@@ -1875,13 +1875,28 @@ fn claude_start(
 
     let mcp_config = build_mcp_config();
 
-    let perm_mode = if bypass_permissions.unwrap_or(false) { "bypassPermissions" } else { "acceptEdits" };
+    // User-chosen mode (header switch). Default `default` so edits surface as can_use_tool
+    // → diff Accept/Reject (VS Code "review changes" parity). `acceptEdits` auto-applies
+    // edits; `bypassPermissions` skips everything. Whitelisted to keep it off the argv as
+    // arbitrary input.
+    let perm_mode = match permission_mode.as_deref() {
+        Some("acceptEdits") => "acceptEdits",
+        Some("bypassPermissions") => "bypassPermissions",
+        Some("plan") => "plan",
+        _ => "default",
+    };
     let mut args = vec![
         "--output-format".to_string(), "stream-json".to_string(),
         "--verbose".to_string(),
         "--input-format".to_string(), "stream-json".to_string(),
         "--include-partial-messages".to_string(),
         "--permission-mode".to_string(), perm_mode.to_string(),
+        // Hidden flag (not in `claude --help`): routes every permission / blocking-tool
+        // decision to us as a `can_use_tool` control_request on stdin instead of the CLI
+        // auto-allowing/denying internally. This is exactly what the Agent SDK passes when
+        // a `canUseTool` callback is set. Without it, Edit/Write/Bash/ExitPlanMode/
+        // AskUserQuestion never reach the UI. We reply with claude_respond_control.
+        "--permission-prompt-tool".to_string(), "stdio".to_string(),
         "--mcp-config".to_string(), mcp_config,
         "--strict-mcp-config".to_string(),
     ];
@@ -2006,14 +2021,21 @@ fn claude_abort(state: State<ClaudeState>, id: u32) {
     }
 }
 
-// Write a control_response to claude's stdin (approve/deny a permission prompt).
-// Format inferred from control_request event: {type,request_id,request:{type,...}}
+// Reply to a `can_use_tool` control_request on claude's stdin. The frontend builds the
+// inner permission decision (`response`) so this one command serves every blocking tool:
+//   permission   → {"behavior":"allow","updatedInput":{...}} | {"behavior":"deny","message":"..."}
+//   ExitPlanMode → allow = approve plan; deny + message = keep planning with feedback
+//   AskUserQuestion → allow with updatedInput.answers = {"<question text>":"<chosen label>"}
+// Wire shape (double-nested `response.response`) confirmed against claude 2.1.181 / SDK 0.3.181.
 #[tauri::command]
-fn claude_respond_permission(state: State<ClaudeState>, id: u32, request_id: String, allow: bool) -> Result<(), String> {
+fn claude_respond_control(state: State<ClaudeState>, id: u32, request_id: String, response: serde_json::Value) -> Result<(), String> {
     use std::io::Write;
     let mut guard = state.procs.lock().unwrap();
     let proc = guard.get_mut(&id).ok_or("claude not running")?;
-    let msg = serde_json::json!({ "type": "control_response", "request_id": request_id, "allow": allow });
+    let msg = serde_json::json!({
+        "type": "control_response",
+        "response": { "subtype": "success", "request_id": request_id, "response": response }
+    });
     let line = msg.to_string() + "\n";
     proc.stdin.write_all(line.as_bytes()).and_then(|_| proc.stdin.flush()).map_err(|e| e.to_string())
 }
@@ -3324,7 +3346,7 @@ pub fn run() {
             claude_send,
             claude_stop,
             claude_abort,
-            claude_respond_permission,
+            claude_respond_control,
             claude_get_account,
             read_file_base64,
             save_temp_image,
