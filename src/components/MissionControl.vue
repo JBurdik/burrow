@@ -21,15 +21,38 @@
         <h1>Mission Control</h1>
       </header>
 
-      <!-- Scope = the active workspace (chosen in the sidebar). New tasks target it. -->
-      <div class="ws-scope">
-        <img v-if="wsIcon(activeWs.id)" class="ws-ico-img" :src="wsIcon(activeWs.id)" alt="" />
-        <PhGitBranch v-else-if="activeWs.parent_id" :size="15" class="ws-ico" />
-        <PhFolder v-else :size="15" weight="fill" class="ws-ico" />
-        <span class="ws-meta">
-          <span class="ws-name">{{ activeWs.name }}</span>
-          <span class="ws-path">{{ shortCwd(activeWs.path) }}</span>
-        </span>
+      <!-- Scope = the active workspace. Dropdown switches it (also reflected in the sidebar). New tasks target it. -->
+      <div class="dd ws-dd">
+        <button type="button" class="ws-scope dd-btn" :class="{ open: wsMenuOpen }" @click="wsMenuOpen = !wsMenuOpen">
+          <img v-if="wsIcon(activeWs.id)" class="ws-ico-img" :src="wsIcon(activeWs.id)" alt="" />
+          <PhGitBranch v-else-if="activeWs.parent_id" :size="15" class="ws-ico" />
+          <PhFolder v-else :size="15" weight="fill" class="ws-ico" />
+          <span class="ws-meta">
+            <span class="ws-name">{{ activeWs.name }}</span>
+            <span class="ws-path">{{ shortCwd(activeWs.path) }}</span>
+          </span>
+          <PhCaretDown :size="13" class="dd-chev" :class="{ open: wsMenuOpen }" />
+        </button>
+        <div v-if="wsMenuOpen" class="dd-backdrop" @click="wsMenuOpen = false" />
+        <ul v-if="wsMenuOpen" class="dd-menu ws-menu">
+          <li
+            v-for="w in wsStore.topLevel"
+            :key="w.id"
+            class="dd-opt"
+            :class="{ sel: w.id === activeWs.id }"
+            @click="pickWorkspace(w)"
+          >
+            <span class="dd-opt-main ws-opt">
+              <img v-if="wsIcon(w.id)" class="ws-ico-img sm" :src="wsIcon(w.id)" alt="" />
+              <PhFolder v-else :size="14" weight="fill" class="ws-ico" />
+              <span class="ws-opt-meta">
+                <span class="ws-opt-name">{{ w.name }}</span>
+                <code class="dd-opt-sub">{{ shortCwd(w.path) }}</code>
+              </span>
+            </span>
+            <PhCheck v-if="w.id === activeWs.id" :size="13" weight="bold" />
+          </li>
+        </ul>
       </div>
 
       <button class="btn primary new-btn" @click="openComposer"><PhPlus :size="14" weight="bold" /> New task</button>
@@ -428,7 +451,7 @@ import {
   PhMagnifyingGlass, PhUserGear, PhStop, PhArrowUp,
   PhArticle, PhBrain, PhWrench, PhArrowBendDownRight,
 } from "@phosphor-icons/vue";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { useWorkspaceStore, type Workspace } from "@/stores/workspace";
 import { useProfilesStore } from "@/stores/profiles";
 import { useUIStore } from "@/stores/ui";
 import { useNotificationsStore } from "@/stores/notifications";
@@ -545,6 +568,18 @@ function bumpPtySeqPast(ptyId: number) {
 }
 
 const tasks = ref<Task[]>([]);
+// Debounce `done`: a backgrounded sub-agent (e.g. Explore) makes the main session
+// park + auto-resume repeatedly, firing INTERIM Stops whose `background_tasks` slice
+// momentarily empties → a `done` that's reversed by a `running` a beat later. Hold
+// each `done` briefly; a live state (running/waiting/permission/error) arriving in
+// the window cancels it. Only a `done` that survives is a real turn end. (Terminal.vue
+// gets this for free via settleDone; MC applies hook states raw, so it needs its own.)
+const DONE_DEBOUNCE_MS = 1800;
+const pendingDone = new Map<string, ReturnType<typeof setTimeout>>();
+function cancelPendingDone(taskId: string) {
+  const h = pendingDone.get(taskId);
+  if (h !== undefined) { clearTimeout(h); pendingDone.delete(taskId); }
+}
 const queue = ref<{ qid: string; prompt: string; cwd: string; model: string; profileId: string; isolate: boolean; branch: string; images: string[]; files: string[]; skipPerms: boolean }[]>([]);
 const maxConcurrent = ref(1);
 
@@ -553,6 +588,7 @@ const selectedId = ref<string | null>(null);
 const composerOpen = ref(false);
 const modelMenuOpen = ref(false);
 const profileMenuOpen = ref(false);
+const wsMenuOpen = ref(false);
 const convoEl = ref<HTMLElement | null>(null);
 const modelLabel = computed(() => MODELS.find((m) => m.value === draft.model)?.label ?? "Default");
 const profileLabel = computed(() => profilesStore.get(draft.profileId)?.name ?? "Default");
@@ -567,8 +603,26 @@ const activeWs = computed(() => wsStore.active);
 function wsIcon(id: number): string | undefined {
   return wsStore.icons[id];
 }
-// Switching workspace in the sidebar re-targets the composer at the new cwd.
-watch(activeWs, (w) => { if (w) draft.cwd = w.path; });
+// Switching workspace re-targets the composer at the new cwd AND drops a stale
+// selection: if the selected task isn't in the new scope, re-point at the newest
+// task there (or clear). Otherwise the previous workspace's conversation lingers
+// in the detail pane after a switch.
+watch(activeWs, (w) => {
+  if (w) draft.cwd = w.path;
+  const scope = scopeWsIds.value;
+  const cur = tasks.value.find((t) => t.id === selectedId.value);
+  if (!cur || cur.workspaceId == null || !scope.has(cur.workspaceId)) {
+    const next = orderedTasks.value.find((t) => t.workspaceId != null && scope.has(t.workspaceId));
+    selectedId.value = next?.id ?? null;
+  }
+});
+// Switch the active workspace from MC itself (mirrors the sidebar). Also re-scopes
+// the task list + detail feed via the activeWs watcher above.
+function pickWorkspace(w: Workspace) {
+  wsMenuOpen.value = false;
+  if (w.id === activeWs.value?.id) return;
+  wsStore.open(w);
+}
 
 const draft = reactive({
   prompt: "",
@@ -774,6 +828,11 @@ async function wireTask(task: Task) {
       saveTask(t);
       return;
     }
+    // Any live signal cancels a still-pending `done` — the prior Stop was interim
+    // (sub-agent park/resume), the turn is actually still in flight.
+    if (state === "running" || state === "waiting" || state === "permission" || state === "error") {
+      cancelPendingDone(t.id);
+    }
     if (state === "running") {
       // A failed turn (`error`) is terminal + attention-needing: a stray `running`
       // ping must NOT silently resume it unless the turn genuinely restarts. Claude
@@ -808,14 +867,24 @@ async function wireTask(task: Task) {
       pumpQueue();   // turn is over → free the slot
     }
     else if (state === "done") {
-      // Same done/review split as Terminal.vue's settleDone: if the user is watching
-      // this task right now → transient `done`; if they're away → `review` (a green
-      // pulse that persists until they open the task, so a finish-while-away isn't
-      // missed). The transcript capture runs either way — that's MC's whole job.
-      t.status = isWatching(t) ? "done" : "review";
-      // Transcript flushes a beat after Stop — read the result shortly after.
-      setTimeout(() => captureResult(t), 600);
-      pumpQueue();   // free slot → start the next queued prompt
+      // Debounced: a backgrounded sub-agent's interim Stop also fires `done`, then
+      // resumes (`running`) a beat later. Defer the commit; if a live state lands in
+      // the window, cancelPendingDone above drops this. Only a surviving `done` is real.
+      cancelPendingDone(t.id);
+      pendingDone.set(t.id, setTimeout(() => {
+        pendingDone.delete(t.id);
+        const tt = tasks.value.find((x) => x.id === task.id);
+        if (!tt) return;
+        const before = tt.status;
+        // Same done/review split as Terminal.vue's settleDone: watching → transient
+        // `done`; away → `review` (green pulse persists until opened).
+        tt.status = isWatching(tt) ? "done" : "review";
+        setTimeout(() => captureResult(tt), 600);  // transcript flushes a beat after Stop
+        pumpQueue();   // free slot → start the next queued prompt
+        if (tt.status !== before && (tt.status === "done" || tt.status === "review")) notifyTask(tt, "done");
+        saveTask(tt);
+      }, DONE_DEBOUNCE_MS));
+      return;  // commit happens in the timer; nothing to surface yet
     }
     // Notify only on a real transition INTO a needs-attention/finished state, and only
     // when the user isn't already looking at this task (Superset-style "finished while
@@ -1295,6 +1364,7 @@ function stopGeneration(t: Task) {
 // Kill the PTY and drop the task entirely (header "Delete").
 function deleteTask(t: Task) {
   invoke("kill_pty", { id: t.ptyId }).catch(() => {});
+  cancelPendingDone(t.id);
   teardown(t.ptyId);
   buffers.delete(t.ptyId);
   tasks.value = tasks.value.filter((x) => x.id !== t.id);
@@ -1430,19 +1500,51 @@ async function openTerminal(t: Task) {
     // Fit to the modal, push that geometry to the PTY, then force a clean repaint.
     fitMissionTerm(t.ptyId);
     // Re-fit after layout + web fonts settle (first fit can measure stale metrics).
-    requestAnimationFrame(() => requestAnimationFrame(() => fitMissionTerm(t.ptyId)));
-    document.fonts?.ready.then(() => fitMissionTerm(t.ptyId)).catch(() => {});
+    requestAnimationFrame(() => requestAnimationFrame(() => { fitMissionTerm(t.ptyId); forceRepaintMissionTerm(); }));
+    document.fonts?.ready.then(() => { fitMissionTerm(t.ptyId); forceRepaintMissionTerm(); }).catch(() => {});
     repaintMissionTerm(t.ptyId);
     // Keep grid + PTY in lockstep with the modal size (live drag / window resize).
     termResizeObs = new ResizeObserver(() => fitMissionTerm(t.ptyId));
     termResizeObs.observe(termHost.value!);
   } else {
-    // Dead: pin the grid to the capture width and replay the static history on-grid.
-    // No FitAddon, no resize observer — refitting would re-wrap the 120-col frames
-    // and re-introduce the scramble we're avoiding.
-    termInstance.resize(MC_PTY_COLS, MC_PTY_ROWS);
-    termInstance.write(buffers.get(t.ptyId) || "");
+    // Dead: replay the static history at its OWN capture width (MC_PTY_COLS) so every
+    // absolute-cursor frame lands on-grid — no re-wrap, no scramble. The catch: a
+    // fixed 120-col grid is wider than the modal's inner width on smaller windows
+    // (80vw < ~940px), and term-host is `overflow:hidden`, so the right columns get
+    // CLIPPED — that's the "rozházený" cut-off screen. Fix: SCALE the font so exactly
+    // MC_PTY_COLS fill the available width. Cols scale inversely with fontSize, so
+    // measure how many cols a known fontSize fits, then pick the size that yields 120.
+    const baseFont = 13;
+    termInstance.options.fontSize = baseFont;
+    let pickedFont = baseFont;
+    if (termFit && termHost.value && termHost.value.offsetWidth > 0) {
+      try {
+        const dims = (termFit as unknown as { proposeDimensions?: () => { cols: number; rows: number } | undefined }).proposeDimensions?.();
+        if (dims?.cols) {
+          // baseFont fits dims.cols → to fit MC_PTY_COLS we need baseFont*dims.cols/120.
+          // Cap at baseFont (never enlarge dead text), floor at 6 for legibility.
+          pickedFont = Math.max(6, Math.min(baseFont, Math.floor((baseFont * dims.cols) / MC_PTY_COLS)));
+        }
+      } catch { /* keep baseFont */ }
+    }
+    termInstance.options.fontSize = pickedFont;
+    // Rows: fill the host height at the picked font; fall back to the capture height.
+    let rows = MC_PTY_ROWS;
+    try {
+      const dims2 = (termFit as unknown as { proposeDimensions?: () => { cols: number; rows: number } | undefined }).proposeDimensions?.();
+      if (dims2?.rows) rows = dims2.rows;
+    } catch { /* keep MC_PTY_ROWS */ }
+    termInstance.resize(MC_PTY_COLS, Math.max(MC_PTY_ROWS, rows));
+    termInstance.write(buffers.get(t.ptyId) || "", () => forceRepaintMissionTerm());
   }
+}
+
+// Drop stale/overlapping glyphs the renderer never cleared and force a full redraw
+// from the (correct) buffer — same render-side un-scramble as XTerm.vue's forceRepaint.
+function forceRepaintMissionTerm() {
+  if (!termInstance) return;
+  try { (termInstance as unknown as { _core?: { _renderService?: { clear?: () => void } } })._core?._renderService?.clear?.(); } catch { /* no-op */ }
+  termInstance.refresh(0, termInstance.rows - 1);
 }
 
 let lastFitCols = 0;
@@ -1700,11 +1802,18 @@ onBeforeUnmount(() => {
 .rail-head .brand-mark { color: var(--accent); flex-shrink: 0; }
 .rail-head h1 { font-size: 14px; margin: 0; font-weight: 650; letter-spacing: 0.01em; flex: 1; }
 
-/* ── Workspace scope: read-only mirror of the sidebar's active workspace ── */
+/* ── Workspace scope: dropdown to switch the active workspace ── */
+.ws-dd { margin: 0 12px 10px; }
 .ws-scope {
-  margin: 0 12px 10px; display: flex; align-items: center; gap: 10px;
-  background: var(--terminal-bg); border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px;
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  border-radius: 10px; padding: 9px 11px; text-align: left;
 }
+.ws-scope .dd-chev { margin-left: auto; flex-shrink: 0; }
+.ws-menu .dd-opt { padding: 7px 9px; }
+.ws-opt { flex-direction: row; align-items: center; gap: 9px; }
+.ws-opt-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ws-opt-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ws-ico-img.sm { width: 18px; height: 18px; }
 .ws-ico { flex-shrink: 0; color: var(--text-secondary); }
 .ws-ico-img { width: 20px; height: 20px; border-radius: 5px; object-fit: cover; flex-shrink: 0; }
 .ws-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
