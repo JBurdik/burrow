@@ -1287,6 +1287,7 @@ function syncStore() {
       id: t.id,
       title: tabTitle(t),
       isAgent: tabIsAgent(t),
+      isChat: isChat(t),
       busy: getAllLeaves(t.root).some((l) => l.busy),
       status: tabStatus(t),
       leafCount: getAllLeaves(t.root).length,

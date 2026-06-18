@@ -10,6 +10,7 @@ export interface TabSummary {
   id: number;
   title: string;
   isAgent: boolean;
+  isChat?: boolean;
   busy: boolean;
   status: TermStatus;
   leafCount?: number;

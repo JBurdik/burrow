@@ -133,7 +133,8 @@
             @click.stop="selectTab(item, tab.id)"
             @pointerdown="(e: PointerEvent) => tabDragDown(tabIdx, e, String(item.id))"
           >
-            <PhRobot v-if="tab.isAgent" :size="11" class="ws-term-icon agent" />
+            <ClaudeIcon v-if="tab.isChat" :size="11" class="ws-term-icon claude-session-icon" />
+            <PhRobot v-else-if="tab.isAgent" :size="11" class="ws-term-icon agent" />
             <PhTerminal v-else :size="11" class="ws-term-icon" />
             <input
               v-if="editingTab?.wsId === item.id && editingTab?.tabId === tab.id"
@@ -182,43 +183,6 @@
             />
           </div>
         </TransitionGroup>
-
-        <!-- Claude chat sessions — same list as terminals, distinguished only by icon
-             (no separate "Chats" header). Continues directly below the terminal tabs. -->
-        <div
-          v-if="!isCollapsed(item.id) && visibleChats(item.id).length > 0"
-          class="ws-terminals ws-chats"
-        >
-          <div
-            v-for="session in visibleChats(item.id)"
-            :key="`chat-${session.id}`"
-            class="ws-term"
-            :class="{ active: store.active?.id === item.id && chats.activeByWs[item.id] === session.id }"
-            @click.stop="selectChatSession(item, session.id)"
-          >
-            <ClaudeIcon :size="11" class="ws-term-icon claude-session-icon" />
-            <span class="ws-term-label">{{ session.title }}</span>
-            <PhBell
-              v-if="session.status === 'permission'"
-              :size="11"
-              weight="fill"
-              class="ws-term-permission-bell"
-              title="Permission required"
-            />
-            <span
-              v-if="session.status && session.status !== 'idle'"
-              class="status-dot"
-              :class="`status-${session.status}`"
-            >{{ session.status === 'running' ? spinnerFrame : '' }}</span>
-            <PhX
-              :size="9"
-              weight="bold"
-              class="ws-term-close"
-              title="Close"
-              @click.stop="chats.remove(session.id)"
-            />
-          </div>
-        </div>
 
         <!-- Worktrees subsection — only when worktrees exist -->
         <div v-if="!isCollapsed(item.id) && (store.worktreesByParent[item.id]?.length ?? 0) > 0" class="ws-worktrees">
@@ -443,7 +407,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore, type Workspace } from "@/stores/workspace";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { useUIStore } from "@/stores/ui";
-import { useClaudeChatsStore } from "@/stores/claudeChats";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { spinnerFrame } from "@/lib/spinner";
 import { usePointerReorder } from "@/composables/usePointerReorder";
@@ -453,7 +416,6 @@ import { useGitStore, type PrInfo } from "@/stores/git";
 const store = useWorkspaceStore();
 const termTabs = useTerminalTabsStore();
 const ui = useUIStore();
-const chats = useClaudeChatsStore();
 const git = useGitStore();
 
 // ── collapse / expand per workspace ──────────────────────────────────────────
@@ -639,10 +601,6 @@ watch(() => store.workspaces.map(ws => ws.id).join(","), () => store.workspaces.
 // ── Claude chat sessions ─────────────────────────────────────────────────────
 // Hide the per-repo Manager (control) session from the list — it lives in the
 // floating Manager card, not as a regular chat tab.
-function visibleChats(workspaceId: number) {
-  return chats.sessionsForWs(workspaceId).filter((s) => !s.control);
-}
-
 function newChatSession(workspaceId: number) {
   if (ui.mode !== "terminal") ui.setMode("terminal");
   if (store.active?.id !== workspaceId) {
@@ -650,12 +608,6 @@ function newChatSession(workspaceId: number) {
     if (w) store.open(w);
   }
   termTabs.openChat(workspaceId);
-}
-
-function selectChatSession(ws: Workspace, sessionId: number) {
-  if (ui.mode !== "terminal") ui.setMode("terminal");
-  if (store.active?.id !== ws.id) store.open(ws);
-  termTabs.openChat(ws.id, sessionId);
 }
 
 // ── drag-to-reorder ──────────────────────────────────────────────────────────
