@@ -184,6 +184,22 @@
         <li><a href="mission-control.html" style="color:var(--accent)">Mission Control →</a> · <a href="tank-analysis.html" style="color:var(--accent)">tank analysis &amp; clone recipe →</a></li>
       </ul>
     </div>
+    <div class="card">
+      <h3>Manager — floating per-repo orchestrator</h3>
+      <ul>
+        <li><code>FloatChat.vue</code>: a persistent Mission-Control chat (round launcher → compact card, bottom-right) that drives the app and git/GitHub via the <code>burrow</code> CLI (never the Agents SDK / <code>claude -p</code>)</li>
+        <li>Keyed by the <strong>root repo id</strong> (climbs <code>parent_id</code>), so the same Manager session stays alive when you switch between a repo's worktrees instead of showing an empty one per worktree. Its hidden session is flagged <code>control:true</code> and excluded from the Sidebar chat list</li>
+        <li>Capabilities (in <code>MC_PRIMER</code>): create/remove worktrees, spawn agents into them, and manage PRs (<code>pr-create</code>/<code>list</code>/<code>view</code>/<code>merge</code>) — destructive actions (worktree-remove, pr-merge) require user confirmation first</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Claude chat — unified Sidebar list &amp; permission alerts</h3>
+      <ul>
+        <li>Chats and terminal tabs render as <strong>one Sidebar list</strong> distinguished only by icon (<code>ClaudeIcon</code> vs <code>PhTerminal</code>/<code>PhRobot</code>) — no separate "Chats" header; "New chat" sits on the workspace header row</li>
+        <li>A chat session carries the same <code>status</code> as terminal tabs (<code>chatStatus()</code> → <code>permission</code>+bell for tool/edit gates, <code>waiting</code> for question/plan, <code>running</code> mid-turn)</li>
+        <li>A permission request fires an in-app toast + (when unfocused) a native OS notification (<code>notifyPermission()</code>); switching permission mode no longer fires a spurious "finished" toast (the restart's teardown <code>exit</code> is squelched by <code>suppressNextDone</code>)</li>
+      </ul>
+    </div>
   </div>
 
   <h2>Default Agents</h2>

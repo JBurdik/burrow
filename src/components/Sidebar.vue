@@ -101,6 +101,10 @@
           >
             <span class="pr-dot" />#{{ git.prByWs[item.id]!.number }}
           </span>
+          <button class="ws-add-chat" title="New chat" data-no-drag @click.stop="newChatSession(item.id)">
+            <ClaudeIcon :size="12" />
+            <PhPlus :size="8" weight="bold" class="ws-add-chat-plus" />
+          </button>
           <button class="ws-delete" title="Remove" data-no-drag @click.stop="store.remove(item.id)">
             <PhX :size="10" />
           </button>
@@ -179,27 +183,33 @@
           </div>
         </TransitionGroup>
 
-        <!-- Claude chat sessions (always visible when any exist) -->
+        <!-- Claude chat sessions — same list as terminals, distinguished only by icon
+             (no separate "Chats" header). Continues directly below the terminal tabs. -->
         <div
-          v-if="!isCollapsed(item.id) && chats.sessionsForWs(item.id).length > 0"
-          class="ws-terminals"
+          v-if="!isCollapsed(item.id) && visibleChats(item.id).length > 0"
+          class="ws-terminals ws-chats"
         >
-          <div class="ws-worktree-head">
-            <span>Chats</span>
-            <button class="icon-btn" title="New chat" @click.stop="newChatSession(item.id)">
-              <PhPlus :size="11" />
-            </button>
-          </div>
           <div
-            v-for="session in chats.sessionsForWs(item.id)"
-            :key="session.id"
+            v-for="session in visibleChats(item.id)"
+            :key="`chat-${session.id}`"
             class="ws-term"
             :class="{ active: store.active?.id === item.id && chats.activeByWs[item.id] === session.id }"
             @click.stop="selectChatSession(item, session.id)"
           >
             <ClaudeIcon :size="11" class="ws-term-icon claude-session-icon" />
             <span class="ws-term-label">{{ session.title }}</span>
-            <span v-if="session.busy" class="status-dot status-running">{{ spinnerFrame }}</span>
+            <PhBell
+              v-if="session.status === 'permission'"
+              :size="11"
+              weight="fill"
+              class="ws-term-permission-bell"
+              title="Permission required"
+            />
+            <span
+              v-if="session.status && session.status !== 'idle'"
+              class="status-dot"
+              :class="`status-${session.status}`"
+            >{{ session.status === 'running' ? spinnerFrame : '' }}</span>
             <PhX
               :size="9"
               weight="bold"
@@ -627,6 +637,12 @@ watch(() => store.workspaces.map(ws => ws.id).join(","), () => store.workspaces.
 }));
 
 // ── Claude chat sessions ─────────────────────────────────────────────────────
+// Hide the per-repo Manager (control) session from the list — it lives in the
+// floating Manager card, not as a regular chat tab.
+function visibleChats(workspaceId: number) {
+  return chats.sessionsForWs(workspaceId).filter((s) => !s.control);
+}
+
 function newChatSession(workspaceId: number) {
   if (ui.mode !== "terminal") ui.setMode("terminal");
   if (store.active?.id !== workspaceId) {
@@ -1093,6 +1109,28 @@ function shortPath(p: string): string {
 .ws-item:hover .ws-delete { display: flex; }
 .ws-delete:hover { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
 
+.ws-add-chat {
+  position: relative;
+  background: none;
+  border: none;
+  color: #d97706;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  padding: 3px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color .12s, background .12s;
+}
+.ws-item:hover .ws-add-chat { display: flex; }
+.ws-add-chat:hover { background: color-mix(in srgb, #d97706 14%, transparent); }
+.ws-add-chat-plus {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  color: var(--text);
+}
+
 /* ── Terminal tabs wrapper ─────────────────────────────────────── */
 .ws-terminals {
   margin: 1px 6px 3px 26px;
@@ -1102,6 +1140,9 @@ function shortPath(p: string): string {
   border-left: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   padding-left: 7px;
 }
+/* Chats continue the same left-rail list directly below the terminal tabs —
+   no gap, no header, so they read as one list distinguished only by icon. */
+.ws-chats { margin-top: -2px; }
 
 /* ── Worktrees subsection ──────────────────────────────────────── */
 .ws-worktrees {

@@ -155,6 +155,34 @@ burrow new-tab --ws 3 --cmd htop</code></pre>
 burrow worktree hotfix --base-ref main     # new branch based on main
 burrow worktree feat/x --path ~/wt/x       # custom on-disk location</code></pre>
 
+  <h3><code>burrow worktree-remove &lt;branch|path&gt; [--force]</code> <span style="color:var(--muted);font-weight:400;font-size:12px">(read)</span></h3>
+  <p>
+    Delete a worktree of <strong>this repo</strong> — both the git worktree and its Burrow workspace row — identified by branch
+    name (preferred) or on-disk path. <code>--force</code> discards uncommitted changes. Answered <strong>entirely in Rust</strong>
+    inside <code>take_spawn_requests</code> (<code>remove_worktree_by</code> resolves the child worktree, runs <code>git worktree remove</code>/<code>prune</code>,
+    deletes the DB row), then writes the result the CLI is polling. This is the <strong>Manager</strong>'s teardown command — it
+    confirms with the user before calling it.
+  </p>
+  <pre><code>burrow worktree-remove feat/login          # by branch
+burrow worktree-remove ~/wt/x --force      # by path, discard local changes</code></pre>
+
+  <h3><code>burrow pr-create</code> &nbsp;/&nbsp; <code>pr-list</code> &nbsp;/&nbsp; <code>pr-view</code> &nbsp;/&nbsp; <code>pr-merge</code> <span style="color:var(--muted);font-weight:400;font-size:12px">(read · gh)</span></h3>
+  <p>
+    Pull-request management via the <code>gh</code> CLI, run by Rust (<code>gh_in</code>) in the optional <code>--cwd DIR</code> (a worktree
+    path, so its branch is in context) else the origin repo. Same Rust-answered read transport as <code>list-workspaces</code>;
+    never the Agents SDK. These power the <strong>Manager</strong>'s PR workflow.
+  </p>
+  <ul>
+    <li><code>pr-create --title T --body B [--base main] [--head BRANCH] [--cwd DIR]</code> — open a PR.</li>
+    <li><code>pr-list [--state open|closed|all] [--cwd DIR]</code> — list PRs.</li>
+    <li><code>pr-view &lt;number&gt; [--cwd DIR]</code> — show a PR's details.</li>
+    <li><code>pr-merge &lt;number&gt; [--squash] [--cwd DIR]</code> — merge a PR (squash or plain merge).</li>
+  </ul>
+  <pre><code>burrow pr-create --title "Add login" --body "Implements OAuth" --base main --cwd ~/wt/feat-login
+burrow pr-list --state open
+burrow pr-view 42
+burrow pr-merge 42 --squash</code></pre>
+
   <h3><code>burrow wait &lt;token&gt; [--timeout SECONDS]</code> <span style="color:var(--muted);font-weight:400;font-size:12px">(legacy)</span></h3>
   <p>Block until the sub-agent launched with that token finishes its turn, then print its final message to stdout. Exits 1 on timeout. Still available, but prefer <code>collect</code> so you stay productive instead of blocked.</p>
   <pre><code>burrow spawn --token t1 claude "summarize what changed in this PR"

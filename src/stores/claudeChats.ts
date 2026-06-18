@@ -1,6 +1,7 @@
 import { ref, computed } from "vue";
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
+import type { TermStatus } from "@/lib/terminalStatus";
 
 export interface ClaudeSession {
   id: number;
@@ -9,6 +10,12 @@ export interface ClaudeSession {
   title: string;
   busy: boolean;
   messageCount: number;
+  // Mirrors the terminal-tab status model so chats show the same dots/bell in the
+  // Sidebar. "permission" = blocked on an allow/deny decision (amber + bell).
+  status?: TermStatus;
+  // The hidden per-repo Manager (Mission Control) session — kept out of the
+  // Sidebar chat list so it isn't a duplicate of the floating Manager card.
+  control?: boolean;
 }
 
 const SESSIONS_KEY = "burrow.claude.sessions";
@@ -167,11 +174,11 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
   });
 
   // Called by ClaudeChat.vue to sync live state back.
-  function sync(id: number, patch: Partial<Pick<ClaudeSession, "busy" | "messageCount" | "claudeSessionId" | "title">>) {
+  function sync(id: number, patch: Partial<Pick<ClaudeSession, "busy" | "messageCount" | "claudeSessionId" | "title" | "status" | "control">>) {
     const s = sessions.value.find((x) => x.id === id);
     if (!s) return;
     Object.assign(s, patch);
-    if (patch.claudeSessionId !== undefined || patch.title !== undefined || patch.messageCount !== undefined) {
+    if (patch.claudeSessionId !== undefined || patch.title !== undefined || patch.messageCount !== undefined || patch.control !== undefined) {
       persist();
     }
   }
