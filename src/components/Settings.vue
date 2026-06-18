@@ -1509,6 +1509,7 @@ const blurControls = [
   { key: "blurContent", label: "Mission Control & Dashboard" },
   { key: "blurTerminal", label: "Terminal" },
   { key: "blurOverlay", label: "Overlays (spotlight, settings)" },
+  { key: "blurDropdown", label: "Dropdowns (menus, notifications)" },
 ] as const;
 
 const active = ref("general");

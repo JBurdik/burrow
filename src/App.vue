@@ -410,6 +410,7 @@ function onKeydown(e: KeyboardEvent) {
   --bg-base: #0d0d0d;
   --terminal-bg: #0a0a0a;
   --bg-panel: #111111;
+  --bg-dropdown: #111111;
   --bg-hover: #1a1a1a;
   --bg-selected: #1e3a5f;
   --border: #2a2a2a;

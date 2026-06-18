@@ -68,6 +68,7 @@ interface Prefs {
   blurContent: number; // Mission Control rail + Dashboard cards
   blurTerminal: number; // terminal panes
   blurOverlay: number; // spotlight, settings, modal composers
+  blurDropdown: number; // titlebar popup menus (notifications, stats, branch)
   // ── Integrations: ntfy.sh push notifications ──
   ntfyEnabled: boolean; // master toggle for the ntfy integration
   ntfyServer: string; // base server URL (default https://ntfy.sh)
@@ -127,6 +128,7 @@ const DEFAULT_PREFS: Prefs = {
   blurContent: 20,
   blurTerminal: 0,
   blurOverlay: 20,
+  blurDropdown: 18,
   ntfyEnabled: false,
   ntfyServer: "https://ntfy.sh",
   ntfyTopic: "",
@@ -187,6 +189,7 @@ export const useUIStore = defineStore("ui", () => {
   const blurContent = ref(loaded.blurContent);
   const blurTerminal = ref(loaded.blurTerminal);
   const blurOverlay = ref(loaded.blurOverlay);
+  const blurDropdown = ref(loaded.blurDropdown ?? 18);
   const ntfyEnabled = ref(loaded.ntfyEnabled);
   const ntfyServer = ref(loaded.ntfyServer);
   const ntfyTopic = ref(loaded.ntfyTopic);
@@ -250,6 +253,7 @@ export const useUIStore = defineStore("ui", () => {
     root.style.setProperty("--blur-content", mkBlur(blurContent.value));
     root.style.setProperty("--blur-terminal", mkBlur(blurTerminal.value));
     root.style.setProperty("--blur-overlay", mkBlur(blurOverlay.value));
+    root.style.setProperty("--blur-dropdown", mkBlur(blurDropdown.value));
     root.style.colorScheme = t.isDark ? "dark" : "light";
     // When user has a wallpaper, make panels semi-transparent and enable blur.
     if (bgImageUrl.value) {
@@ -258,7 +262,11 @@ export const useUIStore = defineStore("ui", () => {
       root.style.setProperty("--bg-panel", hexToRgba(t.vars["bg-panel"], op));
       root.style.setProperty("--bg-hover", hexToRgba(t.vars["bg-hover"], Math.min(1, op + 0.08)));
       root.style.setProperty("--terminal-bg", hexToRgba(t.xterm.background ?? t.vars["bg-base"], op));
+      // Dropdowns float over content and need to stay legible — clamp opacity higher.
+      root.style.setProperty("--bg-dropdown", hexToRgba(t.vars["bg-panel"], Math.min(1, Math.max(0.88, op))));
       if (!t.backdropBlur) root.style.setProperty("--backdrop-blur", "blur(20px)");
+    } else {
+      root.style.setProperty("--bg-dropdown", "var(--bg-panel)");
     }
   }
 
@@ -295,7 +303,7 @@ export const useUIStore = defineStore("ui", () => {
   // Reload the image when the path changes; just re-apply CSS when opacity changes.
   watch(bgImagePath, (path) => { loadAndApplyBg(path); saveBgPrefs(); });
   watch(bgOpacity, () => { applyTheme(); saveBgPrefs(); });
-  watch([blurPanels, blurContent, blurTerminal, blurOverlay], () => { applyTheme(); savePrefs(); });
+  watch([blurPanels, blurContent, blurTerminal, blurOverlay, blurDropdown], () => { applyTheme(); savePrefs(); });
 
   // Load wallpaper on store init (path already in prefs).
   if (bgImagePath.value) loadAndApplyBg(bgImagePath.value);
@@ -332,6 +340,7 @@ export const useUIStore = defineStore("ui", () => {
         blurContent: blurContent.value,
         blurTerminal: blurTerminal.value,
         blurOverlay: blurOverlay.value,
+        blurDropdown: blurDropdown.value,
         ntfyEnabled: ntfyEnabled.value,
         ntfyServer: ntfyServer.value,
         ntfyTopic: ntfyTopic.value,
@@ -478,6 +487,7 @@ export const useUIStore = defineStore("ui", () => {
     blurContent,
     blurTerminal,
     blurOverlay,
+    blurDropdown,
     missionActiveCount,
     ntfyEnabled,
     ntfyServer,

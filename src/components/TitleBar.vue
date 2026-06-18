@@ -652,16 +652,13 @@ const isDev = import.meta.env.DEV;
   top: calc(100% + 4px);
   right: 0;
   min-width: 168px;
-  background: var(--bg-panel);
-  /* Transient popup floats over terminal content; --bg-panel turns translucent
-     when a wallpaper is set, so always blur (independent of the panels slider)
-     to keep the menu legible. */
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  background: var(--bg-dropdown, var(--bg-panel));
+  backdrop-filter: var(--blur-dropdown, blur(18px)) saturate(140%);
+  -webkit-backdrop-filter: var(--blur-dropdown, blur(18px)) saturate(140%);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
   z-index: 1000;
 }
 
