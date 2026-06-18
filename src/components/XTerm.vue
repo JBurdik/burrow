@@ -172,6 +172,12 @@ let pendingOscTitle: string | null = null;
 // Last hook state — used to freeze the tab title after a turn ends so Claude's
 // "Claude Code" idle-state title can't overwrite the task description.
 let hookState: "idle" | "running" | "waiting" | "permission" | "done" | "error" = "idle";
+// Agent process pid reported by the status hook (`burrow status --pid`), already
+// gated to a LOCAL pid by Rust (a remote/SSH pid never reaches here). Drives the
+// PID-liveness sweep in the poll below: when an in-flight agent's pid is gone we
+// settle the stuck dot immediately, instead of waiting out the slower dead-PTY
+// watchdog. null = no trusted local pid → only the watchdog applies.
+let agentPid: number | null = null;
 
 // Strip control/non-printable chars (mid-OSC replay garbage), trim, cap length.
 function sanitizeTitle(s: string): string {
@@ -413,12 +419,15 @@ onMounted(async () => {
     // state plus extras: `detail` for an `error`, and `{model,source,title}` for a
     // `session` (SessionStart metadata). Normalize, then fan out ONE event so there
     // is no ordering hazard — Terminal.vue owns the transition.
-    listen<string | { state: string; detail?: string; model?: string; source?: string; title?: string }>(
+    listen<string | { state: string; detail?: string; model?: string; source?: string; title?: string; pid?: number }>(
       `pty-hook-${props.ptyId}`,
       (event) => {
         const p = event.payload;
         const obj = typeof p === "object" && p ? p : null;
         const state = obj ? obj.state : p;
+        // Trusted local agent pid (Rust dropped any remote/SSH pid). Refresh it on
+        // every event that carries one so the sweep always polls the live process.
+        if (obj && typeof obj.pid === "number") agentPid = obj.pid;
         if (state === "session") {
           // Not a status — pure metadata (model/title from SessionStart). Surface it
           // up so Terminal.vue can store it; never touch the status dot.
@@ -653,6 +662,25 @@ onMounted(async () => {
   // `done` hook never fired — the stuck-dot watchdog below acts only after this.
   let emptyForegroundStreak = 0;
   const poll = async () => {
+    // PID-liveness sweep (supacode-style): if the agent reported a trusted local
+    // pid and that process is gone while the leaf is still in-flight, the turn can
+    // never finish — no Stop hook will ever fire. Settle the dot immediately rather
+    // than waiting out the 3-empty-poll dead-PTY watchdog below. This catches a
+    // crashed/killed agent even when its (defunct) process still lingers in the
+    // foreground read. The watchdog stays as the fallback for the no-pid case.
+    if (
+      agentPid !== null &&
+      (hookState === "running" || hookState === "waiting" || hookState === "permission")
+    ) {
+      const alive = await invoke<boolean>("is_pid_alive", { pid: agentPid }).catch(() => true);
+      if (!alive) {
+        hookState = "idle";
+        agentPid = null;
+        emit("interrupt"); // agent process gone, no clean `done` → settle the stuck dot
+        return;
+      }
+    }
+
     const proc = await invoke<string>("get_pty_foreground", { id: props.ptyId });
     // Empty foreground = no non-shell process in the group: either a daemon
     // race/mid-conversation read (must NOT reset an agent's title/state) OR a
@@ -678,6 +706,7 @@ onMounted(async () => {
           .catch(() => true);
         if (!alive) {
           hookState = "idle";
+          agentPid = null;
           emit("interrupt"); // dead PTY, no clean `done` → settle the stuck dot
         }
       }
@@ -703,6 +732,7 @@ onMounted(async () => {
       // no done hook). Names are fully sticky — do NOT reset the title here, so
       // a tab keeps its last meaningful name across turn boundaries and on restart.
       isAgentSession = false;
+      agentPid = null;          // agent exited cleanly → stop sweeping its old pid
       pendingOscTitle = null;   // discard any pre-shell-exit buffered title
       // Keep agentTitled as-is: if an agent set a meaningful title, it persists.
       emit("agent", false);

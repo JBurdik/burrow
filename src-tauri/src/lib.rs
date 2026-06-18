@@ -692,7 +692,9 @@ fn write_hook_port(data: &Path, port: u16) {
 }
 
 // Probe whether a pid is alive without signalling it (`kill -0`). Used by the
-// hook.port reclaim loop to avoid two live instances fighting over the file.
+// hook.port reclaim loop to avoid two live instances fighting over the file, and
+// by the frontend's PID-liveness sweep (via the is_pid_alive command) to clear a
+// stuck agent dot the instant the agent process dies.
 fn pid_alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .arg("-0")
@@ -702,6 +704,32 @@ fn pid_alive(pid: u32) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Frontend PID-liveness sweep: is the agent process still alive? An in-flight
+/// agent leaf whose pid is gone settles its status dot immediately instead of
+/// waiting out the slower dead-PTY watchdog. Only ever called with a LOCAL pid
+/// (the hook gates on hostname — see start_hook_server / `burrow status --pid`).
+#[tauri::command]
+fn is_pid_alive(pid: u32) -> bool {
+    pid_alive(pid)
+}
+
+/// This machine's hostname, cached. Compared against the `host` a `burrow status
+/// --pid` POST carries so we only forward a pid the agent reported from THIS host
+/// — a pid from an agent running over SSH is a remote pid and must not drive the
+/// local kill(pid,0) sweep. Uses the same `hostname` command the CLI calls, so the
+/// two strings match exactly.
+fn local_hostname() -> &'static str {
+    static HOSTNAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOSTNAME.get_or_init(|| {
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    })
 }
 
 fn start_hook_server(app: AppHandle) {
@@ -750,18 +778,30 @@ fn start_hook_server(app: AppHandle) {
                         if let (Some(pty_id), Some(state)) =
                             (val["ptyId"].as_u64(), val["state"].as_str())
                         {
-                            // `error` and `session` carry extra metadata, so emit an
-                            // OBJECT {state, detail?|model?|source?|title?}. The four
-                            // legacy states (running/waiting/permission/done) keep the
-                            // bare-string shape XTerm.vue already consumes. Same
-                            // `pty-hook-{id}` channel either way — no new event.
-                            if state == "error" || state == "session" {
+                            // PID-liveness: forward the agent pid ONLY when the POST's
+                            // `host` matches this machine — a pid from an SSH'd agent is
+                            // a remote pid we must not kill(pid,0)-poll locally (supacode
+                            // gating). A missing host/pid simply means no sweep → the
+                            // dead-PTY watchdog still covers it.
+                            let local_pid = match (val["pid"].as_u64(), val["host"].as_str()) {
+                                (Some(pid), Some(host)) if host == local_hostname() => Some(pid),
+                                _ => None,
+                            };
+                            // `error`/`session` carry extra metadata, and any state may
+                            // now carry a pid, so emit an OBJECT {state, …} when there's
+                            // anything beyond the bare state. The legacy bare-string shape
+                            // (running/waiting/permission/done with no pid) is preserved
+                            // for back-compat; XTerm.vue consumes both. Same channel.
+                            if state == "error" || state == "session" || local_pid.is_some() {
                                 let mut payload = serde_json::Map::new();
                                 payload.insert("state".into(), serde_json::json!(state));
                                 for k in ["detail", "model", "source", "title"] {
                                     if let Some(v) = val.get(k).and_then(|v| v.as_str()) {
                                         payload.insert(k.into(), serde_json::json!(v));
                                     }
+                                }
+                                if let Some(pid) = local_pid {
+                                    payload.insert("pid".into(), serde_json::json!(pid));
                                 }
                                 let _ = app.emit(
                                     &format!("pty-hook-{pty_id}"),
@@ -3314,6 +3354,7 @@ pub fn run() {
             detach_pty,
             list_pty_sessions,
             get_pty_foreground,
+            is_pid_alive,
             system_stats,
             daemon_stats,
             clean_daemon,
