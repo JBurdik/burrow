@@ -79,20 +79,41 @@
   <h1>Burrow — Changelog</h1>
   <div class="tagline">Historie verzí v češtině. Co se změnilo a proč.</div>
 
-  <!-- unreleased -->
+  <!-- v2.7.0 -->
   <div class="release">
     <div class="release-header">
-      <span class="version">Připravuje se</span>
-      <span class="tag tag-latest">nevydáno</span>
+      <span class="version">v2.7.0</span>
+      <span class="tag tag-latest">nejnovější</span>
       <span class="date">červen 2026</span>
     </div>
 
     <div class="section feat">
-      <div class="section-label">Nové funkce</div>
+      <div class="section-label">Claude UI — interaktivní řízení jako VS Code rozšíření</div>
       <ul>
-        <li><strong>Integrace v Nastavení + ntfy.sh</strong> — nová sekce <strong>Nastavení → Integrace</strong> pro napojení na externí služby. První integrace: <strong>push notifikace přes <code>ntfy.sh</code></strong>. Burrow pošle upozornění na telefon/desktop, když agent dokončí tah nebo potřebuje pozornost — užitečné, když nejste u počítače.</li>
-        <li><strong>Volitelné spouštěče</strong> — vyberete, které přechody pushnou: <strong>hotovo</strong>, <strong>čeká na vstup</strong>, <strong>potřebuje povolení</strong>, <strong>chyba tahu</strong>. Každý přechod má vlastní prioritu a emoji. Volba „jen když nejsem u okna" potlačí pushe, dokud je okno Burrow v popředí.</li>
-        <li><strong>Vlastní server + token</strong> — nastavitelná URL serveru (výchozí <code>https://ntfy.sh</code>), téma a volitelný přístupový token pro chráněná témata. Tlačítko <strong>„Send test"</strong> ověří zapojení. Posílá se přímo z aplikace (žádný backend), protože ntfy povoluje CORS.</li>
+        <li><strong>Povolování, dotazy i plány přímo v UI</strong> — vestavěný chat s Claudem (stream-json, na předplatném — žádné <code>claude -p</code> ani Agent SDK) teď zpracovává celý <strong>řídicí protokol</strong> přes skrytý přepínač <code>--permission-prompt-tool stdio</code>. Každé blokující rozhodnutí přijde do aplikace jako <code>can_use_tool</code> a vyřeší se v UI místo v terminálu — stejně jako to dělá oficiální VS Code rozšíření.</li>
+        <li><strong>Bohatší povolení</strong> — místo prostého Ano/Ne nově <strong>Allow once</strong> / <strong>Allow always</strong> (zapamatuje si pravidlo, příště povolí samo) / <strong>Deny</strong>. Pro Bash se pravidlo váže na konkrétní příkaz, ne na celý nástroj.</li>
+        <li><strong>Schvalování plánu (ExitPlanMode)</strong> — když Claude vyjde z plan mode, zobrazí se vykreslený plán + <strong>Approve</strong> / <strong>Keep planning</strong> (s možností napsat zpětnou vazbu, podle které Claude plán přepracuje).</li>
+        <li><strong>Otázky s výběrem (AskUserQuestion)</strong> — Claude se může zeptat a vy odpovíte <strong>klikem na možnosti</strong> přímo v chatu (single i multi-select), místo psaní do terminálu.</li>
+        <li><strong>Diff Accept / Reject u úprav souborů</strong> — Edit/Write/MultiEdit ukáže náhled navržené změny s tlačítky <strong>Accept</strong> / <strong>Reject</strong> (VS Code „review changes"). Reject s důvodem pošle Claudovi zpětnou vazbu.</li>
+        <li><strong>Přepínač režimu oprávnění</strong> — v záhlaví chatu tlačítko cyklující <strong>Ask</strong> (ptá se) → <strong>Auto-edit</strong> (auto-přijme úpravy) → <strong>Bypass</strong> (přeskočí vše). Per-chat, pamatuje se. Nahrazuje binární „dangerous mode".</li>
+        <li><strong>Editor kontext — @-mention &amp; sdílení výběru</strong> — v chatu napíšete <code>@</code> a doplníte cestu k souboru (z <code>git ls-files</code>). Tlačítko <strong>sdílení výběru</strong> vloží označený kód z editoru jako <code>@soubor#Lx-Ly</code> + blok kódu.</li>
+      </ul>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Další nové funkce</div>
+      <ul>
+        <li><strong>Terminal pets</strong> — volně pobíhající pixelová zvířátka v overlay nad agentskými taby. Vizuální cukrkandl per agent.</li>
+        <li><strong>Přepínač workspace v Mission Control</strong> — záhlaví MC je nově rozbalovací výběr aktivního workspace (zrcadlí postranní panel). Nové úkoly cílí na vybraný.</li>
+        <li><strong>Integrace v Nastavení + ntfy.sh</strong> — nová sekce <strong>Nastavení → Integrace</strong> pro napojení na externí služby. První integrace: <strong>push notifikace přes <code>ntfy.sh</code></strong>. Burrow pošle upozornění na telefon/desktop, když agent dokončí tah nebo potřebuje pozornost.</li>
+        <li><strong>Volitelné spouštěče pushů</strong> — vyberete, které přechody pushnou: <strong>hotovo</strong>, <strong>čeká na vstup</strong>, <strong>potřebuje povolení</strong>, <strong>chyba tahu</strong>. Volba „jen když nejsem u okna" potlačí pushe, dokud je okno Burrow v popředí. Nastavitelná URL serveru, téma a token; tlačítko <strong>„Send test"</strong>.</li>
+      </ul>
+    </div>
+
+    <div class="section fix">
+      <div class="section-label">Opravy</div>
+      <ul>
+        <li><strong>Debounce stavu „done" v Mission Control</strong> — backgroundovaný sub-agent nutí hlavní session parkovat a auto-resumovat, což střílelo průběžné <code>Stop</code> hooky a krátce nastavovalo <code>done</code>, hned přebité <code>running</code>. Nově se každé <code>done</code> krátce podrží; živý stav v okně ho zruší. Jen přeživší <code>done</code> je reálný konec tahu.</li>
       </ul>
     </div>
   </div>
