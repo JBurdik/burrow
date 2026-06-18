@@ -1452,17 +1452,26 @@ fn git_binary() -> &'static str {
     "/usr/bin/git"
 }
 
+// Async so the blocking `git` subprocess runs on a blocking-pool thread instead
+// of a Tauri command worker (Tauri v2 runs sync command handlers on the main
+// thread). Opening/switching a workspace fires git status/diff/log/branch via
+// run_git; running them inline blocked the main thread → frozen UI + spinning
+// beachball. spawn_blocking keeps git off the main thread.
 #[tauri::command]
-fn run_git(cwd: String, args: Vec<String>) -> GitOutput {
+async fn run_git(cwd: String, args: Vec<String>) -> GitOutput {
     let git = git_binary();
-    match std::process::Command::new(git).args(&args).current_dir(&cwd).output() {
-        Ok(out) => GitOutput {
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            code: out.status.code().unwrap_or(-1),
-        },
-        Err(e) => GitOutput { stdout: String::new(), stderr: e.to_string(), code: -1 },
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        match std::process::Command::new(git).args(&args).current_dir(&cwd).output() {
+            Ok(out) => GitOutput {
+                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                code: out.status.code().unwrap_or(-1),
+            },
+            Err(e) => GitOutput { stdout: String::new(), stderr: e.to_string(), code: -1 },
+        }
+    })
+    .await
+    .unwrap_or_else(|e| GitOutput { stdout: String::new(), stderr: e.to_string(), code: -1 })
 }
 
 // ── gh CLI (PR status) ────────────────────────────────────────────────────────

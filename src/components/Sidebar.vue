@@ -617,9 +617,14 @@ onMounted(() => {
 onUnmounted(() => { if (prTimer) clearInterval(prTimer); });
 // Re-poll when the workspace list changes (new repo/worktree added).
 watch(() => store.workspaces.length, refreshAllPrs);
-watch(() => store.workspaces, (wss) => wss.forEach(ws => {
+// Watch only the STRUCTURE of the workspace set (its id list), not every nested
+// property. A deep watch here re-ran ensureOpen + mountWorktrees over ALL
+// workspaces on any mutation (e.g. a PR-status or tab change), piling git
+// subprocesses on a workspace switch. Keyed on the joined ids, it fires only
+// when workspaces are actually added/removed — same behavior, far fewer runs.
+watch(() => store.workspaces.map(ws => ws.id).join(","), () => store.workspaces.forEach(ws => {
   if (!ws.parent_id && !isCollapsed(ws.id)) { store.ensureOpen(ws); mountWorktrees(ws.id); }
-}), { deep: true });
+}));
 
 // ── Claude chat sessions ─────────────────────────────────────────────────────
 function newChatSession(workspaceId: number) {
