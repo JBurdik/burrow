@@ -28,6 +28,37 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
   return out.stdout;
 }
 
+// ── Pull-request status (via gh CLI) ─────────────────────────────────────────
+export type PrChecks = "pass" | "fail" | "pending" | "none";
+
+export interface PrInfo {
+  number: number;
+  state: string; // OPEN | MERGED | CLOSED
+  isDraft: boolean;
+  checks: PrChecks;
+  url: string;
+}
+
+// Collapse gh's statusCheckRollup array into a single CI verdict. Each entry is
+// either a CheckRun (status/conclusion) or a StatusContext (state).
+function rollupChecks(rollup: unknown): PrChecks {
+  if (!Array.isArray(rollup) || rollup.length === 0) return "none";
+  let pending = false;
+  for (const c of rollup as Array<Record<string, string>>) {
+    const conclusion = (c.conclusion || "").toUpperCase();
+    const state = (c.state || "").toUpperCase();
+    const status = (c.status || "").toUpperCase();
+    if (["FAILURE", "TIMED_OUT", "CANCELLED", "ERROR", "ACTION_REQUIRED"].includes(conclusion)
+      || ["FAILURE", "ERROR"].includes(state)) {
+      return "fail";
+    }
+    if ((status && status !== "COMPLETED") || state === "PENDING" || state === "EXPECTED") {
+      pending = true;
+    }
+  }
+  return pending ? "pending" : "pass";
+}
+
 function parseStatus(raw: string): { staged: GitFile[]; unstaged: GitFile[]; untracked: GitFile[] } {
   const staged: GitFile[] = [];
   const unstaged: GitFile[] = [];
@@ -73,6 +104,45 @@ export const useGitStore = defineStore("git", () => {
   const logLoading = ref(false);
   const branches = ref<string[]>([]);
   const fetching = ref(false);
+
+  // PR status cache, keyed by workspace id. null = checked, no open PR (or gh
+  // missing/unauthed). undefined (absent key) = never checked.
+  const prByWs = ref<Record<number, PrInfo | null>>({});
+  // Per-workspace in-flight guard so the 60s poll never stacks gh calls.
+  const prInFlight = new Set<number>();
+
+  // Fetch PR status for one workspace via `gh pr view`. Never throws — any
+  // failure (no gh, not authed, no PR, not a GitHub repo) caches null so the
+  // Sidebar simply shows no badge. Cheap + non-blocking; safe to call on a poll.
+  async function fetchPr(wsId: number, cwd: string) {
+    if (!cwd || prInFlight.has(wsId)) return;
+    prInFlight.add(wsId);
+    try {
+      const out = await invoke<GitOutput>("run_gh", {
+        cwd,
+        args: ["pr", "view", "--json", "number,state,isDraft,statusCheckRollup,url"],
+      });
+      if (out.code !== 0) {
+        prByWs.value[wsId] = null;
+        return;
+      }
+      const j = JSON.parse(out.stdout) as {
+        number: number; state: string; isDraft: boolean;
+        statusCheckRollup?: unknown; url: string;
+      };
+      prByWs.value[wsId] = {
+        number: j.number,
+        state: j.state,
+        isDraft: j.isDraft,
+        checks: rollupChecks(j.statusCheckRollup),
+        url: j.url,
+      };
+    } catch {
+      prByWs.value[wsId] = null;
+    } finally {
+      prInFlight.delete(wsId);
+    }
+  }
 
   async function refresh(silent = false) {
     if (!cwd.value) return;
@@ -297,5 +367,6 @@ export const useGitStore = defineStore("git", () => {
     setCwd, refresh, stageFile, unstageFile, unstageAll, stageAll, commit, showDiff, clearDiff, fetchAllDiff, gitInit,
     push, pull, refreshLog,
     branches, fetching, fetchBranches, switchBranch, createBranch, fetch, discardFile,
+    prByWs, fetchPr,
   };
 });

@@ -87,6 +87,17 @@ pub struct Workspace {
     pub last_opened: Option<i64>,
     pub parent_id: Option<i64>,
     pub worktree_branch: Option<String>,
+    /// Whether this workspace's directory is a git repo. Non-git folders are
+    /// first-class workspaces but hide all git UI (branch, worktrees, diff panel).
+    pub is_git: bool,
+}
+
+/// Detect whether `path` lives inside a git work tree. Uses `git rev-parse` so it
+/// correctly handles plain repos, submodules, and worktrees (where `.git` is a file).
+fn is_git_repo(path: &str) -> bool {
+    git_in(path, &["rev-parse", "--is-inside-work-tree"])
+        .map(|out| out.trim() == "true")
+        .unwrap_or(false)
 }
 
 // ── burrow CLI ────────────────────────────────────────────────────────────────
@@ -708,7 +719,9 @@ fn write_hook_port(data: &Path, port: u16) {
 }
 
 // Probe whether a pid is alive without signalling it (`kill -0`). Used by the
-// hook.port reclaim loop to avoid two live instances fighting over the file.
+// hook.port reclaim loop to avoid two live instances fighting over the file, and
+// by the frontend's PID-liveness sweep (via the is_pid_alive command) to clear a
+// stuck agent dot the instant the agent process dies.
 fn pid_alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .arg("-0")
@@ -718,6 +731,32 @@ fn pid_alive(pid: u32) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Frontend PID-liveness sweep: is the agent process still alive? An in-flight
+/// agent leaf whose pid is gone settles its status dot immediately instead of
+/// waiting out the slower dead-PTY watchdog. Only ever called with a LOCAL pid
+/// (the hook gates on hostname — see start_hook_server / `burrow status --pid`).
+#[tauri::command]
+fn is_pid_alive(pid: u32) -> bool {
+    pid_alive(pid)
+}
+
+/// This machine's hostname, cached. Compared against the `host` a `burrow status
+/// --pid` POST carries so we only forward a pid the agent reported from THIS host
+/// — a pid from an agent running over SSH is a remote pid and must not drive the
+/// local kill(pid,0) sweep. Uses the same `hostname` command the CLI calls, so the
+/// two strings match exactly.
+fn local_hostname() -> &'static str {
+    static HOSTNAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOSTNAME.get_or_init(|| {
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    })
 }
 
 fn start_hook_server(app: AppHandle) {
@@ -766,18 +805,30 @@ fn start_hook_server(app: AppHandle) {
                         if let (Some(pty_id), Some(state)) =
                             (val["ptyId"].as_u64(), val["state"].as_str())
                         {
-                            // `error` and `session` carry extra metadata, so emit an
-                            // OBJECT {state, detail?|model?|source?|title?}. The four
-                            // legacy states (running/waiting/permission/done) keep the
-                            // bare-string shape XTerm.vue already consumes. Same
-                            // `pty-hook-{id}` channel either way — no new event.
-                            if state == "error" || state == "session" {
+                            // PID-liveness: forward the agent pid ONLY when the POST's
+                            // `host` matches this machine — a pid from an SSH'd agent is
+                            // a remote pid we must not kill(pid,0)-poll locally (supacode
+                            // gating). A missing host/pid simply means no sweep → the
+                            // dead-PTY watchdog still covers it.
+                            let local_pid = match (val["pid"].as_u64(), val["host"].as_str()) {
+                                (Some(pid), Some(host)) if host == local_hostname() => Some(pid),
+                                _ => None,
+                            };
+                            // `error`/`session` carry extra metadata, and any state may
+                            // now carry a pid, so emit an OBJECT {state, …} when there's
+                            // anything beyond the bare state. The legacy bare-string shape
+                            // (running/waiting/permission/done with no pid) is preserved
+                            // for back-compat; XTerm.vue consumes both. Same channel.
+                            if state == "error" || state == "session" || local_pid.is_some() {
                                 let mut payload = serde_json::Map::new();
                                 payload.insert("state".into(), serde_json::json!(state));
                                 for k in ["detail", "model", "source", "title"] {
                                     if let Some(v) = val.get(k).and_then(|v| v.as_str()) {
                                         payload.insert(k.into(), serde_json::json!(v));
                                     }
+                                }
+                                if let Some(pid) = local_pid {
+                                    payload.insert("pid".into(), serde_json::json!(pid));
                                 }
                                 let _ = app.emit(
                                     &format!("pty-hook-{pty_id}"),
@@ -1414,6 +1465,35 @@ fn run_git(cwd: String, args: Vec<String>) -> GitOutput {
     }
 }
 
+// ── gh CLI (PR status) ────────────────────────────────────────────────────────
+// Locate the GitHub CLI. Returns None when gh isn't installed so callers can
+// degrade gracefully (no PR badge) instead of erroring.
+fn gh_binary() -> Option<String> {
+    for p in &["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"] {
+        if std::path::Path::new(p).exists() { return Some(p.to_string()); }
+    }
+    None
+}
+
+// Shell out to `gh` in `cwd`. Mirrors GitOutput so the frontend reuses the same
+// shape. code = -1 + stderr "gh not found" when the CLI is missing; the store
+// treats any non-zero code as "no PR info" and shows nothing.
+#[tauri::command]
+fn run_gh(cwd: String, args: Vec<String>) -> GitOutput {
+    let gh = match gh_binary() {
+        Some(g) => g,
+        None => return GitOutput { stdout: String::new(), stderr: "gh not found".into(), code: -1 },
+    };
+    match std::process::Command::new(gh).args(&args).current_dir(&cwd).output() {
+        Ok(out) => GitOutput {
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            code: out.status.code().unwrap_or(-1),
+        },
+        Err(e) => GitOutput { stdout: String::new(), stderr: e.to_string(), code: -1 },
+    }
+}
+
 // ── Open path in external app ─────────────────────────────────────────────────
 // target: "finder" (reveal in Finder/Explorer), "vscode", "zed".
 #[cfg(target_os = "macos")]
@@ -1494,7 +1574,7 @@ fn read_dir_shallow(path: String) -> Result<Vec<DirEntry>, String> {
 fn list_workspaces(db: State<DbState>) -> Result<Vec<Workspace>, String> {
     let conn = db.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT id, name, path, created_at, last_opened, parent_id, worktree_branch FROM workspaces ORDER BY COALESCE(last_opened, 0) DESC, created_at DESC")
+        .prepare("SELECT id, name, path, created_at, last_opened, parent_id, worktree_branch, is_git FROM workspaces ORDER BY COALESCE(last_opened, 0) DESC, created_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| Ok(Workspace {
@@ -1505,6 +1585,7 @@ fn list_workspaces(db: State<DbState>) -> Result<Vec<Workspace>, String> {
             last_opened: row.get(4)?,
             parent_id: row.get(5)?,
             worktree_branch: row.get(6)?,
+            is_git: row.get(7)?,
         }))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -1516,12 +1597,13 @@ fn list_workspaces(db: State<DbState>) -> Result<Vec<Workspace>, String> {
 fn create_workspace(name: String, path: String, db: State<DbState>) -> Result<Workspace, String> {
     let conn = db.conn.lock().unwrap();
     let now = unix_now();
+    let is_git = is_git_repo(&path);
     conn.execute(
-        "INSERT OR IGNORE INTO workspaces (name, path, created_at) VALUES (?1, ?2, ?3)",
-        rusqlite::params![name, path, now],
+        "INSERT OR IGNORE INTO workspaces (name, path, created_at, is_git) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![name, path, now, is_git],
     ).map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
-    Ok(Workspace { id, name, path, created_at: now, last_opened: None, parent_id: None, worktree_branch: None })
+    Ok(Workspace { id, name, path, created_at: now, last_opened: None, parent_id: None, worktree_branch: None, is_git })
 }
 
 #[tauri::command]
@@ -1632,6 +1714,7 @@ fn create_worktree(
         last_opened: None,
         parent_id: Some(parent_id),
         worktree_branch: Some(branch),
+        is_git: true,
     })
 }
 
@@ -2454,6 +2537,8 @@ fn init_db(app: &AppHandle) -> Result<Connection, rusqlite::Error> {
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN cwd TEXT");
     let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN parent_id INTEGER");
     let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN worktree_branch TEXT");
+    // Existing rows predate folder-workspaces and were all git repos → default 1.
+    let _ = conn.execute_batch("ALTER TABLE workspaces ADD COLUMN is_git INTEGER NOT NULL DEFAULT 1");
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN default_title TEXT");
     let _ = conn.execute_batch("ALTER TABLE terminal_tabs ADD COLUMN session_id TEXT");
     let _ = conn.execute_batch("ALTER TABLE mission_tasks ADD COLUMN handed_off INTEGER");
@@ -3434,6 +3519,7 @@ pub fn run() {
             detach_pty,
             list_pty_sessions,
             get_pty_foreground,
+            is_pid_alive,
             system_stats,
             daemon_stats,
             clean_daemon,
@@ -3444,6 +3530,7 @@ pub fn run() {
             get_config_dirs,
             set_config_dirs,
             run_git,
+            run_gh,
             open_path_in,
             read_dir_shallow,
             list_workspaces,
