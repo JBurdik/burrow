@@ -12,6 +12,7 @@ export interface ClaudeProfile {
   command: string;    // binary to launch, default "claude"
   configDir: string;  // CLAUDE_CONFIG_DIR (empty = the user's default)
   args: string;       // extra flags appended before the prompt
+  orgAccount: boolean; // org/team accounts can't use OAuth usage API — skip to local JSONL scan
 }
 
 const STORAGE_KEY = "agentic-ide.claude-profiles";
@@ -21,7 +22,7 @@ const STORAGE_KEY = "agentic-ide.claude-profiles";
 export const DEFAULT_PROFILE_ID = "default";
 
 function defaults(): ClaudeProfile[] {
-  return [{ id: DEFAULT_PROFILE_ID, name: "Default", command: "claude", configDir: "", args: "" }];
+  return [{ id: DEFAULT_PROFILE_ID, name: "Default", command: "claude", configDir: "", args: "", orgAccount: false }];
 }
 
 function load(): ClaudeProfile[] {
@@ -36,6 +37,7 @@ function load(): ClaudeProfile[] {
         command: String(p.command ?? "claude"),
         configDir: String(p.configDir ?? ""),
         args: String(p.args ?? ""),
+        orgAccount: Boolean(p.orgAccount ?? false),
       }));
       // Guarantee the default profile exists (first slot).
       if (!list.some((p) => p.id === DEFAULT_PROFILE_ID)) list.unshift(defaults()[0]);
@@ -64,7 +66,7 @@ export const useProfilesStore = defineStore("claude-profiles", () => {
   }
 
   function add() {
-    profiles.value.push({ id: makeId(), name: "New profile", command: "claude", configDir: "", args: "" });
+    profiles.value.push({ id: makeId(), name: "New profile", command: "claude", configDir: "", args: "", orgAccount: false });
   }
 
   function update(id: string, patch: Partial<Omit<ClaudeProfile, "id">>) {

@@ -348,11 +348,32 @@ let usageTimer: number | undefined;
 const LOCAL_FALLBACK_ERRORS = new Set(["token_expired", "no_credentials", "permission_error"]);
 
 async function refreshUsage(force = false) {
-  const cd = usageProfile.value?.configDir;
+  const profile = usageProfile.value;
+  const cd = profile?.configDir;
   const args: Record<string, unknown> = {};
   if (cd) args.configDir = cd;
   if (force) args.force = true;
   const prevError = usageError.value;
+
+  // Org/team accounts can't use the OAuth usage API — go straight to local JSONL scan.
+  if (profile?.orgAccount) {
+    planUsage.value = null;
+    usageError.value = null;
+    try {
+      const local = await invoke<{ outputTokens: number; turnCount: number }>(
+        "claude_usage_5h",
+        cd ? { configDir: cd } : {},
+      );
+      localUsage.value = local;
+    } catch (e) {
+      usageError.value = "invoke_failed";
+      if (prevError !== "invoke_failed") {
+        notifStore.push({ type: "error", title: "Claude usage unavailable", body: String(e) });
+      }
+    }
+    return;
+  }
+
   try {
     const j = await invoke<{ ok: boolean; usage?: PlanUsage; error?: string; message?: string }>("claude_plan_usage", args);
     if (j?.ok && j.usage) {
@@ -362,7 +383,7 @@ async function refreshUsage(force = false) {
     } else {
       const err = j?.error || "unknown";
       if (LOCAL_FALLBACK_ERRORS.has(err)) {
-        // Org/team account or missing credentials — read local transcripts instead.
+        // Missing credentials — read local transcripts instead.
         planUsage.value = null;
         usageError.value = null;
         const local = await invoke<{ outputTokens: number; turnCount: number }>(
@@ -374,9 +395,9 @@ async function refreshUsage(force = false) {
         localUsage.value = null;
         usageError.value = err;
         if (err !== prevError) {
-          const profile = usageProfile.value?.name ?? "Default";
+          const pname = profile?.name ?? "Default";
           const body = j?.message ?? err;
-          notifStore.push({ type: "error", title: "Claude usage unavailable", body: `${body} (${profile})` });
+          notifStore.push({ type: "error", title: "Claude usage unavailable", body: `${body} (${pname})` });
         }
       }
     }

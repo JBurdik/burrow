@@ -506,6 +506,14 @@
                     </button>
                   </div>
                 </label>
+                <label class="pc-field pc-field-wide pc-org-row">
+                  <input
+                    type="checkbox"
+                    :checked="p.orgAccount"
+                    @change="profilesStore.update(p.id, { orgAccount: ($event.target as HTMLInputElement).checked })"
+                  />
+                  <span>Org / team account <em>(skips OAuth usage API, reads local transcripts instead)</em></span>
+                </label>
               </div>
             </div>
           </div>
@@ -2097,6 +2105,10 @@ const SHORTCUT_GROUPS = [
 .pc-dir .inp { flex: 1; }
 .pc-browse { flex: none; display: flex; align-items: center; justify-content: center; width: 34px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-hover); color: var(--text-secondary); cursor: pointer; }
 .pc-browse:hover { border-color: var(--accent); color: var(--text-primary); }
+.pc-org-row { flex-direction: row !important; align-items: center; gap: 8px; }
+.pc-org-row input[type="checkbox"] { width: 14px; height: 14px; flex: none; accent-color: var(--accent); cursor: pointer; }
+.pc-org-row > span { font-size: 11px; color: var(--text-secondary); }
+.pc-org-row > span em { color: var(--text-muted); font-style: normal; }
 
 .name-inp { font-weight: 500; }
 
