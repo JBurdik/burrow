@@ -2241,12 +2241,17 @@ async fn claude_start(
     resume_session_id: Option<String>,
     permission_mode: Option<String>,
     append_system_prompt: Option<String>,
+    model: Option<String>,
+    config_dir: Option<String>,
+    profile_command: Option<String>,
+    profile_args: Option<String>,
 ) -> Result<(), String> {
     if state.procs.lock().unwrap().contains_key(&id) {
         return Ok(());
     }
-    let bin = resolve_lsp_bin("claude", &cwd)
-        .ok_or_else(|| "claude binary not found (checked ~/.local/bin, homebrew, PATH)".to_string())?;
+    let cmd_name = profile_command.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("claude");
+    let bin = resolve_lsp_bin(cmd_name, &cwd)
+        .ok_or_else(|| format!("{cmd_name} binary not found (checked ~/.local/bin, homebrew, PATH)"))?;
 
     let mcp_config = build_mcp_config();
 
@@ -2285,6 +2290,18 @@ async fn claude_start(
         args.push("--append-system-prompt".to_string());
         args.push(sys.to_string());
     }
+    let allowed_models = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"];
+    if let Some(m) = model.as_deref().filter(|m| allowed_models.contains(m)) {
+        args.push("--model".to_string());
+        args.push(m.to_string());
+    }
+
+    // Profile extra args (inserted before any positional args).
+    if let Some(pa) = profile_args.as_deref().filter(|s| !s.trim().is_empty()) {
+        for flag in pa.split_whitespace() {
+            args.push(flag.to_string());
+        }
+    }
 
     // Strip env to minimal set — bare GUI PATH + subscription auth via keychain.
     // ANTHROPIC_API_KEY intentionally empty so subscription OAuth is used.
@@ -2293,6 +2310,19 @@ async fn claude_start(
         if let Ok(v) = std::env::var(key) {
             env_map.insert(key.to_string(), v);
         }
+    }
+    // Profile config_dir overrides any inherited CLAUDE_CONFIG_DIR.
+    if let Some(cd) = config_dir.as_deref().filter(|s| !s.trim().is_empty()) {
+        let expanded = if cd.starts_with("~/") {
+            if let Ok(home) = std::env::var("HOME") {
+                format!("{}{}", home, &cd[1..])
+            } else {
+                cd.to_string()
+            }
+        } else {
+            cd.to_string()
+        };
+        env_map.insert("CLAUDE_CONFIG_DIR".to_string(), expanded);
     }
     // PATH: prepend the burrow bin dir so the agent's Bash can run `burrow …`
     // control commands, then the usual augmented GUI PATH.
@@ -3450,14 +3480,27 @@ fn iso_to_unix_ms(s: &str) -> Option<u64> {
 // file written — so we fall back to the `security` CLI there. Cached 60s: the
 // upstream is rate-limited and only refreshes ~once a minute anyway. We shell
 // out to `curl` to avoid pulling an HTTP-client crate into the build.
-static PLAN_USAGE_CACHE: OnceLock<Mutex<(std::time::Instant, serde_json::Value)>> = OnceLock::new();
+static PLAN_USAGE_CACHE: OnceLock<Mutex<std::collections::HashMap<String, (std::time::Instant, serde_json::Value)>>> = OnceLock::new();
 
-fn read_claude_oauth_token(app: &AppHandle) -> Option<String> {
-    let mut raw: Option<String> = app
-        .path()
-        .home_dir()
-        .ok()
-        .and_then(|h| std::fs::read_to_string(h.join(".claude/.credentials.json")).ok());
+fn read_claude_oauth_token(app: &AppHandle, config_dir: Option<&str>) -> Option<String> {
+    // Try custom config_dir's .credentials.json first (if given).
+    let mut raw: Option<String> = None;
+    if let Some(cd) = config_dir.filter(|s| !s.is_empty()) {
+        let expanded = if cd.starts_with("~/") {
+            app.path().home_dir().ok()
+                .map(|h| format!("{}{}", h.display(), &cd[1..]))
+                .unwrap_or_else(|| cd.to_string())
+        } else {
+            cd.to_string()
+        };
+        raw = std::fs::read_to_string(std::path::Path::new(&expanded).join(".credentials.json")).ok();
+    }
+    // Fall back to ~/.claude/.credentials.json.
+    if raw.is_none() {
+        raw = app.path().home_dir().ok()
+            .and_then(|h| std::fs::read_to_string(h.join(".claude/.credentials.json")).ok());
+    }
+    // Fall back to macOS keychain (Claude stores creds here by default on macOS).
     #[cfg(target_os = "macos")]
     if raw.is_none() {
         if let Ok(out) = std::process::Command::new("security")
@@ -3480,20 +3523,20 @@ fn read_claude_oauth_token(app: &AppHandle) -> Option<String> {
 /// (windows like `five_hour`, `seven_day`, `seven_day_sonnet`, each carrying
 /// `utilization` 0..100 and `resets_at`), or `{ ok: false, error }`.
 #[tauri::command]
-fn claude_plan_usage(app: AppHandle) -> serde_json::Value {
-    let cache = PLAN_USAGE_CACHE.get_or_init(|| {
-        Mutex::new((
-            std::time::Instant::now() - std::time::Duration::from_secs(3600),
-            json!(null),
-        ))
-    });
-    if let Ok(guard) = cache.lock() {
-        if guard.0.elapsed().as_secs() < 60 && guard.1.get("ok").and_then(|b| b.as_bool()) == Some(true) {
-            return guard.1.clone();
+fn claude_plan_usage(app: AppHandle, config_dir: Option<String>, force: Option<bool>) -> serde_json::Value {
+    let cache_key = config_dir.as_deref().unwrap_or("").to_string();
+    let cache = PLAN_USAGE_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if force != Some(true) {
+        if let Ok(guard) = cache.lock() {
+            if let Some((ts, val)) = guard.get(&cache_key) {
+                if ts.elapsed().as_secs() < 60 && val.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+                    return val.clone();
+                }
+            }
         }
     }
 
-    let token = match read_claude_oauth_token(&app) {
+    let token = match read_claude_oauth_token(&app, config_dir.as_deref()) {
         Some(t) => t,
         None => return json!({ "ok": false, "error": "no_credentials" }),
     };
@@ -3521,14 +3564,21 @@ fn claude_plan_usage(app: AppHandle) -> serde_json::Value {
         Ok(v) => v,
         Err(_) => return json!({ "ok": false, "error": "bad_json" }),
     };
-    // A 401/expired token comes back as a JSON error object, not the usage shape.
+    // Success shape has "five_hour"; error shape has "error.type" + "error.message".
     if usage.get("five_hour").is_none() {
-        return json!({ "ok": false, "error": "token_expired" });
+        let err_type = usage["error"]["type"].as_str().unwrap_or("unknown");
+        let err_msg = usage["error"]["message"].as_str().unwrap_or(err_type);
+        let label = match err_type {
+            "rate_limit_error" => "rate_limited",
+            "authentication_error" | "permission_error" => "token_expired",
+            _ => "api_error",
+        };
+        return json!({ "ok": false, "error": label, "message": err_msg });
     }
 
     let payload = json!({ "ok": true, "usage": usage });
     if let Ok(mut g) = cache.lock() {
-        *g = (std::time::Instant::now(), payload.clone());
+        g.insert(cache_key, (std::time::Instant::now(), payload.clone()));
     }
     payload
 }

@@ -143,8 +143,10 @@
 
     <div ref="scrollEl" class="chat-messages">
       <div v-if="messages.length === 0" class="chat-empty">
-        <ClaudeIcon :size="32" class="chat-empty-icon" />
-        <span>Ask Claude anything about this project</span>
+        <div class="chat-empty-avatar">
+          <ClaudeIcon :size="28" />
+        </div>
+        <span class="chat-empty-title">How can I help you?</span>
         <span class="chat-empty-sub">Working in {{ cwdDisplay }}</span>
       </div>
 
@@ -154,47 +156,81 @@
         class="chat-message"
         :class="[`role-${msg.role}`, { partial: msg.partial }]"
       >
+        <!-- User message -->
         <template v-if="msg.role === 'user'">
-          <div class="bubble bubble-user">
-            <div v-if="msg.images && msg.images.length > 0" class="msg-images">
-              <img
-                v-for="(img, i) in msg.images"
-                :key="i"
-                :src="img"
-                class="msg-img"
-                :alt="`Image ${i + 1}`"
-              />
+          <div class="user-msg-row">
+            <div class="bubble bubble-user">
+              <div v-if="msg.images && msg.images.length > 0" class="msg-images">
+                <img
+                  v-for="(img, i) in msg.images"
+                  :key="i"
+                  :src="img"
+                  class="msg-img"
+                  :alt="`Image ${i + 1}`"
+                />
+              </div>
+              {{ msg.text }}
             </div>
-            {{ msg.text }}
+            <div class="user-avatar">U</div>
           </div>
         </template>
+
+        <!-- Tool call — compact pill, expandable -->
         <template v-else-if="msg.role === 'tool'">
-          <div class="bubble bubble-tool">
-            <PhWrench :size="11" class="tool-icon" />
-            <span class="tool-name">{{ msg.text }}</span>
+          <div class="agent-msg-row">
+            <div class="agent-avatar-spacer" />
+            <div class="tool-pill" @click="msg.toolExpanded = !msg.toolExpanded">
+              <PhCaretRight :size="10" class="tool-caret" :class="{ 'tool-caret-open': msg.toolExpanded }" />
+              <PhWrench :size="11" class="tool-icon" />
+              <span class="tool-name">{{ msg.text }}</span>
+            </div>
+          </div>
+          <div v-if="msg.toolExpanded && msg.toolInput" class="agent-msg-row">
+            <div class="agent-avatar-spacer" />
+            <pre class="tool-args">{{ JSON.stringify(msg.toolInput, null, 2) }}</pre>
           </div>
         </template>
+
+        <!-- Permission log -->
         <template v-else-if="msg.role === 'permission'">
-          <div class="bubble bubble-permission" :class="msg.text.startsWith('✓') ? 'perm-granted' : 'perm-rejected'">
-            <span class="perm-log-text">{{ msg.text }}</span>
+          <div class="agent-msg-row">
+            <div class="agent-avatar-spacer" />
+            <div class="bubble bubble-permission" :class="msg.text.startsWith('✓') ? 'perm-granted' : 'perm-rejected'">
+              <span class="perm-log-text">{{ msg.text }}</span>
+            </div>
           </div>
         </template>
+
+        <!-- Thinking -->
         <template v-else-if="msg.role === 'thinking'">
-          <details class="bubble-thinking">
-            <summary class="thinking-summary">Thinking…</summary>
-            <pre class="thinking-body">{{ msg.text }}</pre>
-          </details>
+          <div class="agent-msg-row">
+            <div class="agent-avatar-spacer" />
+            <details class="bubble-thinking">
+              <summary class="thinking-summary">Thinking…</summary>
+              <pre class="thinking-body">{{ msg.text }}</pre>
+            </details>
+          </div>
         </template>
+
+        <!-- Assistant message -->
         <template v-else>
-          <div class="bubble bubble-assistant">
-            <!-- eslint-disable-next-line vue/no-v-html -->
-            <div class="assistant-text md-body" v-html="renderMd(msg.text)" />
-            <span v-if="msg.partial" class="partial-cursor" />
+          <div class="agent-msg-row">
+            <div class="agent-avatar">
+              <ClaudeIcon :size="14" />
+            </div>
+            <div class="assistant-content">
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <div class="md-body" v-html="renderMd(msg.text)" />
+              <span v-if="msg.partial" class="partial-cursor" />
+            </div>
           </div>
         </template>
       </div>
 
       <div v-if="busy && !hasPartialAssistant" class="chat-thinking">
+        <div class="agent-avatar agent-avatar-sm">
+          <ClaudeIcon :size="12" />
+        </div>
         <span class="thinking-dot" /><span class="thinking-dot" /><span class="thinking-dot" />
       </div>
     </div>
@@ -237,61 +273,130 @@
       </div>
     </div>
 
-    <div class="chat-input-area">
-      <textarea
-        ref="inputEl"
-        v-model="inputText"
-        class="chat-input"
-        :class="{ 'input-queued': busy && inputText.trim() }"
-        :placeholder="busy ? 'Type next message — will send when Claude finishes…' : 'Message Claude… (Enter to send, Shift+Enter for newline)'"
-        rows="1"
-        @keydown="onKeydown"
-        @input="onInput"
-        @paste="onPaste"
-      />
-      <button
-        v-if="editorCtx.selection"
-        class="chat-share-btn"
-        :title="`Add selection: ${relPath(editorCtx.selection.path)}#L${editorCtx.selection.startLine}-L${editorCtx.selection.endLine}`"
-        @click="shareSelection"
-      >
-        <PhTextAa :size="14" weight="bold" />
-      </button>
-      <button v-if="busy" class="chat-abort-btn" title="Abort" @click="abortTurn">
-        <PhStop :size="14" weight="bold" />
-      </button>
-      <button
-        v-else-if="messageQueue.length > 0"
-        class="chat-send-btn chat-send-queued"
-        disabled
-        :title="`${messageQueue.length} message${messageQueue.length > 1 ? 's' : ''} queued`"
-      >
-        {{ messageQueue.length }}
-      </button>
-      <button v-else class="chat-send-btn" :disabled="!inputText.trim()" @click="sendMessage()">
-        <PhArrowUp :size="14" weight="bold" />
-      </button>
-    </div>
+    <!-- New-style input bar -->
+    <div class="chat-input-wrap">
+      <div class="chat-input-box" :class="{ 'input-queued': busy && inputText.trim() }">
+        <textarea
+          ref="inputEl"
+          v-model="inputText"
+          class="chat-input"
+          :placeholder="busy ? 'Type next message — will send when Claude finishes…' : 'Ask your agent anything...'"
+          rows="1"
+          @keydown="onKeydown"
+          @input="onInput"
+          @paste="onPaste"
+        />
+        <div class="chat-input-toolbar">
+          <!-- Left: share selection, model dropdown, perm mode -->
+          <div class="toolbar-left">
+            <button
+              v-if="editorCtx.selection"
+              class="toolbar-btn"
+              :title="`Add selection: ${relPath(editorCtx.selection.path)}#L${editorCtx.selection.startLine}-L${editorCtx.selection.endLine}`"
+              @click="shareSelection"
+            >
+              <PhTextAa :size="13" />
+            </button>
+            <!-- Model switcher -->
+            <div class="model-dropdown">
+              <button ref="modelBtnEl" class="toolbar-btn toolbar-btn-label" @click="toggleModelMenu">
+                {{ selectedModelLabel }}
+                <PhCaretDown :size="9" weight="bold" class="btn-caret" />
+              </button>
+              <Teleport to="body">
+                <div
+                  v-if="modelMenuOpen"
+                  ref="modelMenuEl"
+                  class="floating-menu"
+                  :style="{ top: modelMenuPos.top + 'px', left: modelMenuPos.left + 'px' }"
+                >
+                  <button
+                    v-for="m in CLAUDE_MODELS"
+                    :key="m.id"
+                    class="floating-menu-item"
+                    :class="{ 'floating-menu-item-active': selectedModel === m.id }"
+                    @click="selectModel(m.id)"
+                  >
+                    {{ m.label }}
+                    <span class="model-id-hint">{{ m.id }}</span>
+                  </button>
+                </div>
+              </Teleport>
+            </div>
+            <!-- Profile switcher (only shown when more than one profile exists) -->
+            <div v-if="profilesStore.profiles.length > 1" class="model-dropdown">
+              <button
+                ref="profileBtnEl"
+                class="toolbar-btn toolbar-btn-label"
+                :class="{ 'btn-active': selectedProfileId !== DEFAULT_PROFILE_ID }"
+                :title="selectedProfile?.configDir ? `CLAUDE_CONFIG_DIR: ${selectedProfile.configDir}` : 'Claude profile'"
+                @click="toggleProfileMenu"
+              >
+                <PhUserGear :size="12" />
+                {{ selectedProfile?.name ?? 'Default' }}
+                <PhCaretDown :size="9" weight="bold" class="btn-caret" />
+              </button>
+              <Teleport to="body">
+                <div
+                  v-if="profileMenuOpen"
+                  ref="profileMenuEl"
+                  class="floating-menu"
+                  :style="{ bottom: profileMenuPos.bottom + 'px', left: profileMenuPos.left + 'px' }"
+                >
+                  <button
+                    v-for="p in profilesStore.profiles"
+                    :key="p.id"
+                    class="floating-menu-item"
+                    :class="{ 'floating-menu-item-active': selectedProfileId === p.id }"
+                    @click="selectProfile(p.id)"
+                  >
+                    {{ p.name }}
+                    <span v-if="p.configDir" class="model-id-hint">{{ p.configDir }}</span>
+                  </button>
+                </div>
+              </Teleport>
+            </div>
+          </div>
 
-    <!-- Status line below input -->
-    <div class="status-line" style="position:relative;z-index:1;">
-      <span v-if="modelDisplay" class="status-item status-model">{{ modelDisplay }}</span>
-      <span v-if="planLabel" class="status-item status-plan">{{ planLabel }}</span>
-      <span v-if="fiveHourWindow" class="status-item" :title="'5h usage window'">5h: {{ fiveHourWindow }}</span>
-      <span class="status-spacer" />
-      <span v-if="sessionId" class="status-item status-muted" :title="sessionId">
-        {{ sessionId.slice(0, 8) }}…
-      </span>
-      <span v-if="turnStats" class="status-item status-muted">
-        {{ turnStats.inputTokens.toLocaleString() }}↑ {{ turnStats.outputTokens.toLocaleString() }}↓
-      </span>
-      <span v-if="sessionCost > 0" class="status-item status-cost">
-        ${{ sessionCost.toFixed(4) }}
-      </span>
-      <span v-if="messageQueue.length > 0" class="status-item status-queued">
-        {{ messageQueue.length }} queued
-      </span>
-      <span v-if="busy" class="status-item status-busy">thinking…</span>
+          <!-- Right: abort/send -->
+          <div class="toolbar-right">
+            <button v-if="busy" class="send-btn send-btn-abort" title="Abort" @click="abortTurn">
+              <PhStop :size="14" weight="bold" />
+            </button>
+            <button
+              v-else-if="messageQueue.length > 0"
+              class="send-btn"
+              disabled
+              :title="`${messageQueue.length} message${messageQueue.length > 1 ? 's' : ''} queued`"
+            >
+              {{ messageQueue.length }}
+            </button>
+            <button v-else class="send-btn" :disabled="!inputText.trim()" @click="sendMessage()">
+              <PhArrowUp :size="14" weight="bold" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Status line below input -->
+      <div class="status-line" style="position:relative;z-index:1;">
+        <span v-if="planLabel" class="status-item status-plan">{{ planLabel }}</span>
+        <span v-if="fiveHourWindow" class="status-item" :title="'5h usage window'">5h: {{ fiveHourWindow }}</span>
+        <span class="status-spacer" />
+        <span v-if="sessionId" class="status-item status-muted" :title="sessionId">
+          {{ sessionId.slice(0, 8) }}…
+        </span>
+        <span v-if="turnStats" class="status-item status-muted">
+          {{ turnStats.inputTokens.toLocaleString() }}↑ {{ turnStats.outputTokens.toLocaleString() }}↓
+        </span>
+        <span v-if="sessionCost > 0" class="status-item status-cost">
+          ${{ sessionCost.toFixed(4) }}
+        </span>
+        <span v-if="messageQueue.length > 0" class="status-item status-queued">
+          {{ messageQueue.length }} queued
+        </span>
+        <span v-if="busy" class="status-item status-busy">thinking…</span>
+      </div>
     </div>
     </div><!-- end .chat-main -->
 
@@ -334,11 +439,12 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
-import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown } from "@phosphor-icons/vue";
+import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown, PhCaretRight, PhX, PhUserGear } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
+import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
 import { useNotificationsStore } from "@/stores/notifications";
 import type { TermStatus } from "@/lib/terminalStatus";
 import { useEditorContextStore } from "@/stores/editorContext";
@@ -381,12 +487,113 @@ function shareSelection() {
   nextTick(() => { inputEl.value?.focus(); autoResize(); });
 }
 
+// Profile switcher
+const profilesStore = useProfilesStore();
+const PROFILE_KEY = (id: number) => `burrow.claude.profileId.${id}`;
+function loadProfileId(id: number): string {
+  return localStorage.getItem(PROFILE_KEY(id)) ?? DEFAULT_PROFILE_ID;
+}
+const selectedProfileId = ref<string>(loadProfileId(props.chatId));
+const selectedProfile = computed(() => profilesStore.get(selectedProfileId.value));
+const profileMenuOpen = ref(false);
+const profileBtnEl = ref<HTMLElement | null>(null);
+const profileMenuEl = ref<HTMLElement | null>(null);
+const profileMenuPos = ref({ bottom: 0, left: 0 });
+function toggleProfileMenu() {
+  if (!profileMenuOpen.value && profileBtnEl.value) {
+    const r = profileBtnEl.value.getBoundingClientRect();
+    profileMenuPos.value = { bottom: Math.round(window.innerHeight - r.top + 4), left: Math.round(r.left) };
+  }
+  profileMenuOpen.value = !profileMenuOpen.value;
+}
+function onProfileMenuOutside(e: MouseEvent) {
+  if (!profileMenuOpen.value) return;
+  const t = e.target as Node;
+  if (profileBtnEl.value?.contains(t) || profileMenuEl.value?.contains(t)) return;
+  profileMenuOpen.value = false;
+}
+async function selectProfile(id: string) {
+  profileMenuOpen.value = false;
+  if (id === selectedProfileId.value) return;
+  selectedProfileId.value = id;
+  localStorage.setItem(PROFILE_KEY(props.chatId), id);
+  suppressNextDone.value = true;
+  await invoke("claude_stop", { id: props.chatId }).catch(() => {});
+  const p = profilesStore.get(id);
+  await invoke("claude_start", {
+    id: props.chatId,
+    cwd: props.cwd,
+    resumeSessionId: sessionId.value || null,
+    permissionMode: permMode.value,
+    appendSystemPrompt: props.appendSystemPrompt || null,
+    model: selectedModel.value,
+    configDir: p?.configDir || null,
+    profileCommand: p?.command || null,
+    profileArgs: p?.args || null,
+  }).catch(() => {});
+}
+
+// Model switcher
+const CLAUDE_MODELS = [
+  { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { id: "claude-opus-4-8", label: "Opus 4.8" },
+  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+] as const;
+type ClaudeModelId = typeof CLAUDE_MODELS[number]["id"];
+const MODEL_KEY = "burrow.claude.model";
+function loadModel(): ClaudeModelId {
+  const v = localStorage.getItem(MODEL_KEY);
+  if (CLAUDE_MODELS.some((m) => m.id === v)) return v as ClaudeModelId;
+  return "claude-sonnet-4-6";
+}
+const selectedModel = ref<ClaudeModelId>(loadModel());
+const modelMenuOpen = ref(false);
+const modelBtnEl = ref<HTMLElement | null>(null);
+const modelMenuEl = ref<HTMLElement | null>(null);
+const modelMenuPos = ref({ top: 0, left: 0 });
+function toggleModelMenu() {
+  if (!modelMenuOpen.value && modelBtnEl.value) {
+    const r = modelBtnEl.value.getBoundingClientRect();
+    const menuH = CLAUDE_MODELS.length * 36 + 12;
+    modelMenuPos.value = { top: Math.round(r.top - menuH - 6), left: Math.round(r.left) };
+  }
+  modelMenuOpen.value = !modelMenuOpen.value;
+}
+function onModelMenuOutside(e: MouseEvent) {
+  if (!modelMenuOpen.value) return;
+  const t = e.target as Node;
+  if (modelBtnEl.value?.contains(t) || modelMenuEl.value?.contains(t)) return;
+  modelMenuOpen.value = false;
+}
+async function selectModel(id: ClaudeModelId) {
+  modelMenuOpen.value = false;
+  if (id === selectedModel.value) return;
+  selectedModel.value = id;
+  localStorage.setItem(MODEL_KEY, id);
+  suppressNextDone.value = true;
+  await invoke("claude_stop", { id: props.chatId }).catch(() => {});
+  await invoke("claude_start", {
+    id: props.chatId,
+    cwd: props.cwd,
+    resumeSessionId: sessionId.value || null,
+    permissionMode: permMode.value,
+    appendSystemPrompt: props.appendSystemPrompt || null,
+    model: selectedModel.value,
+    configDir: selectedProfile.value?.configDir || null,
+    profileCommand: selectedProfile.value?.command || null,
+    profileArgs: selectedProfile.value?.args || null,
+  }).catch(() => {});
+}
+const selectedModelLabel = computed(() => CLAUDE_MODELS.find((m) => m.id === selectedModel.value)?.label ?? selectedModel.value);
+
 interface ChatMessage {
   id: number;
   role: "user" | "assistant" | "tool" | "thinking" | "permission";
   text: string;
   images?: string[]; // data URIs for user messages with attached images
   partial?: boolean;
+  toolInput?: Record<string, unknown>; // full tool args for expandable tool calls
+  toolExpanded?: boolean;
 }
 
 // Built-in claude slash commands
@@ -665,16 +872,7 @@ const diffPreview = computed(() => {
     newStr: (i.new_string ?? "") as string,
   };
 });
-const model = ref("");
 const accountInfo = ref<AccountInfo | null>(null);
-
-// Model from stream or fallback from account info (claude stores chosen model in status_text)
-const modelDisplay = computed(() => {
-  if (model.value) return model.value;
-  // Try to parse "Model: <name>" from claude status text
-  const m = accountInfo.value?.status_text.match(/model[:\s]+([^\s\n]+)/i);
-  return m ? m[1] : "";
-});
 
 // Parse plan label from organizationType / rateLimitTier
 const planLabel = computed(() => {
@@ -714,6 +912,26 @@ function scrollToBottom() {
   nextTick(() => {
     if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight;
   });
+}
+
+// Auto-title helpers
+const FILLER_PREFIX = /^(can you |please |i want (you )?to |how (do i|to) |what (is|are) (the |a )?|could you |would you |help me |i need (you )?to )/i;
+function smartTitle(text: string): string {
+  const clean = text.replace(FILLER_PREFIX, "").replace(/\s+/g, " ").trim();
+  const words = clean.split(" ");
+  const slug = words.slice(0, 6).join(" ");
+  const title = slug.charAt(0).toUpperCase() + slug.slice(1);
+  return title.length < clean.length ? title + "…" : title;
+}
+function isDefaultTitle(title: string): boolean {
+  return /^Chat\s+\d+$/.test(title.trim());
+}
+// Once Claude sends us a generated title, prefer it and stop overwriting.
+const claudeGeneratedTitle = ref(false);
+function applyClaudeTitle(raw: unknown) {
+  if (typeof raw !== "string" || !raw.trim()) return;
+  claudeGeneratedTitle.value = true;
+  chats.sync(props.chatId, { title: raw.trim().slice(0, 60) });
 }
 
 // Derive the Sidebar status dot from live chat state. Generic tool / file-edit
@@ -780,8 +998,8 @@ function onLine(line: string) {
       const sid = (event.session_id as string) ?? "";
       sessionId.value = sid;
       chats.sync(props.chatId, { claudeSessionId: sid });
-      if (event.model) model.value = event.model as string;
     }
+    if (sub === "session_title") applyClaudeTitle(event.title);
     if (sub === "hook_started" || sub === "hook_response") return;
   }
 
@@ -809,8 +1027,8 @@ function onLine(line: string) {
     }
     for (const tb of toolBlocks) {
       const name = (tb.name as string) ?? "tool";
-      const inputStr = tb.input ? " " + JSON.stringify(tb.input).slice(0, 80) : "";
-      messages.value.push({ id: nextMsgId++, role: "tool", text: name + inputStr });
+      const toolInput = (tb.input ?? {}) as Record<string, unknown>;
+      messages.value.push({ id: nextMsgId++, role: "tool", text: name, toolInput, toolExpanded: false });
     }
     scrollToBottom();
     return;
@@ -832,6 +1050,8 @@ function onLine(line: string) {
         sessionCost.value += cost;
         chats.recordTurn(inp, out);
       }
+      // Claude Code ≥1.x emits session_title in the result event after generating one
+      if (!claudeGeneratedTitle.value) applyClaudeTitle(event.session_title);
     }
     saveMessages(props.chatId, messages.value);
     syncStore();
@@ -886,10 +1106,12 @@ async function sendMessage(forcedText?: string) {
   messages.value.push({ id: nextMsgId++, role: "user", text, images: msgImages });
   busy.value = true;
 
-  // Auto-title from first user message
-  const session = chats.sessions.find((s) => s.id === props.chatId);
-  if (session && session.messageCount === 0) {
-    chats.sync(props.chatId, { title: text.slice(0, 40) + (text.length > 40 ? "…" : "") });
+  // Auto-title from first user message (only if still at default and Claude hasn't set one yet)
+  if (!claudeGeneratedTitle.value) {
+    const session = chats.sessions.find((s) => s.id === props.chatId);
+    if (session && isDefaultTitle(session.title)) {
+      chats.sync(props.chatId, { title: smartTitle(text) });
+    }
   }
 
   saveMessages(props.chatId, messages.value);
@@ -1002,6 +1224,10 @@ async function selectPermMode(mode: PermMode) {
     resumeSessionId: sessionId.value || null,
     permissionMode: permMode.value,
     appendSystemPrompt: props.appendSystemPrompt || null,
+    model: selectedModel.value,
+    configDir: selectedProfile.value?.configDir || null,
+    profileCommand: selectedProfile.value?.command || null,
+    profileArgs: selectedProfile.value?.args || null,
   }).catch(() => {});
 }
 
@@ -1009,7 +1235,17 @@ async function abortTurn() {
   suppressNextDone.value = true; // abort + restart — don't toast on the teardown `exit`
   await invoke("claude_abort", { id: props.chatId }).catch(() => {});
   // Restart with --resume so session continues
-  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, resumeSessionId: sessionId.value || null, permissionMode: permMode.value, appendSystemPrompt: props.appendSystemPrompt || null }).catch(() => {});
+  await invoke("claude_start", {
+    id: props.chatId,
+    cwd: props.cwd,
+    resumeSessionId: sessionId.value || null,
+    permissionMode: permMode.value,
+    appendSystemPrompt: props.appendSystemPrompt || null,
+    model: selectedModel.value,
+    configDir: selectedProfile.value?.configDir || null,
+    profileCommand: selectedProfile.value?.command || null,
+    profileArgs: selectedProfile.value?.args || null,
+  }).catch(() => {});
   busy.value = false;
   messageQueue.value = [];
   const last = messages.value[messages.value.length - 1];
@@ -1026,9 +1262,19 @@ async function clearChat() {
   pendingImages.value = [];
   turnStats.value = null;
   sessionCost.value = 0;
+  claudeGeneratedTitle.value = false;
   localStorage.removeItem(msgKey(props.chatId));
   chats.sync(props.chatId, { claudeSessionId: "", busy: false, messageCount: 0, title: `Chat` });
-  await invoke("claude_start", { id: props.chatId, cwd: props.cwd, permissionMode: permMode.value, appendSystemPrompt: props.appendSystemPrompt || null }).catch(() => {});
+  await invoke("claude_start", {
+    id: props.chatId,
+    cwd: props.cwd,
+    permissionMode: permMode.value,
+    appendSystemPrompt: props.appendSystemPrompt || null,
+    model: selectedModel.value,
+    configDir: selectedProfile.value?.configDir || null,
+    profileCommand: selectedProfile.value?.command || null,
+    profileArgs: selectedProfile.value?.args || null,
+  }).catch(() => {});
 }
 
 function updateSuggestions() {
@@ -1171,6 +1417,8 @@ function onWindowKeydown(e: KeyboardEvent) {
 onMounted(async () => {
   window.addEventListener("keydown", onWindowKeydown);
   window.addEventListener("mousedown", onPermMenuOutside);
+  window.addEventListener("mousedown", onModelMenuOutside);
+  window.addEventListener("mousedown", onProfileMenuOutside);
   // Float (compact) control chat: pre-allow `burrow` Bash commands so routine
   // control calls (focus/list/new-tab/spawn) don't prompt every time. User can
   // still tighten via the perm-mode switch / Deny.
@@ -1183,6 +1431,10 @@ onMounted(async () => {
     resumeSessionId: stored || null,
     permissionMode: permMode.value,
     appendSystemPrompt: props.appendSystemPrompt || null,
+    model: selectedModel.value,
+    configDir: selectedProfile.value?.configDir || null,
+    profileCommand: selectedProfile.value?.command || null,
+    profileArgs: selectedProfile.value?.args || null,
   }).catch(() => {});
   unlisten = await listen<string>(`claude-data-${props.chatId}`, (ev) => onLine(ev.payload));
 
@@ -1209,6 +1461,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onWindowKeydown);
   window.removeEventListener("mousedown", onPermMenuOutside);
+  window.removeEventListener("mousedown", onModelMenuOutside);
+  window.removeEventListener("mousedown", onProfileMenuOutside);
   unlisten?.();
   invoke("claude_stop", { id: props.chatId }).catch(() => {});
 });
@@ -1226,8 +1480,17 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   display: flex;
   flex-direction: row;
   height: 100%;
-  background: var(--bg-base);
+  background: #0f0f11;
   overflow: hidden;
+  --chat-bg: #0f0f11;
+  --chat-surface: #18181c;
+  --chat-border: rgba(255,255,255,0.08);
+  --chat-accent: #7c3aed;
+  --chat-accent-dim: #6d28d9;
+  --chat-text: rgba(255,255,255,0.88);
+  --chat-muted: rgba(255,255,255,0.42);
+  --chat-user-bg: #1e1b2e;
+  --chat-user-border: rgba(124,58,237,0.35);
 }
 
 .chat-main {
@@ -1236,6 +1499,7 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background: #0f0f11;
 }
 
 /* Changes panel */
@@ -1394,9 +1658,9 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--chat-border);
   flex-shrink: 0;
-  background: var(--bg-panel);
+  background: var(--chat-surface);
 }
 
 .chat-header-icon { color: #d97706; flex-shrink: 0; }
@@ -1421,7 +1685,7 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 .chat-header-btn {
   background: none;
   border: none;
-  color: var(--text-muted);
+  color: rgba(255,255,255,0.45);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1429,12 +1693,12 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   border-radius: 5px;
   transition: color .12s, background .12s;
 }
-.chat-header-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
-.btn-danger-active { color: #ef4444 !important; background: color-mix(in srgb, #ef4444 15%, transparent) !important; }
+.chat-header-btn:hover { color: rgba(255,255,255,0.85); background: rgba(255,255,255,0.07); }
+.btn-danger-active { color: #ef4444 !important; background: rgba(239,68,68,0.15) !important; }
 .perm-mode-btn { width: auto !important; gap: 4px; padding: 0 7px; }
 .perm-mode-label { font-size: 10px; font-weight: 600; }
 .perm-mode-caret { opacity: .6; margin-left: -1px; }
-.btn-active { color: var(--accent) !important; background: color-mix(in srgb, var(--accent) 12%, transparent) !important; }
+.btn-active { color: #a78bfa !important; background: rgba(124,58,237,0.15) !important; }
 
 /* Permission-mode dropdown */
 .perm-mode-dropdown { position: relative; display: flex; }
@@ -1446,10 +1710,10 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: var(--bg-elevated, var(--bg-secondary));
-  border: 1px solid var(--border-color, var(--border));
+  background: #1e1e26;
+  border: 1px solid rgba(255,255,255,0.1);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
 }
 .perm-mode-item {
   display: flex;
@@ -1460,18 +1724,18 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   background: none;
   border: none;
   border-radius: 5px;
-  color: var(--text-primary);
+  color: rgba(255,255,255,0.8);
   font-size: 11px;
   font-weight: 500;
   text-align: left;
   cursor: pointer;
   transition: color .12s, background .12s;
 }
-.perm-mode-item:hover { background: var(--bg-hover); }
-.perm-mode-item-active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.perm-mode-item:hover { background: rgba(255,255,255,0.06); }
+.perm-mode-item-active { color: #a78bfa; background: rgba(124,58,237,0.12); }
 .perm-mode-item-danger { color: #ef4444; }
-.perm-mode-item-danger:hover { background: color-mix(in srgb, #ef4444 15%, transparent); }
-.perm-mode-item-danger.perm-mode-item-active { color: #ef4444; background: color-mix(in srgb, #ef4444 15%, transparent); }
+.perm-mode-item-danger:hover { background: rgba(239,68,68,0.12); }
+.perm-mode-item-danger.perm-mode-item-active { color: #ef4444; background: rgba(239,68,68,0.12); }
 
 /* Permission banner */
 .permission-banner {
@@ -1617,10 +1881,10 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 16px 8px;
+  padding: 20px 0 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 2px;
   scroll-behavior: smooth;
 }
 
@@ -1630,27 +1894,93 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 500;
+  gap: 8px;
   text-align: center;
   padding: 40px 24px;
 }
-.chat-empty-icon { opacity: 0.18; margin-bottom: 8px; }
-.chat-empty-sub { font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); margin-top: 2px; }
+.chat-empty-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  margin-bottom: 10px;
+  box-shadow: 0 0 0 3px rgba(124,58,237,0.2);
+}
+.chat-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--chat-text, rgba(255,255,255,0.88));
+}
+.chat-empty-sub { font-size: 11px; font-family: var(--font-mono); color: var(--chat-muted, rgba(255,255,255,0.42)); margin-top: 2px; }
 
-.bubble {
-  max-width: 90%;
-  padding: 10px 13px;
-  border-radius: 10px;
+/* Row layouts */
+.user-msg-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 3px 16px;
+}
+.agent-msg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 3px 16px;
+}
+
+/* Avatars */
+.user-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: rgba(255,255,255,0.7);
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.agent-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.agent-avatar-sm {
+  width: 22px;
+  height: 22px;
+  margin-top: 0;
+}
+.agent-avatar-spacer {
+  width: 26px;
+  flex-shrink: 0;
+}
+
+/* User bubble */
+.bubble-user {
+  max-width: 72%;
+  padding: 10px 14px;
+  border-radius: 14px 14px 4px 14px;
   font-size: 13px;
   line-height: 1.55;
   word-break: break-word;
+  background: var(--chat-user-bg, #1e1b2e);
+  border: 1px solid var(--chat-user-border, rgba(124,58,237,0.35));
+  color: var(--chat-text, rgba(255,255,255,0.88));
 }
-
-.role-user { display: flex; justify-content: flex-end; }
-.bubble-user { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
 
 .msg-images {
   display: flex;
@@ -1666,87 +1996,105 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   display: block;
 }
 
-.role-assistant { display: flex; justify-content: flex-start; }
-.bubble-assistant {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-bottom-left-radius: 4px;
-  position: relative;
-  max-width: 95%;
+/* Assistant message — no bubble, just content */
+.assistant-content {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--chat-text, rgba(255,255,255,0.88));
+  padding-top: 4px;
 }
-.assistant-text {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  white-space: pre-wrap;
-  color: var(--text-primary);
-}
+
 .partial-cursor {
   display: inline-block;
   width: 2px;
   height: 13px;
-  background: var(--accent);
+  background: var(--chat-accent, #7c3aed);
   vertical-align: middle;
   margin-left: 2px;
   animation: blink 1s step-end infinite;
 }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
-.role-thinking { display: flex; justify-content: flex-start; }
+/* Thinking */
 .bubble-thinking {
   font-size: 11px;
   font-family: var(--font-mono);
-  color: var(--text-muted);
-  border: 1px dashed var(--border);
+  color: var(--chat-muted, rgba(255,255,255,0.42));
+  border: 1px dashed rgba(255,255,255,0.12);
   border-radius: 8px;
   padding: 4px 10px;
-  max-width: 95%;
-  opacity: 0.7;
+  max-width: 90%;
+  opacity: 0.75;
 }
 .thinking-summary {
   cursor: pointer;
-  color: var(--text-muted);
+  color: var(--chat-muted, rgba(255,255,255,0.42));
   font-style: italic;
   user-select: none;
 }
-.thinking-summary:hover { color: var(--text-secondary); }
+.thinking-summary:hover { color: rgba(255,255,255,0.7); }
 .thinking-body {
   margin: 6px 0 2px;
   white-space: pre-wrap;
-  color: var(--text-muted);
+  color: var(--chat-muted, rgba(255,255,255,0.42));
   font-size: 10px;
   line-height: 1.4;
   max-height: 200px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
 }
 
-.role-tool { display: flex; justify-content: flex-start; }
-.bubble-tool {
+/* Tool pill — compact, expandable */
+.tool-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 9px 3px 7px;
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  padding: 3px 9px 3px 6px;
+  background: rgba(124,58,237,0.08);
+  border: 1px solid rgba(124,58,237,0.22);
   border-radius: 20px;
   font-size: 11px;
   font-family: var(--font-mono);
-  color: var(--text-secondary);
+  color: rgba(255,255,255,0.55);
+  cursor: pointer;
+  user-select: none;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: background .1s;
+  transition: background .1s, color .1s;
 }
-.bubble-tool:hover {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--text-primary);
+.tool-pill:hover {
+  background: rgba(124,58,237,0.14);
+  color: rgba(255,255,255,0.8);
 }
-.tool-icon { color: var(--accent); flex-shrink: 0; opacity: 0.8; }
+.tool-caret {
+  flex-shrink: 0;
+  color: rgba(124,58,237,0.7);
+  transition: transform .15s;
+}
+.tool-caret-open { transform: rotate(90deg); }
+.tool-icon { color: rgba(124,58,237,0.8); flex-shrink: 0; }
 .tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-args {
+  margin: 0;
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: rgba(255,255,255,0.5);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  max-width: min(560px, 90vw);
+}
 
+/* Permission log */
 .bubble-permission {
   display: inline-flex;
   align-items: center;
@@ -1760,13 +2108,13 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   white-space: nowrap;
 }
 .bubble-permission.perm-granted {
-  background: color-mix(in srgb, #16a34a 12%, transparent);
-  border: 1px solid color-mix(in srgb, #16a34a 30%, transparent);
+  background: rgba(22,163,74,0.12);
+  border: 1px solid rgba(22,163,74,0.3);
   color: #4ade80;
 }
 .bubble-permission.perm-rejected {
-  background: color-mix(in srgb, #b91c1c 12%, transparent);
-  border: 1px solid color-mix(in srgb, #b91c1c 30%, transparent);
+  background: rgba(185,28,28,0.12);
+  border: 1px solid rgba(185,28,28,0.3);
   color: #f87171;
 }
 .perm-log-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1774,14 +2122,14 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 .chat-thinking {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 0;
+  gap: 6px;
+  padding: 6px 16px;
 }
 .thinking-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: rgba(124,58,237,0.6);
   animation: thinking 1.2s ease-in-out infinite;
 }
 .thinking-dot:nth-child(2) { animation-delay: 0.2s; }
@@ -1794,8 +2142,7 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   align-items: center;
   gap: 8px;
   padding: 3px 10px;
-  background: var(--bg-panel);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid rgba(255,255,255,0.06);
   flex-shrink: 0;
   min-height: 22px;
 }
@@ -1805,27 +2152,26 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 .status-item {
   font-size: 10px;
   font-family: var(--font-mono);
-  color: var(--text-secondary);
+  color: rgba(255,255,255,0.38);
   white-space: nowrap;
 }
 
-.status-muted { color: var(--text-muted); }
-.status-model { color: var(--text-primary); font-weight: 600; }
+.status-muted { color: rgba(255,255,255,0.28); }
 .status-plan {
   color: #f59e0b;
   font-weight: 600;
-  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  background: rgba(245,158,11,0.12);
   padding: 1px 5px;
   border-radius: 3px;
 }
 .status-cost { color: #a78bfa; }
-.status-busy { color: var(--accent); animation: blink 1s step-end infinite; }
-.status-queued { color: var(--text-muted); font-family: var(--font-mono); }
+.status-busy { color: #a78bfa; animation: blink 1s step-end infinite; }
+.status-queued { color: rgba(255,255,255,0.3); font-family: var(--font-mono); }
 
 /* Command suggestions */
 .cmd-suggestions {
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
+  border-top: 1px solid rgba(255,255,255,0.07);
+  background: #18181c;
   max-height: 200px;
   overflow-y: auto;
   flex-shrink: 0;
@@ -1840,63 +2186,170 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   transition: background .1s;
 }
 .cmd-suggestion:hover,
-.cmd-suggestion.selected { background: var(--bg-hover); }
+.cmd-suggestion.selected { background: rgba(255,255,255,0.05); }
 
 .cmd-name {
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
-  color: var(--accent);
+  color: #a78bfa;
   flex-shrink: 0;
   min-width: 100px;
 }
 
 .cmd-desc {
   font-size: 11px;
-  color: var(--text-muted);
+  color: rgba(255,255,255,0.38);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.chat-input-area {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 10px 12px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
+/* New-style input wrap */
+.chat-input-wrap {
+  padding: 10px 14px 6px;
   flex-shrink: 0;
+  background: #0f0f11;
 }
 
+.chat-input-box {
+  background: #1a1a20;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  overflow: hidden;
+  transition: border-color .15s;
+}
+.chat-input-box:focus-within { border-color: rgba(124,58,237,0.5); }
+.input-queued { border-color: rgba(124,58,237,0.35) !important; }
+
 .chat-input {
-  flex: 1;
-  background: var(--bg-base);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text-primary);
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,0.88);
   font-family: var(--font-ui);
   font-size: 13px;
   line-height: 1.5;
   outline: none;
-  padding: 8px 11px;
+  padding: 12px 14px 6px;
   resize: none;
-  min-height: 36px;
+  min-height: 40px;
   max-height: 160px;
   overflow-y: auto;
   scrollbar-width: none;
-  transition: border-color .15s;
+  box-sizing: border-box;
 }
 .chat-input::-webkit-scrollbar { display: none; }
-.chat-input:focus { border-color: var(--accent); }
-.input-queued { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)) !important; }
+.chat-input::placeholder { color: rgba(255,255,255,0.3); }
+
+.chat-input-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 10px;
+  gap: 6px;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toolbar-btn {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.45);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-family: var(--font-ui);
+  transition: color .12s, background .12s;
+}
+.toolbar-btn:hover { color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.06); }
+.toolbar-btn-label { font-weight: 500; }
+.btn-caret { opacity: 0.6; }
+
+/* Model / floating menus */
+.model-dropdown { position: relative; }
+
+.floating-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #1e1e26;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+}
+
+.floating-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  color: rgba(255,255,255,0.8);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background .1s;
+}
+.floating-menu-item:hover { background: rgba(255,255,255,0.06); }
+.floating-menu-item-active { color: #a78bfa; background: rgba(124,58,237,0.12); }
+
+.model-id-hint {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: rgba(255,255,255,0.3);
+  margin-left: 6px;
+}
+
+/* Send button */
+.send-btn {
+  background: #7c3aed;
+  border: none;
+  border-radius: 50%;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  transition: background .12s, opacity .12s;
+}
+.send-btn:hover:not(:disabled) { background: #6d28d9; }
+.send-btn:disabled { opacity: 0.35; cursor: default; }
+.send-btn-abort { background: #dc2626; }
+.send-btn-abort:hover:not(:disabled) { background: #b91c1c; }
 
 /* Pending image previews */
 .pending-images {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 6px 12px 0;
+  padding: 6px 14px 0;
   flex-shrink: 0;
 }
 
@@ -1910,7 +2363,7 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   height: 72px;
   object-fit: cover;
   border-radius: 6px;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255,255,255,0.1);
   display: block;
 }
 
@@ -1920,10 +2373,10 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   right: -5px;
   width: 16px;
   height: 16px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
+  background: #1e1e26;
+  border: 1px solid rgba(255,255,255,0.15);
   border-radius: 50%;
-  color: var(--text-secondary);
+  color: rgba(255,255,255,0.5);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1931,88 +2384,31 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   padding: 0;
   transition: color .1s, background .1s;
 }
-.pending-img-remove:hover { color: var(--red); background: color-mix(in srgb, var(--red) 15%, var(--bg-panel)); }
-.chat-input::placeholder { color: var(--text-muted); }
+.pending-img-remove:hover { color: #f87171; background: rgba(185,28,28,0.2); }
 
-.chat-send-btn {
-  background: var(--accent);
-  border: none;
-  border-radius: 7px;
-  color: #fff;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  transition: background .12s, opacity .12s;
-}
-.chat-send-btn:hover:not(:disabled) { background: var(--accent-dim); }
-.chat-send-btn:disabled { opacity: 0.4; cursor: default; }
-.chat-share-btn {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-  border-radius: 7px;
-  color: var(--accent);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  transition: background .12s;
-}
-.chat-share-btn:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }
-.chat-send-queued {
-  background: color-mix(in srgb, var(--accent) 20%, transparent) !important;
-  color: var(--accent) !important;
-  font-size: 10px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-  opacity: 1 !important;
-}
-
-.chat-abort-btn {
-  background: #dc2626;
-  border: none;
-  border-radius: 7px;
-  color: #fff;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  transition: background .12s;
-}
-.chat-abort-btn:hover { background: #b91c1c; }
-
-/* Markdown body inside assistant bubble */
+/* Markdown body inside assistant messages */
 .md-body {
   font-family: var(--font-ui);
   font-size: 13px;
-  color: var(--text-primary);
-  line-height: 1.6;
+  color: rgba(255,255,255,0.88);
+  line-height: 1.65;
   white-space: normal;
 }
-.md-body :deep(p) { margin: 0 0 8px; }
+.md-body :deep(p) { margin: 0 0 10px; }
 .md-body :deep(p:last-child) { margin-bottom: 0; }
-.md-body :deep(ul), .md-body :deep(ol) { margin: 4px 0 8px; padding-left: 20px; }
-.md-body :deep(li) { margin: 2px 0; }
-.md-body :deep(code) { font-family: var(--font-mono); font-size: 11px; background: color-mix(in srgb, var(--accent) 12%, transparent); padding: 1px 4px; border-radius: 3px; }
-.md-body :deep(pre) { background: var(--bg-base); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 6px 0; }
-.md-body :deep(pre code) { background: none; padding: 0; font-size: 11px; }
-.md-body :deep(blockquote) { border-left: 3px solid var(--accent); margin: 6px 0; padding-left: 10px; color: var(--text-secondary); }
-.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-weight: 700; margin: 10px 0 4px; color: var(--text-primary); }
+.md-body :deep(ul), .md-body :deep(ol) { margin: 4px 0 10px; padding-left: 20px; }
+.md-body :deep(li) { margin: 3px 0; }
+.md-body :deep(code) { font-family: var(--font-mono); font-size: 11px; background: rgba(124,58,237,0.14); color: #c4b5fd; padding: 1px 5px; border-radius: 4px; }
+.md-body :deep(pre) { background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 8px 0; }
+.md-body :deep(pre code) { background: none; padding: 0; font-size: 11px; color: rgba(255,255,255,0.75); }
+.md-body :deep(blockquote) { border-left: 3px solid rgba(124,58,237,0.6); margin: 6px 0; padding-left: 12px; color: rgba(255,255,255,0.55); }
+.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-weight: 700; margin: 14px 0 6px; color: rgba(255,255,255,0.95); }
 .md-body :deep(h1) { font-size: 16px; }
 .md-body :deep(h2) { font-size: 14px; }
 .md-body :deep(h3) { font-size: 13px; }
-.md-body :deep(a) { color: var(--accent); text-decoration: underline; }
-.md-body :deep(hr) { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
-.md-body :deep(table) { border-collapse: collapse; font-size: 12px; margin: 6px 0; }
-.md-body :deep(th), .md-body :deep(td) { border: 1px solid var(--border); padding: 4px 8px; }
-.md-body :deep(th) { background: var(--bg-panel); font-weight: 600; }
+.md-body :deep(a) { color: #a78bfa; text-decoration: underline; }
+.md-body :deep(hr) { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0; }
+.md-body :deep(table) { border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+.md-body :deep(th), .md-body :deep(td) { border: 1px solid rgba(255,255,255,0.1); padding: 5px 10px; }
+.md-body :deep(th) { background: rgba(255,255,255,0.05); font-weight: 600; }
 </style>

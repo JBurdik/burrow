@@ -1258,6 +1258,8 @@ function allLeaves(): Leaf[] {
   return tabs.value.flatMap((t) => getAllLeaves(t.root));
 }
 
+const CHAT_TABS_KEY = (wsId: number) => `burrow.chat_tabs.${wsId}`;
+
 function persist() {
   // Editor leaves have no PTY — don't persist them as bogus pty rows. Restoring
   // open editors on restart is a follow-up.
@@ -1272,6 +1274,14 @@ function persist() {
     session_id: l.sessionId ?? null,
   }));
   invoke("save_terminal_tabs", { workspaceId: props.workspaceId, tabs: payload });
+
+  // Persist open chat tab chatIds separately (no PTY, so not in SQLite).
+  const chatIds = allLeaves()
+    .filter((l) => l.leafType === "chat" && l.chatId != null)
+    .map((l) => l.chatId!);
+  try {
+    localStorage.setItem(CHAT_TABS_KEY(props.workspaceId), JSON.stringify(chatIds));
+  } catch {}
 }
 
 // Include title, defaultTitle, and sessionId so any of those changes triggers a save.
@@ -1303,18 +1313,22 @@ function syncStore() {
 
 watch([tabs, activeTabId, focusedLeafId], syncStore, { deep: true });
 
-// Sync chat session status → leaf.status so the Sidebar dot and tab-bar dot
-// stay live. Chat leaves have no PTY events, so status must flow from the store.
+// Sync chat session status + title → leaf so the Sidebar dot, tab-bar dot,
+// and tab label stay live. Chat leaves have no PTY events, so both must flow from the store.
 watch(
-  () => chatsStore.sessions.map((s) => ({ id: s.id, status: s.status })),
+  () => chatsStore.sessions.map((s) => ({ id: s.id, status: s.status, title: s.title })),
   (sessions) => {
     for (const sess of sessions) {
       for (const tab of tabs.value) {
         const leaf = getAllLeaves(tab.root).find(
           (l) => l.leafType === "chat" && l.chatId === sess.id,
         );
-        if (leaf && leaf.status !== (sess.status ?? "idle")) {
+        if (!leaf) continue;
+        if (leaf.status !== (sess.status ?? "idle")) {
           leaf.status = sess.status ?? "idle";
+        }
+        if (sess.title && leaf.title !== sess.title) {
+          leaf.title = sess.title;
         }
       }
     }
@@ -1420,6 +1434,21 @@ onMounted(async () => {
     });
     activateTab(tabs.value[0].id);
   }
+
+  // Restore chat tabs saved from the previous session.
+  try {
+    const raw = localStorage.getItem(CHAT_TABS_KEY(props.workspaceId));
+    if (raw) {
+      const chatIds: number[] = JSON.parse(raw);
+      for (const chatId of chatIds) {
+        // openClaudeChat skips if session no longer exists (creates a fresh one),
+        // and skips if tab is already open — safe to call unconditionally.
+        const sessionExists = chatsStore.sessions.some((s) => s.id === chatId);
+        if (sessionExists) openClaudeChat(chatId);
+      }
+    }
+  } catch {}
+
   syncStore();
 });
 
