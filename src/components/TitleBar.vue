@@ -50,8 +50,33 @@
 
     <!-- Claude plan-usage strip — real utilization %, same data claude.ai shows.
          One bar per limit window (5h session, weekly, weekly-Sonnet). -->
+    <!-- Profile selector: always visible when multiple profiles exist -->
+    <div v-if="profilesStore.profiles.length > 1" class="tb-menu-wrap usage-profile-wrap" style="-webkit-app-region:no-drag" data-tauri-drag-region>
+      <button
+        class="usage-profile-btn"
+        :class="{ 'usage-profile-active': usageProfileId !== DEFAULT_PROFILE_ID }"
+        :title="`Showing usage for: ${usageProfile?.name ?? 'Default'}`"
+        @click.stop="usageProfileMenuOpen = !usageProfileMenuOpen"
+      >
+        <PhUserGear :size="10" />
+        <span class="usage-profile-name">{{ usageProfile?.name ?? 'Default' }}</span>
+        <PhCaretDown :size="7" weight="bold" />
+      </button>
+      <div v-if="usageProfileMenuOpen" class="tb-menu usage-profile-menu" @click.stop>
+        <button
+          v-for="p in profilesStore.profiles"
+          :key="p.id"
+          class="tb-menu-item"
+          :class="{ 'usage-profile-item-active': usageProfileId === p.id }"
+          @click="selectUsageProfile(p.id)"
+        >
+          <PhUserGear :size="12" />
+          {{ p.name }}
+        </button>
+      </div>
+    </div>
     <div
-      v-if="usageBars.length"
+      v-if="usageBars.length || usageError"
       class="usage-strip"
       :class="{ error: !!usageError }"
       :title="usageError ? `usage unavailable: ${usageError}` : 'claude plan usage'"
@@ -211,9 +236,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus, PhSkull } from "@phosphor-icons/vue";
+import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus, PhSkull, PhUserGear } from "@phosphor-icons/vue";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
 import { useGitStore } from "@/stores/git";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
@@ -295,22 +321,60 @@ type UsageWindow = { utilization: number; resets_at?: string };
 type PlanUsage = Record<string, UsageWindow | undefined>;
 type UsageBar = { key: string; label: string; pct: number; resets?: string };
 
+// ── Usage profile selector ──────────────────────────────────────────────────
+const profilesStore = useProfilesStore();
+const USAGE_PROFILE_KEY = "burrow.titlebar.usageProfileId";
+const usageProfileId = ref<string>(localStorage.getItem(USAGE_PROFILE_KEY) ?? DEFAULT_PROFILE_ID);
+const usageProfile = computed(() => profilesStore.get(usageProfileId.value));
+const usageProfileMenuOpen = ref(false);
+function selectUsageProfile(id: string) {
+  usageProfileId.value = id;
+  localStorage.setItem(USAGE_PROFILE_KEY, id);
+  usageProfileMenuOpen.value = false;
+  refreshUsage();
+}
+
 const planUsage = ref<PlanUsage | null>(null);
 const usageError = ref<string | null>(null);
 let usageTimer: number | undefined;
 
-async function refreshUsage() {
+const ERROR_LABELS: Record<string, string> = {
+  no_credentials: "No Claude credentials found",
+  token_expired: "Claude session expired — run /login",
+  rate_limited: "Usage API rate limited",
+  curl_failed: "Usage API unreachable",
+  invoke_failed: "Failed to fetch usage",
+};
+
+async function refreshUsage(force = false) {
+  const cd = usageProfile.value?.configDir;
+  const args: Record<string, unknown> = {};
+  if (cd) args.configDir = cd;
+  if (force) args.force = true;
+  const prevError = usageError.value;
   try {
-    const j = await invoke<{ ok: boolean; usage?: PlanUsage; error?: string }>("claude_plan_usage");
+    const j = await invoke<{ ok: boolean; usage?: PlanUsage; error?: string; message?: string }>("claude_plan_usage", args);
     if (j?.ok && j.usage) {
       planUsage.value = j.usage;
       usageError.value = null;
     } else {
-      usageError.value = j?.error || "unknown";
+      const err = j?.error || "unknown";
+      usageError.value = err;
+      if (err !== prevError) {
+        const profile = usageProfile.value?.name ?? "Default";
+        const body = j?.message ?? ERROR_LABELS[err] ?? err;
+        notifStore.push({
+          type: "error",
+          title: "Claude usage unavailable",
+          body: `${body} (${profile})`,
+        });
+      }
     }
   } catch (e) {
     usageError.value = "invoke_failed";
-    console.error("claude_plan_usage failed", e);
+    if (prevError !== "invoke_failed") {
+      notifStore.push({ type: "error", title: "Claude usage unavailable", body: String(e) });
+    }
   }
 }
 
@@ -474,6 +538,7 @@ function onDocClick() {
   menuOpen.value = false;
   notifOpen.value = false;
   branchPickerOpen.value = false;
+  usageProfileMenuOpen.value = false;
   if (statsOpen.value) { statsOpen.value = false; clearInterval(statsTimer); }
 }
 onMounted(() => {
@@ -745,6 +810,27 @@ const isDev = import.meta.env.DEV;
 }
 .usage-strip.error { opacity: 0.5; }
 .usage-icon { color: #d97706; flex-shrink: 0; }
+
+.usage-profile-wrap { position: relative; display: flex; margin-right: 4px; }
+.usage-profile-btn {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 9px;
+  padding: 1px 4px;
+  transition: color .12s, background .12s;
+}
+.usage-profile-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
+.usage-profile-active { color: var(--accent) !important; }
+.usage-profile-name { max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-profile-menu { top: calc(100% + 4px); left: 0; min-width: 140px; }
+.usage-profile-item-active { color: var(--accent); }
 
 .usage-bar {
   display: inline-flex;
