@@ -3589,6 +3589,11 @@ fn claude_plan_usage(app: AppHandle, config_dir: Option<String>, force: Option<b
         Ok(v) => v,
         Err(_) => return json!({ "ok": false, "error": "bad_json" }),
     };
+    // Org/team accounts: API responds 200 but sets rate_limits_available=false.
+    // Map to permission_error so the frontend falls back to local JSONL scan.
+    if usage.get("rate_limits_available").and_then(|v| v.as_bool()) == Some(false) {
+        return json!({ "ok": false, "error": "permission_error", "message": "Plan limits unavailable for this account type" });
+    }
     // Success shape has "five_hour"; error shape has "error.type" + "error.message".
     if usage.get("five_hour").is_none() {
         let err_type = usage["error"]["type"].as_str().unwrap_or("unknown");

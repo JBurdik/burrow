@@ -87,13 +87,13 @@
         v-for="b in usageBars"
         :key="b.key"
         class="usage-bar"
-        :class="usageSeverity(b.pct)"
+        :class="[usageSeverity(b.pct), b.credit ? 'usage-bar-credit' : '']"
         :title="usageBarTitle(b)"
       >
         <span class="ub-label">{{ b.label }}</span>
         <template v-if="!b.local">
           <span class="ub-track"><span class="ub-fill" :style="{ width: Math.min(b.pct, 100) + '%' }" /></span>
-          <span class="ub-pct">{{ b.pct }}%</span>
+          <span v-if="!b.credit" class="ub-pct">{{ b.pct }}%</span>
         </template>
       </span>
     </div>
@@ -319,11 +319,12 @@ function navigateToNotif(workspaceId?: number, tabId?: number) {
 // ── Claude plan-usage strip ──────────────────────────────────────────────────
 // Real utilization % from the OAuth usage endpoint (Rust `claude_plan_usage`),
 // the same numbers claude.ai's UI shows. Polled every 60s; Rust caches 60s.
-// Fallback for org/team accounts that lack OAuth usage API access: read local
-// JSONL transcripts via `claude_usage_5h` and show raw token count instead.
+// Fallback for org/team accounts (rate_limits_available=false) or missing creds:
+// read local JSONL transcripts via `claude_usage_5h`, show raw token count.
 type UsageWindow = { utilization: number; resets_at?: string };
-type PlanUsage = Record<string, UsageWindow | undefined>;
-type UsageBar = { key: string; label: string; pct: number; resets?: string; local?: boolean };
+type ExtraUsage = { is_enabled: boolean; monthly_limit?: number; used_credits?: number; utilization?: number };
+type PlanUsage = Record<string, UsageWindow | undefined> & { extra_usage?: ExtraUsage };
+type UsageBar = { key: string; label: string; pct: number; resets?: string; local?: boolean; credit?: boolean };
 
 // ── Usage profile selector ──────────────────────────────────────────────────
 const profilesStore = useProfilesStore();
@@ -415,9 +416,10 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
-// One bar per limit window. Sonnet/Opus weekly bars only appear once used —
+// One bar per limit window. Model-specific weekly bars only appear once used —
 // they read 0% on plans that don't split per-model, so showing them is noise.
 // For local fallback: single synthetic bar showing token count (no % available).
+// Extra usage: pay-per-use credit meter shown when is_enabled=true.
 const usageBars = computed<UsageBar[]>(() => {
   if (localUsage.value) {
     const { outputTokens, turnCount } = localUsage.value;
@@ -428,9 +430,9 @@ const usageBars = computed<UsageBar[]>(() => {
   if (!u) return [];
   const out: UsageBar[] = [];
   const add = (key: string, label: string, hideZero = false) => {
-    const w = u[key];
-    if (!w) return;
-    const pct = Math.round(w.utilization || 0);
+    const w = u[key] as UsageWindow | undefined;
+    if (!w || w.utilization === null) return;
+    const pct = Math.round((w.utilization || 0) * 100);
     if (hideZero && pct <= 0) return;
     out.push({ key, label, pct, resets: w.resets_at });
   };
@@ -438,6 +440,13 @@ const usageBars = computed<UsageBar[]>(() => {
   add("seven_day", "wk");
   add("seven_day_sonnet", "son", true);
   add("seven_day_opus", "opus", true);
+  add("seven_day_oauth_apps", "apps", true);
+  // Pay-per-use credit meter
+  const ex = u.extra_usage as ExtraUsage | undefined;
+  if (ex?.is_enabled && ex.monthly_limit && ex.used_credits !== undefined) {
+    const pct = Math.round((ex.utilization || 0) * 100);
+    out.push({ key: "extra_usage", label: `$${ex.used_credits.toFixed(2)}`, pct, credit: true });
+  }
   return out;
 });
 
@@ -464,6 +473,10 @@ function usageBarTitle(b: UsageBar): string {
   if (b.local) {
     const lu = localUsage.value;
     return `5h output tokens (local): ${fmtTokens(lu?.outputTokens ?? 0)} across ${lu?.turnCount ?? 0} turns\nUsage API unavailable for this account — reading local transcripts`;
+  }
+  if (b.credit) {
+    const ex = (planUsage.value as any)?.extra_usage as ExtraUsage | undefined;
+    return `Pay-per-use: $${ex?.used_credits?.toFixed(2) ?? "?"} of $${ex?.monthly_limit?.toFixed(2) ?? "?"}/mo used (${b.pct}%)`;
   }
   const reset = b.resets ? ` · resets in ${relTimeFuture(b.resets)}` : "";
   return `${b.label}: ${b.pct}% used${reset}`;
@@ -924,6 +937,9 @@ const isDev = import.meta.env.DEV;
 .usage-bar.crit .ub-track { border-color: var(--red); background: rgba(248,81,73,0.18); }
 @keyframes usage-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: reduce) { .usage-bar.crit { animation: none; } }
+/* Credit bar: dollar label in amber, track uses amber fill */
+.usage-bar-credit .ub-label { color: #f59e0b; font-style: normal; }
+.usage-bar-credit .ub-fill { background: #f59e0b; }
 
 /* Notification center */
 .titlebar-notif {
