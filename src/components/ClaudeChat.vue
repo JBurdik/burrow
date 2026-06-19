@@ -174,6 +174,11 @@
             <span class="tool-name">{{ msg.text }}</span>
           </div>
         </template>
+        <template v-else-if="msg.role === 'permission'">
+          <div class="bubble bubble-permission" :class="msg.text.startsWith('✓') ? 'perm-granted' : 'perm-rejected'">
+            <span class="perm-log-text">{{ msg.text }}</span>
+          </div>
+        </template>
         <template v-else-if="msg.role === 'thinking'">
           <details class="bubble-thinking">
             <summary class="thinking-summary">Thinking…</summary>
@@ -378,7 +383,7 @@ function shareSelection() {
 
 interface ChatMessage {
   id: number;
-  role: "user" | "assistant" | "tool" | "thinking";
+  role: "user" | "assistant" | "tool" | "thinking" | "permission";
   text: string;
   images?: string[]; // data URIs for user messages with attached images
   partial?: boolean;
@@ -468,11 +473,15 @@ let unlisten: UnlistenFn | null = null;
 // Permission mode (per-chat, persisted). Mirrors the VS Code extension's mode picker.
 type PermMode = "default" | "acceptEdits" | "bypassPermissions";
 const PERM_KEY = (id: number) => `burrow.claude.permMode.${id}`;
+const PERM_LAST_KEY = "burrow.claude.permMode.last";
 function loadPermMode(id: number): PermMode {
   const v = localStorage.getItem(PERM_KEY(id));
   if (v === "acceptEdits" || v === "bypassPermissions" || v === "default") return v;
   // Migrate the old boolean "dangerous mode" flag → bypassPermissions.
   if (localStorage.getItem(`burrow.claude.dangerous.${id}`) === "1") return "bypassPermissions";
+  // New chat: inherit the last-used mode so the user doesn't have to re-pick every time.
+  const last = localStorage.getItem(PERM_LAST_KEY);
+  if (last === "acceptEdits" || last === "bypassPermissions" || last === "default") return last;
   return "default";
 }
 const permMode = ref<PermMode>(loadPermMode(props.chatId));
@@ -917,13 +926,20 @@ function respondPermission(allow: boolean, opts?: { always?: boolean; updatedInp
   if (!cr) return;
   pendingPermission.value = null;
   pendingDiff.value = null;
+  const detail = (cr.input.command ?? cr.input.file_path ?? cr.input.path ?? cr.description ?? "") as string;
+  const detailStr = detail ? ` — ${detail.length > 80 ? detail.slice(0, 80) + "…" : detail}` : "";
   if (allow) {
     if (opts?.always) {
       const keys = ruleKeys(cr.toolName, cr.input);
       chats.addPermissionRule(keys[keys.length - 1]);
     }
+    const label = opts?.always ? "✓ Always allowed" : "✓ Allowed";
+    messages.value.push({ id: nextMsgId++, role: "permission", text: `${label}: ${cr.toolName}${detailStr}` });
+    saveMessages(props.chatId, messages.value);
     respondControl(cr.requestId, { behavior: "allow", updatedInput: opts?.updatedInput ?? cr.input });
   } else {
+    messages.value.push({ id: nextMsgId++, role: "permission", text: `✗ Denied: ${cr.toolName}${detailStr}` });
+    saveMessages(props.chatId, messages.value);
     respondControl(cr.requestId, { behavior: "deny", message: opts?.message || "User denied this action." });
   }
 }
@@ -977,6 +993,7 @@ async function selectPermMode(mode: PermMode) {
   if (mode === permMode.value) return;
   permMode.value = mode;
   localStorage.setItem(PERM_KEY(props.chatId), permMode.value);
+  localStorage.setItem(PERM_LAST_KEY, permMode.value);
   suppressNextDone.value = true; // restart below — don't toast on the teardown `exit`
   await invoke("claude_stop", { id: props.chatId }).catch(() => {});
   await invoke("claude_start", {
@@ -1729,6 +1746,30 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 }
 .tool-icon { color: var(--accent); flex-shrink: 0; opacity: 0.8; }
 .tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.bubble-permission {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bubble-permission.perm-granted {
+  background: color-mix(in srgb, #16a34a 12%, transparent);
+  border: 1px solid color-mix(in srgb, #16a34a 30%, transparent);
+  color: #4ade80;
+}
+.bubble-permission.perm-rejected {
+  background: color-mix(in srgb, #b91c1c 12%, transparent);
+  border: 1px solid color-mix(in srgb, #b91c1c 30%, transparent);
+  color: #f87171;
+}
+.perm-log-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .chat-thinking {
   display: flex;
