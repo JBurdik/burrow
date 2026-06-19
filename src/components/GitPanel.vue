@@ -276,7 +276,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, inject } from "vue";
+import { ref, computed, watch, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
   PhGitBranch, PhGitCommit, PhFolder,
@@ -289,8 +289,6 @@ import { useWorkspaceStore } from "@/stores/workspace";
 
 const git = useGitStore();
 const wsStore = useWorkspaceStore();
-const activeTerm = inject<() => any>("activeTerm", () => undefined);
-
 const selectedWsId = ref<number | null>(wsStore.active?.id ?? null);
 const showBranchDropdown = ref(false);
 const newBranchMode = ref(false);
