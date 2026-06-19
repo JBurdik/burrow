@@ -91,8 +91,10 @@
         :title="usageBarTitle(b)"
       >
         <span class="ub-label">{{ b.label }}</span>
-        <span class="ub-track"><span class="ub-fill" :style="{ width: Math.min(b.pct, 100) + '%' }" /></span>
-        <span class="ub-pct">{{ b.pct }}%</span>
+        <template v-if="!b.local">
+          <span class="ub-track"><span class="ub-fill" :style="{ width: Math.min(b.pct, 100) + '%' }" /></span>
+          <span class="ub-pct">{{ b.pct }}%</span>
+        </template>
       </span>
     </div>
 
@@ -317,9 +319,11 @@ function navigateToNotif(workspaceId?: number, tabId?: number) {
 // ── Claude plan-usage strip ──────────────────────────────────────────────────
 // Real utilization % from the OAuth usage endpoint (Rust `claude_plan_usage`),
 // the same numbers claude.ai's UI shows. Polled every 60s; Rust caches 60s.
+// Fallback for org/team accounts that lack OAuth usage API access: read local
+// JSONL transcripts via `claude_usage_5h` and show raw token count instead.
 type UsageWindow = { utilization: number; resets_at?: string };
 type PlanUsage = Record<string, UsageWindow | undefined>;
-type UsageBar = { key: string; label: string; pct: number; resets?: string };
+type UsageBar = { key: string; label: string; pct: number; resets?: string; local?: boolean };
 
 // ── Usage profile selector ──────────────────────────────────────────────────
 const profilesStore = useProfilesStore();
@@ -335,16 +339,13 @@ function selectUsageProfile(id: string) {
 }
 
 const planUsage = ref<PlanUsage | null>(null);
+const localUsage = ref<{ outputTokens: number; turnCount: number } | null>(null);
 const usageError = ref<string | null>(null);
 let usageTimer: number | undefined;
 
-const ERROR_LABELS: Record<string, string> = {
-  no_credentials: "No Claude credentials found",
-  token_expired: "Claude session expired — run /login",
-  rate_limited: "Usage API rate limited",
-  curl_failed: "Usage API unreachable",
-  invoke_failed: "Failed to fetch usage",
-};
+// Errors that mean the OAuth usage API won't work for this account type —
+// fall back to local transcript scan instead of showing an error.
+const LOCAL_FALLBACK_ERRORS = new Set(["token_expired", "no_credentials", "permission_error"]);
 
 async function refreshUsage(force = false) {
   const cd = usageProfile.value?.configDir;
@@ -356,18 +357,27 @@ async function refreshUsage(force = false) {
     const j = await invoke<{ ok: boolean; usage?: PlanUsage; error?: string; message?: string }>("claude_plan_usage", args);
     if (j?.ok && j.usage) {
       planUsage.value = j.usage;
+      localUsage.value = null;
       usageError.value = null;
     } else {
       const err = j?.error || "unknown";
-      usageError.value = err;
-      if (err !== prevError) {
-        const profile = usageProfile.value?.name ?? "Default";
-        const body = j?.message ?? ERROR_LABELS[err] ?? err;
-        notifStore.push({
-          type: "error",
-          title: "Claude usage unavailable",
-          body: `${body} (${profile})`,
-        });
+      if (LOCAL_FALLBACK_ERRORS.has(err)) {
+        // Org/team account or missing credentials — read local transcripts instead.
+        planUsage.value = null;
+        usageError.value = null;
+        const local = await invoke<{ outputTokens: number; turnCount: number }>(
+          "claude_usage_5h",
+          cd ? { configDir: cd } : {},
+        );
+        localUsage.value = local;
+      } else {
+        localUsage.value = null;
+        usageError.value = err;
+        if (err !== prevError) {
+          const profile = usageProfile.value?.name ?? "Default";
+          const body = j?.message ?? err;
+          notifStore.push({ type: "error", title: "Claude usage unavailable", body: `${body} (${profile})` });
+        }
       }
     }
   } catch (e) {
@@ -378,9 +388,21 @@ async function refreshUsage(force = false) {
   }
 }
 
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
 // One bar per limit window. Sonnet/Opus weekly bars only appear once used —
 // they read 0% on plans that don't split per-model, so showing them is noise.
+// For local fallback: single synthetic bar showing token count (no % available).
 const usageBars = computed<UsageBar[]>(() => {
+  if (localUsage.value) {
+    const { outputTokens, turnCount } = localUsage.value;
+    if (outputTokens === 0 && turnCount === 0) return [];
+    return [{ key: "local_5h", label: fmtTokens(outputTokens), pct: 0, local: true }];
+  }
   const u = planUsage.value;
   if (!u) return [];
   const out: UsageBar[] = [];
@@ -418,6 +440,10 @@ function relTimeFuture(iso?: string): string {
 }
 
 function usageBarTitle(b: UsageBar): string {
+  if (b.local) {
+    const lu = localUsage.value;
+    return `5h output tokens (local): ${fmtTokens(lu?.outputTokens ?? 0)} across ${lu?.turnCount ?? 0} turns\nUsage API unavailable for this account — reading local transcripts`;
+  }
   const reset = b.resets ? ` · resets in ${relTimeFuture(b.resets)}` : "";
   return `${b.label}: ${b.pct}% used${reset}`;
 }

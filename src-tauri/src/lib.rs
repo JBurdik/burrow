@@ -3586,14 +3586,18 @@ fn claude_plan_usage(app: AppHandle, config_dir: Option<String>, force: Option<b
 /// Scan ~/.claude/projects/**/*.jsonl and aggregate assistant turn data from the
 /// last 5 hours. Returns { outputTokens, turnCount } — no external crates needed.
 #[tauri::command]
-fn claude_usage_5h(app: AppHandle) -> serde_json::Value {
+fn claude_usage_5h(app: AppHandle, config_dir: Option<String>) -> serde_json::Value {
     use std::io::{BufRead, BufReader};
 
-    let home = match app.path().home_dir() {
-        Ok(h) => h,
-        Err(_) => return json!({ "outputTokens": 0, "turnCount": 0 }),
+    let projects_dir = if let Some(cd) = config_dir.filter(|s| !s.is_empty()) {
+        std::path::PathBuf::from(cd).join("projects")
+    } else {
+        let home = match app.path().home_dir() {
+            Ok(h) => h,
+            Err(_) => return json!({ "outputTokens": 0, "turnCount": 0 }),
+        };
+        home.join(".claude/projects")
     };
-    let projects_dir = home.join(".claude/projects");
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
