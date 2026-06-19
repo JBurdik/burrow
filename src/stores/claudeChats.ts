@@ -16,6 +16,8 @@ export interface ClaudeSession {
   // The hidden per-repo Manager (Mission Control) session — kept out of the
   // Sidebar chat list so it isn't a duplicate of the floating Manager card.
   control?: boolean;
+  // Set when the user manually renames the tab — prevents auto-title from overwriting.
+  pinnedTitle?: boolean;
 }
 
 const SESSIONS_KEY = "burrow.claude.sessions";
