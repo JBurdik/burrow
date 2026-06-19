@@ -2778,6 +2778,31 @@ fn init_db(app: &AppHandle) -> Result<Connection, rusqlite::Error> {
     Ok(conn)
 }
 
+// ── Git panel popout window ──────────────────────────────────────────────────
+
+#[tauri::command]
+fn open_git_panel_window(app: AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    let label = "gitpanel";
+
+    if let Some(win) = app.get_webview_window(label) {
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let win = WebviewWindowBuilder::new(&app, label, WebviewUrl::App("index.html".into()))
+        .title("Git")
+        .inner_size(700.0, 520.0)
+        .min_inner_size(500.0, 300.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let _ = win;
+    Ok(())
+}
+
 // ── Float window ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -3824,6 +3849,7 @@ pub fn run() {
             list_mcp_servers,
             add_mcp_server,
             remove_mcp_server,
+            open_git_panel_window,
             open_float_window,
             get_float_params,
             set_window_size,

@@ -62,6 +62,9 @@
       <button class="gp-icon-btn" :disabled="git.loading" @click="git.refresh()" title="Refresh">
         <PhArrowClockwise :size="14" :class="{ spin: git.loading }" />
       </button>
+      <button v-if="!isPopout" class="gp-icon-btn" @click="popout()" title="Pop out to window">
+        <PhArrowSquareOut :size="14" />
+      </button>
     </div>
 
     <!-- Branch dropdown -->
@@ -281,6 +284,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   PhGitBranch, PhGitCommit, PhFolder,
   PhArrowUp, PhArrowDown, PhArrowLeft, PhArrowClockwise, PhArrowsClockwise,
+  PhArrowSquareOut,
   PhCaretDown, PhCaretRight,
   PhWarning, PhX, PhCheck, PhPlus,
 } from "@phosphor-icons/vue";
@@ -289,6 +293,11 @@ import { useWorkspaceStore } from "@/stores/workspace";
 
 const git = useGitStore();
 const wsStore = useWorkspaceStore();
+const isPopout = (window as any).__TAURI_INTERNALS__?.metadata?.currentWindow?.label === "gitpanel";
+
+async function popout() {
+  await invoke("open_git_panel_window");
+}
 const selectedWsId = ref<number | null>(wsStore.active?.id ?? null);
 const showBranchDropdown = ref(false);
 const newBranchMode = ref(false);
@@ -394,6 +403,36 @@ async function openCommitDiff(c: GitCommit) {
   commitDiff.value = { hash: c.hash, subject: `${c.shortHash} ${c.subject}`, text: out.stdout };
 }
 </script>
+
+<style>
+/* Global resets — needed when GitPanel is mounted as the root component in the
+   popout window (where App.vue's :root block is not loaded). Harmless when
+   embedded in the main app since the values are identical. */
+:root {
+  --bg-base: #0d0d0d;
+  --bg-panel: #111111;
+  --bg-hover: #1a1a1a;
+  --border: #2a2a2a;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent: #3b82f6;
+  --green: #22c55e;
+  --yellow: #eab308;
+  --red: #ef4444;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  margin: 0;
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+</style>
 
 <style scoped>
 .git-panel {

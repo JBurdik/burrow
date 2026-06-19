@@ -7,8 +7,15 @@ async function boot() {
   // In Tauri, window label is synchronously accessible via internals
   const label: string = (window as any).__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? "";
   const isFloat = label.startsWith("float-");
+  const isGitPanel = label === "gitpanel";
 
-  if (isFloat) {
+  if (isGitPanel) {
+    document.getElementById("app")!.style.height = "100vh";
+    const { default: GitPanel } = await import("./components/GitPanel.vue");
+    const app = createApp(GitPanel);
+    app.use(pinia);
+    app.mount("#app");
+  } else if (isFloat) {
     // ptyId is always derivable from the label (float-{ptyId})
     const ptyId = Number(label.replace("float-", "")) || 0;
     let wsId = 0;
