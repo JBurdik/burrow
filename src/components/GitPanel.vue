@@ -211,7 +211,7 @@
       <!-- RIGHT: diff + history -->
       <div class="gp-right">
 
-        <!-- Diff view -->
+        <!-- Diff view: file diff -->
         <div v-if="git.diffFile" class="gp-diff">
           <div class="gp-diff-header">
             <span class="gp-diff-title">{{ git.diffFile }}</span>
@@ -225,6 +225,21 @@
           >{{ line }}
 </span></pre>
         </div>
+
+        <!-- Diff view: commit diff -->
+        <div v-else-if="commitDiff" class="gp-diff">
+          <div class="gp-diff-header">
+            <span class="gp-diff-title">{{ commitDiff.subject }}</span>
+            <button class="gp-icon-btn" @click="commitDiff = null" title="Close diff"><PhX :size="11" /></button>
+          </div>
+          <pre class="gp-diff-view"><span
+            v-for="(line, idx) in commitDiff.text.split('\n')"
+            :key="idx"
+            :class="diffLineClass(line)"
+          >{{ line }}
+</span></pre>
+        </div>
+
         <div v-else class="gp-diff-empty">
           <PhArrowLeft :size="16" />
           Click a file to view diff
@@ -243,7 +258,7 @@
               v-for="(c, i) in git.log"
               :key="c.hash"
               class="gp-log-row"
-              :class="{ unpushed: i < git.ahead }"
+              :class="{ unpushed: i < git.ahead, active: commitDiff?.hash === c.hash }"
               :title="c.subject + '\n' + c.author + (i < git.ahead ? '\n↑ Not pushed' : '')"
               @click="openCommitDiff(c)"
             >
@@ -283,6 +298,7 @@ const newBranchName = ref("");
 const newBranchInputRef = ref<HTMLInputElement | null>(null);
 const showHistory = ref(true);
 const activeDiff = ref<{ path: string; staged: boolean } | null>(null);
+const commitDiff = ref<{ hash: string; subject: string; text: string } | null>(null);
 
 const COMMIT_TYPES = ["feat", "fix", "docs", "chore", "refactor", "test", "style"] as const;
 
@@ -331,6 +347,7 @@ async function confirmNewBranch() {
 }
 
 function toggleDiff(path: string, staged: boolean) {
+  commitDiff.value = null;
   if (activeDiff.value?.path === path && activeDiff.value?.staged === staged) {
     activeDiff.value = null;
     git.clearDiff();
@@ -363,6 +380,10 @@ async function commitAndPush() {
 }
 
 async function openCommitDiff(c: GitCommit) {
+  if (commitDiff.value?.hash === c.hash) {
+    commitDiff.value = null;
+    return;
+  }
   const w = wsStore.topLevel.find((w) => w.id === selectedWsId.value);
   if (!w) return;
   const out = await invoke<{ stdout: string; stderr: string; code: number }>("run_git", {
@@ -370,7 +391,9 @@ async function openCommitDiff(c: GitCommit) {
     args: ["show", c.hash],
   });
   if (out.code !== 0 || !out.stdout) return;
-  activeTerm()?.openDiffInTab(`${c.shortHash} ${c.subject}`, false, out.stdout);
+  activeDiff.value = null;
+  git.clearDiff();
+  commitDiff.value = { hash: c.hash, subject: `${c.shortHash} ${c.subject}`, text: out.stdout };
 }
 </script>
 
@@ -943,6 +966,7 @@ async function openCommitDiff(c: GitCommit) {
 .gp-log-row:hover { background: var(--bg-hover); }
 .gp-log-row.unpushed { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .gp-log-row.unpushed:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.gp-log-row.active { background: color-mix(in srgb, var(--accent) 9%, transparent); }
 
 .gp-log-hash {
   font-family: var(--font-mono);
