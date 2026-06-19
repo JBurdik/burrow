@@ -478,8 +478,8 @@ function tabIsAgent(tab: Tab): boolean {
   return (focused ?? leaves[0])?.isAgent ?? false;
 }
 
-function isChat(_tab: Tab): boolean {
-  return false;
+function isChat(tab: Tab): boolean {
+  return tabIsChat(tab);
 }
 
 // A single-leaf editor tab shows a file icon + dirty dot instead of a status dot.
@@ -1302,6 +1302,25 @@ function syncStore() {
 }
 
 watch([tabs, activeTabId, focusedLeafId], syncStore, { deep: true });
+
+// Sync chat session status → leaf.status so the Sidebar dot and tab-bar dot
+// stay live. Chat leaves have no PTY events, so status must flow from the store.
+watch(
+  () => chatsStore.sessions.map((s) => ({ id: s.id, status: s.status })),
+  (sessions) => {
+    for (const sess of sessions) {
+      for (const tab of tabs.value) {
+        const leaf = getAllLeaves(tab.root).find(
+          (l) => l.leafType === "chat" && l.chatId === sess.id,
+        );
+        if (leaf && leaf.status !== (sess.status ?? "idle")) {
+          leaf.status = sess.status ?? "idle";
+        }
+      }
+    }
+  },
+  { deep: true },
+);
 
 // When the user switches TO this workspace (with the window focused), treat its
 // active tab as seen so a "review" badge earned while it was hidden clears.
