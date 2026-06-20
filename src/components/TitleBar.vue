@@ -364,7 +364,7 @@ const usageBars = computed<UsageBar[]>(() => {
   const add = (key: string, label: string, hideZero = false) => {
     const w = u[key] as UsageWindow | undefined;
     if (!w || w.utilization === null) return;
-    const pct = Math.round((w.utilization || 0) * 100);
+    const pct = Math.round(w.utilization || 0);
     if (hideZero && pct <= 0) return;
     out.push({ key, label, pct, resets: w.resets_at });
   };
@@ -376,7 +376,7 @@ const usageBars = computed<UsageBar[]>(() => {
   // Pay-per-use credit meter
   const ex = u.extra_usage as ExtraUsage | undefined;
   if (ex?.is_enabled && ex.monthly_limit && ex.used_credits !== undefined) {
-    const pct = Math.round((ex.utilization || 0) * 100);
+    const pct = Math.round(ex.utilization || 0);
     out.push({ key: "extra_usage", label: `$${ex.used_credits.toFixed(2)}`, pct, credit: true });
   }
   return out;
