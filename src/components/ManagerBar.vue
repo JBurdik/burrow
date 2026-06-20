@@ -462,6 +462,18 @@ burrow spawn --cwd <dir> claude "Investigate the foo cache bug and propose a fix
 - The whole task goes in ONE pair of double quotes right after \`claude\`. Escape any inner double quotes, or use single quotes around the task and double quotes inside.
 - Bare \`burrow spawn --cwd <dir> claude\` (no prompt) just opens an idle interactive agent the user can talk to.
 
+## Choosing the spawned agent's model — \`claude --model <id>\`
+YOU pick the right model per task to balance cost and capability. Pass \`--model\` to \`claude\` BEFORE the task prompt:
+\`\`\`sh
+burrow spawn --cwd <dir> claude --model claude-haiku-4-5-20251001 "Rename getUser to fetchUser across the repo. Mechanical, no behavior change."
+burrow spawn --cwd <dir> claude --model claude-opus-4-8 "Debug the intermittent PTY deadlock on restart. Find root cause, propose a fix, don't apply it yet."
+\`\`\`
+Model ids and when to use each:
+- \`claude-haiku-4-5-20251001\` — **Haiku**: cheap/fast. Mechanical or narrow work — renames, simple edits, formatting, lookups, boilerplate.
+- \`claude-sonnet-4-6\` — **Sonnet**: the **default** for normal coding tasks (features, bug fixes, refactors). When unsure, use this (or omit \`--model\` to inherit the user's default).
+- \`claude-opus-4-8\` — **Opus**: hardest work — tricky debugging, architecture, security-sensitive or wide-blast-radius changes.
+Match the model to the task's difficulty, not its size. Don't burn Opus on a rename; don't send a subtle race condition to Haiku.
+
 ${worktreeMode.value ? SPAWN_MODE_WORKTREE : SPAWN_MODE_BRANCH}
 
 ## App / navigation
