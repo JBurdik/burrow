@@ -29,7 +29,7 @@ const store = useNotificationsStore();
 .toast-stack {
   position: fixed;
   bottom: 20px;
-  right: 20px;
+  left: 20px;
   z-index: 9999;
   display: flex;
   flex-direction: column;
@@ -86,5 +86,5 @@ const store = useNotificationsStore();
 .toast-enter-active { transition: all 0.2s ease; }
 .toast-leave-active { transition: all 0.18s ease; }
 .toast-enter-from   { opacity: 0; transform: translateY(12px); }
-.toast-leave-to     { opacity: 0; transform: translateX(24px); }
+.toast-leave-to     { opacity: 0; transform: translateX(-24px); }
 </style>
