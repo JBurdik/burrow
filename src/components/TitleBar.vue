@@ -97,6 +97,17 @@
         </template>
       </span>
     </div>
+    <!-- Stale-login hint: token expired, we don't refresh (Claude CLI does on
+         launch). Tells the user to run claude in this profile to get live %. -->
+    <div
+      v-if="usageStale"
+      class="usage-stale-hint"
+      :title="`${usageProfile?.name ?? 'Profile'} logged out — run ${usageProfile?.command || 'claude'} to refresh usage`"
+      data-tauri-drag-region
+    >
+      <PhSignOut :size="11" />
+      <span>run <code>{{ usageProfile?.command || 'claude' }}</code></span>
+    </div>
 
     <div class="titlebar-center" data-tauri-drag-region>
       <button v-if="workspaceName" class="back-btn" @click="$emit('back')" title="Switch workspace">
@@ -238,7 +249,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus, PhSkull, PhUserGear } from "@phosphor-icons/vue";
+import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus, PhSkull, PhUserGear, PhSignOut } from "@phosphor-icons/vue";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
@@ -342,6 +353,9 @@ function selectUsageProfile(id: string) {
 const planUsage = ref<PlanUsage | null>(null);
 const localUsage = ref<{ outputTokens: number; turnCount: number } | null>(null);
 const usageError = ref<string | null>(null);
+// Token exists but expired: profile is "logged out". We don't refresh (Claude CLI
+// does on launch), so hint the user to run claude rather than show a stale/empty bar.
+const usageStale = ref(false);
 let usageTimer: number | undefined;
 
 // Errors that mean the OAuth usage API won't work for this account type —
@@ -360,6 +374,7 @@ async function refreshUsage(force = false) {
   if (profile?.orgAccount) {
     planUsage.value = null;
     usageError.value = null;
+    usageStale.value = false;
     try {
       const local = await invoke<{ outputTokens: number; turnCount: number }>(
         "claude_usage_5h",
@@ -381,12 +396,15 @@ async function refreshUsage(force = false) {
       planUsage.value = j.usage;
       localUsage.value = null;
       usageError.value = null;
+      usageStale.value = false;
     } else {
       const err = j?.error || "unknown";
       if (LOCAL_FALLBACK_ERRORS.has(err)) {
-        // Missing credentials — read local transcripts instead.
+        // Missing/expired credentials — read local transcripts instead. An expired
+        // token (token_expired) also flags the profile as stale so the UI hints.
         planUsage.value = null;
         usageError.value = null;
+        usageStale.value = err === "token_expired";
         const local = await invoke<{ outputTokens: number; turnCount: number }>(
           "claude_usage_5h",
           cd ? { configDir: cd } : {},
@@ -394,6 +412,7 @@ async function refreshUsage(force = false) {
         localUsage.value = local;
       } else {
         localUsage.value = null;
+        usageStale.value = false;
         usageError.value = err;
         if (err !== prevError) {
           const pname = profile?.name ?? "Default";
@@ -404,6 +423,7 @@ async function refreshUsage(force = false) {
     }
   } catch (e) {
     usageError.value = "invoke_failed";
+    usageStale.value = false;
     if (prevError !== "invoke_failed") {
       notifStore.push({ type: "error", title: "Claude usage unavailable", body: String(e) });
     }
@@ -870,6 +890,24 @@ const isDev = import.meta.env.DEV;
 }
 .usage-strip.error { opacity: 0.5; }
 .usage-icon { color: #d97706; flex-shrink: 0; }
+
+.usage-stale-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.usage-stale-hint code {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-secondary);
+}
 
 .usage-profile-wrap { position: relative; display: flex; margin-right: 4px; }
 .usage-profile-btn {

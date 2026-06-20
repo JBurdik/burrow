@@ -3528,14 +3528,14 @@ fn token_if_valid(raw: &str) -> Option<String> {
     oauth["accessToken"].as_str().map(|s| s.to_string())
 }
 
-fn read_claude_oauth_token(app: &AppHandle, config_dir: Option<&str>) -> Option<String> {
-    let mut raw: Option<String> = None;
-    // An explicit profile config_dir: read ONLY that profile's creds — never fall
-    // back to the default account / keychain, or a profile with no creds would
-    // silently mirror the default account's usage (the "switch shows same values"
-    // bug). Probe both `<cd>/.credentials.json` and `<cd>/.claude/.credentials.json`:
-    // claude with CLAUDE_CONFIG_DIR=<dir> writes creds under <dir>/.claude/ even
-    // though `projects/` lands directly in <dir>.
+/// Resolve the raw creds JSON blob for a profile — no expiry/parse, just the bytes.
+/// An explicit profile config_dir reads ONLY that profile's creds (never falls back
+/// to the default account / keychain, or a profile with no creds would silently
+/// mirror the default account's usage — the "switch shows same values" bug). Probes
+/// both `<cd>/.credentials.json` and `<cd>/.claude/.credentials.json`: claude with
+/// CLAUDE_CONFIG_DIR=<dir> writes creds under <dir>/.claude/ even though `projects/`
+/// lands directly in <dir>.
+fn load_claude_creds_raw(app: &AppHandle, config_dir: Option<&str>) -> Option<String> {
     if let Some(cd) = config_dir.filter(|s| !s.is_empty()) {
         let expanded = if cd.starts_with("~/") {
             app.path().home_dir().ok()
@@ -3545,19 +3545,13 @@ fn read_claude_oauth_token(app: &AppHandle, config_dir: Option<&str>) -> Option<
             cd.to_string()
         };
         let base = std::path::Path::new(&expanded);
-        let raw = std::fs::read_to_string(base.join(".credentials.json"))
+        return std::fs::read_to_string(base.join(".credentials.json"))
             .or_else(|_| std::fs::read_to_string(base.join(".claude/.credentials.json")))
             .ok();
-        // Explicit profile: stop here. None → caller surfaces no_credentials and
-        // falls back to that profile's local JSONL scan, not the default account.
-        return token_if_valid(&raw?);
     }
     // Default profile (no config_dir): ~/.claude/.credentials.json then keychain.
-    if raw.is_none() {
-        raw = app.path().home_dir().ok()
-            .and_then(|h| std::fs::read_to_string(h.join(".claude/.credentials.json")).ok());
-    }
-    // Fall back to macOS keychain (Claude stores creds here by default on macOS).
+    let mut raw = app.path().home_dir().ok()
+        .and_then(|h| std::fs::read_to_string(h.join(".claude/.credentials.json")).ok());
     #[cfg(target_os = "macos")]
     if raw.is_none() {
         if let Ok(out) = std::process::Command::new("security")
@@ -3572,7 +3566,32 @@ fn read_claude_oauth_token(app: &AppHandle, config_dir: Option<&str>) -> Option<
             }
         }
     }
-    token_if_valid(&raw?)
+    raw
+}
+
+fn read_claude_oauth_token(app: &AppHandle, config_dir: Option<&str>) -> Option<String> {
+    load_claude_creds_raw(app, config_dir).as_deref().and_then(token_if_valid)
+}
+
+/// True when creds DO exist (carry an accessToken) but the token's expiresAt has
+/// passed — i.e. the profile is "logged out" / stale, distinct from no creds at
+/// all. Lets the UI hint "run claude to refresh" instead of silently showing an
+/// empty bar.
+fn claude_creds_expired(app: &AppHandle, config_dir: Option<&str>) -> bool {
+    let Some(raw) = load_claude_creds_raw(app, config_dir) else { return false };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else { return false };
+    let oauth = &v["claudeAiOauth"];
+    if oauth["accessToken"].as_str().is_none() {
+        return false;
+    }
+    if let Some(exp_ms) = oauth["expiresAt"].as_u64() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        return exp_ms < now_ms;
+    }
+    false
 }
 
 /// Returns `{ ok: true, usage: {...} }` where `usage` is the raw upstream blob
@@ -3594,7 +3613,16 @@ fn claude_plan_usage(app: AppHandle, config_dir: Option<String>, force: Option<b
 
     let token = match read_claude_oauth_token(&app, config_dir.as_deref()) {
         Some(t) => t,
-        None => return json!({ "ok": false, "error": "no_credentials" }),
+        // Distinguish a stale (expired) login from no creds at all so the UI can
+        // hint "run claude to refresh". Both still trigger the local JSONL fallback.
+        None => {
+            let err = if claude_creds_expired(&app, config_dir.as_deref()) {
+                "token_expired"
+            } else {
+                "no_credentials"
+            };
+            return json!({ "ok": false, "error": err });
+        }
     };
 
     let out = std::process::Command::new("curl")
