@@ -3508,8 +3508,13 @@ fn iso_to_unix_ms(s: &str) -> Option<u64> {
 static PLAN_USAGE_CACHE: OnceLock<Mutex<std::collections::HashMap<String, (std::time::Instant, serde_json::Value)>>> = OnceLock::new();
 
 fn read_claude_oauth_token(app: &AppHandle, config_dir: Option<&str>) -> Option<String> {
-    // Try custom config_dir's .credentials.json first (if given).
     let mut raw: Option<String> = None;
+    // An explicit profile config_dir: read ONLY that profile's creds — never fall
+    // back to the default account / keychain, or a profile with no creds would
+    // silently mirror the default account's usage (the "switch shows same values"
+    // bug). Probe both `<cd>/.credentials.json` and `<cd>/.claude/.credentials.json`:
+    // claude with CLAUDE_CONFIG_DIR=<dir> writes creds under <dir>/.claude/ even
+    // though `projects/` lands directly in <dir>.
     if let Some(cd) = config_dir.filter(|s| !s.is_empty()) {
         let expanded = if cd.starts_with("~/") {
             app.path().home_dir().ok()
@@ -3518,9 +3523,16 @@ fn read_claude_oauth_token(app: &AppHandle, config_dir: Option<&str>) -> Option<
         } else {
             cd.to_string()
         };
-        raw = std::fs::read_to_string(std::path::Path::new(&expanded).join(".credentials.json")).ok();
+        let base = std::path::Path::new(&expanded);
+        let raw = std::fs::read_to_string(base.join(".credentials.json"))
+            .or_else(|_| std::fs::read_to_string(base.join(".claude/.credentials.json")))
+            .ok();
+        // Explicit profile: stop here. None → caller surfaces no_credentials and
+        // falls back to that profile's local JSONL scan, not the default account.
+        let v: serde_json::Value = serde_json::from_str(&raw?).ok()?;
+        return v["claudeAiOauth"]["accessToken"].as_str().map(|s| s.to_string());
     }
-    // Fall back to ~/.claude/.credentials.json.
+    // Default profile (no config_dir): ~/.claude/.credentials.json then keychain.
     if raw.is_none() {
         raw = app.path().home_dir().ok()
             .and_then(|h| std::fs::read_to_string(h.join(".claude/.credentials.json")).ok());
@@ -3620,7 +3632,19 @@ fn claude_usage_5h(app: AppHandle, config_dir: Option<String>) -> serde_json::Va
     use std::io::{BufRead, BufReader};
 
     let projects_dir = if let Some(cd) = config_dir.filter(|s| !s.is_empty()) {
-        std::path::PathBuf::from(cd).join("projects")
+        // Expand a leading ~ (PathBuf::from would take it literally) and probe both
+        // `<cd>/projects` and `<cd>/.claude/projects` — claude's transcripts land in
+        // one or the other depending on how CLAUDE_CONFIG_DIR is laid out.
+        let expanded = if cd.starts_with("~/") {
+            app.path().home_dir().ok()
+                .map(|h| format!("{}{}", h.display(), &cd[1..]))
+                .unwrap_or_else(|| cd.to_string())
+        } else {
+            cd.to_string()
+        };
+        let base = std::path::Path::new(&expanded);
+        let direct = base.join("projects");
+        if direct.is_dir() { direct } else { base.join(".claude/projects") }
     } else {
         let home = match app.path().home_dir() {
             Ok(h) => h,
