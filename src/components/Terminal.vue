@@ -945,14 +945,18 @@ function openBrowserTab(url?: string) {
   activateTab(tab.id);
 }
 
-function addTab(initialCmd?: string, extra?: { cwd?: string; resultToken?: string }): Leaf {
+function addTab(initialCmd?: string, extra?: { cwd?: string; resultToken?: string; background?: boolean }): Leaf {
   const leaf = makeLeaf(initialCmd, extra);
   const tab: Tab = { id: leaf.id, root: leaf };
   tabs.value.push(tab);
-  activeTabId.value = tab.id;
-  focusedLeafId.value = leaf.id;
   registerLeafListeners(leaf.id);
-  nextTick(() => xtermRefs.get(leaf.id)?.focus());
+  // `background` keeps focus on the current tab (e.g. `burrow spawn` sub-agents
+  // open on the side without yanking the user away). PTY still spawns on mount.
+  if (!extra?.background) {
+    activeTabId.value = tab.id;
+    focusedLeafId.value = leaf.id;
+    nextTick(() => xtermRefs.get(leaf.id)?.focus());
+  }
   return leaf;
 }
 
@@ -1515,7 +1519,7 @@ onMounted(() => {
             tabsStore.add(targetWs, r.cmd || undefined);
           }
         } else {
-          const leaf = addTab(r.cmd, { cwd: r.cwd || undefined, resultToken: r.token || undefined });
+          const leaf = addTab(r.cmd, { cwd: r.cwd || undefined, resultToken: r.token || undefined, background: true });
           if (r.tmuxWin) {
             invoke("register_tmux_win", { winId: r.tmuxWin, ptyId: leaf.id });
           }
