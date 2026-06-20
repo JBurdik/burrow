@@ -87,6 +87,7 @@ const emit = defineEmits<{
   openSettings: [];
   openBrowser: [];
   repaint: [];
+  toggleManager: [];
 }>();
 
 const isOpen = ref(false);
@@ -181,6 +182,7 @@ const sections = computed(() => {
       action: () => { wsStore.open(w); close(); },
     })),
     ...([
+      { id: "cmd-manager", title: "Toggle Manager", icon: PhSparkle as Component, color: "#7C3AED", shortcut: "⌘J", action: () => { emit("toggleManager"); close(); } },
       { id: "cmd-settings", title: "Settings → Agents", icon: PhGear as Component, color: "#555555", shortcut: undefined, action: () => { emit("openSettings"); close(); } },
       { id: "cmd-newterm", title: "New Terminal", icon: PhTerminal as Component, color: "#34d399", shortcut: "⌃`", action: () => { emit("newTerminal"); close(); } },
       { id: "cmd-browser", title: "Open Browser Tab", icon: PhGlobe as Component, color: "#60a5fa", shortcut: undefined, action: () => { emit("openBrowser"); close(); } },

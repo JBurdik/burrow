@@ -29,7 +29,7 @@
             compact
             hide-composer
             model-key="burrow.manager.model"
-            default-model="claude-sonnet-4-6"
+            :default-model="managerModel"
             :chat-id="m.sessionId"
             :workspace-id="m.repoId"
             :cwd="m.cwd"
@@ -56,6 +56,36 @@
         @focus="ensureStarted"
         @keydown.enter.prevent="quickSend"
       />
+
+      <!-- Model picker (Manager has its own model, default Sonnet) -->
+      <div class="mb-wt">
+        <button
+          class="mb-wt-btn"
+          title="Manager model"
+          @click="mdlMenuOpen = !mdlMenuOpen"
+        >
+          <PhCpu :size="13" weight="bold" />
+          <span class="mb-wt-label">{{ managerModelLabel }}</span>
+          <PhCaretUp :size="9" weight="bold" class="mb-wt-caret" />
+        </button>
+        <div v-if="mdlMenuOpen" class="mb-wt-menu mb-wt-menu-narrow">
+          <div class="mb-wt-menu-head">Manager model</div>
+          <button
+            v-for="m in MANAGER_MODELS"
+            :key="m.id"
+            class="mb-wt-item"
+            :class="{ 'mb-wt-item-on': managerModel === m.id }"
+            @click="selectManagerModel(m.id)"
+          >
+            <PhCpu :size="14" weight="bold" />
+            <div class="mb-wt-item-text">
+              <span class="mb-wt-item-title">{{ m.label }}</span>
+              <span class="mb-wt-item-sub">{{ m.note }}</span>
+            </div>
+            <PhCheck v-if="managerModel === m.id" :size="13" weight="bold" class="mb-wt-item-check" />
+          </button>
+        </div>
+      </div>
 
       <!-- Spawn-target picker: clear labeled dropdown (replaces the cryptic
            icon toggle). Tells you where the Manager puts new agents. -->
@@ -112,7 +142,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
-import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck } from "@phosphor-icons/vue";
+import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu } from "@phosphor-icons/vue";
 import ClaudeChat from "./ClaudeChat.vue";
 import { useUIStore } from "@/stores/ui";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
@@ -215,6 +245,32 @@ function selectWorktreeMode(v: boolean) {
   wtMenuOpen.value = false;
 }
 
+// Manager model — its own key, default Sonnet, switchable from the strip.
+const MANAGER_MODEL_KEY = "burrow.manager.model";
+const MANAGER_MODELS = [
+  { id: "claude-sonnet-4-6", label: "Sonnet 4.6", note: "Recommended — balanced orchestration" },
+  { id: "claude-opus-4-8", label: "Opus 4.8", note: "Strongest judgment — heavy multi-agent work" },
+  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", note: "Cheapest — simple dispatch only" },
+] as const;
+const DEFAULT_MANAGER_MODEL = "claude-sonnet-4-6";
+function loadManagerModel(): string {
+  const v = localStorage.getItem(MANAGER_MODEL_KEY);
+  return MANAGER_MODELS.some((m) => m.id === v) ? (v as string) : DEFAULT_MANAGER_MODEL;
+}
+const managerModel = ref<string>(loadManagerModel());
+const managerModelLabel = computed(
+  () => MANAGER_MODELS.find((m) => m.id === managerModel.value)?.label ?? "Model",
+);
+const mdlMenuOpen = ref(false);
+function selectManagerModel(id: string) {
+  mdlMenuOpen.value = false;
+  if (id === managerModel.value) return;
+  managerModel.value = id;
+  localStorage.setItem(MANAGER_MODEL_KEY, id);
+  // Apply live to every mounted Manager chat (they share this model key).
+  chatRefs.forEach((c) => (c as { selectModel?: (m: string) => void }).selectModel?.(id));
+}
+
 // Adopt the active workspace on every switch (no busy guard — the busy repo's
 // chat stays mounted hidden, so re-anchoring can't kill it).
 watch(
@@ -306,7 +362,8 @@ async function quickSend() {
   if (!text) return;
   quickText.value = "";
   ensureStarted();
-  if (!expanded.value) ui.toggleFloatChat();
+  // Stay collapsed on send — the message runs in the background; the strip's
+  // status dot reflects progress. User expands only when they want to read.
   const repoId = rootId.value;
   await nextTick();
   chatRefs.get(repoId)?.sendMessage(text);
@@ -341,8 +398,9 @@ function onResizeUp() {
 // the Manager row instead of behind it.
 const STRIP_H = 38;
 function onDocMouseDown(e: MouseEvent) {
-  if (wtMenuOpen.value && !(e.target as HTMLElement)?.closest(".mb-wt")) {
+  if ((wtMenuOpen.value || mdlMenuOpen.value) && !(e.target as HTMLElement)?.closest(".mb-wt")) {
     wtMenuOpen.value = false;
+    mdlMenuOpen.value = false;
   }
 }
 onMounted(() => {
@@ -570,6 +628,7 @@ Be concise. Confirm what you did. If a request is ambiguous (which worktree? whi
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   z-index: 70;
 }
+.mb-wt-menu-narrow { width: 230px; }
 .mb-wt-menu-head {
   font-size: 10px;
   text-transform: uppercase;

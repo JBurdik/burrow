@@ -53,6 +53,7 @@
       @open-settings="ui.openSettings()"
       @open-browser="activeTerm()?.openBrowserTab()"
       @repaint="activeTerm()?.repaintAll()"
+      @toggle-manager="ui.toggleFloatChat()"
     />
     <ToastStack />
     <UpdateBanner />
@@ -202,6 +203,7 @@ const CHEATSHEET_GROUPS = [
     shortcuts: [
       { keys: "⌘ ,",   desc: "Settings" },
       { keys: "⌘ P",   desc: "Command Palette" },
+      { keys: "⌘ J",   desc: "Toggle Manager" },
       { keys: "⌘ /",   desc: "Keyboard Shortcuts" },
       { keys: "⌘ ⇧ U", desc: "Jump to unread tab" },
       { keys: "Esc",   desc: "Close overlay" },
