@@ -274,7 +274,7 @@
     </div>
 
     <!-- New-style input bar -->
-    <div class="chat-input-wrap">
+    <div v-if="!hideComposer" class="chat-input-wrap">
       <div class="chat-input-box" :class="{ 'input-queued': busy && inputText.trim() }">
         <textarea
           ref="inputEl"
@@ -465,6 +465,10 @@ const props = defineProps<{
   compact?: boolean;
   // Mission-control primer passed to claude_start as --append-system-prompt.
   appendSystemPrompt?: string;
+  // Hide the built-in text composer — the host (e.g. the Manager bar) drives
+  // sends from its own external input via the exposed sendMessage(). Permission
+  // / plan / question gates stay visible.
+  hideComposer?: boolean;
 }>();
 
 const chats = useClaudeChatsStore();

@@ -2,66 +2,69 @@
   <div class="mb-root" :class="{ 'mb-open': expanded }">
     <!-- Drag handle (top border) — resize the expanded panel height -->
     <div
-      v-if="expanded"
+      v-show="expanded"
       class="mb-resize"
       @mousedown="startResize"
     />
 
-    <!-- Expanded panel: chips row + full Manager chat -->
+    <!-- Expanded panel: animated height wrapper keeps the chat mounted while it
+         slides open/closed. Inner panel is fixed-height so content doesn't
+         squish mid-animation. Only PAST MESSAGES live here — the composer is in
+         the strip below. -->
     <div
       v-if="started"
-      v-show="expanded"
-      class="mb-panel"
-      :style="{ height: panelHeight + 'px' }"
+      class="mb-panel-wrap"
+      :style="{ height: (expanded ? panelHeight : 0) + 'px' }"
     >
-      <!-- Context chips: the root repo's worktrees for quick focus -->
-      <div v-if="worktrees.length" class="mb-chips">
-        <PhTree :size="12" weight="bold" class="mb-chips-icon" />
-        <button
-          v-for="wt in worktrees"
-          :key="wt.id"
-          class="mb-chip"
-          :class="{ 'mb-chip-on': activeWsId === wt.id }"
-          :title="wt.path"
-          @click="focusWs(wt)"
-        >
-          <PhGitBranch :size="11" weight="bold" />
-          <span class="mb-chip-label">{{ wt.name }}</span>
-        </button>
-      </div>
-      <div class="mb-chat">
-        <ClaudeChat
-          v-if="controlChatId !== null"
-          ref="chatRef"
-          :key="controlChatId"
-          compact
-          :chat-id="controlChatId"
-          :workspace-id="rootId"
-          :cwd="rootCwd"
-          :append-system-prompt="managerPrimer"
-        />
+      <div class="mb-panel" :style="{ height: panelHeight + 'px' }">
+        <!-- Context chips: the root repo's worktrees for quick focus -->
+        <div v-if="worktrees.length" class="mb-chips">
+          <PhTree :size="12" weight="bold" class="mb-chips-icon" />
+          <button
+            v-for="wt in worktrees"
+            :key="wt.id"
+            class="mb-chip"
+            :class="{ 'mb-chip-on': activeWsId === wt.id }"
+            :title="wt.path"
+            @click="focusWs(wt)"
+          >
+            <PhGitBranch :size="11" weight="bold" />
+            <span class="mb-chip-label">{{ wt.name }}</span>
+          </button>
+        </div>
+        <div class="mb-chat">
+          <ClaudeChat
+            v-if="controlChatId !== null"
+            ref="chatRef"
+            :key="controlChatId"
+            compact
+            hide-composer
+            :chat-id="controlChatId"
+            :workspace-id="rootId"
+            :cwd="rootCwd"
+            :append-system-prompt="managerPrimer"
+          />
+        </div>
       </div>
     </div>
 
-    <!-- Always-visible bottom strip -->
+    <!-- Always-visible bottom strip — holds the one Manager composer -->
     <div class="mb-strip">
       <PhSparkle :size="15" weight="fill" class="mb-strip-icon" />
       <span class="mb-strip-title">Manager</span>
       <span class="mb-status-dot" :class="`mb-dot-${dotKind}`" :title="dotTitle" />
       <span class="mb-strip-sub" :title="rootCwd">{{ rootName }}</span>
 
-      <!-- Collapsed: quick single-line input straight into the Manager -->
+      <!-- Quick single-line input straight into the Manager (always present) -->
       <input
-        v-if="!expanded"
         ref="quickEl"
         v-model="quickText"
         class="mb-quick"
         type="text"
-        :placeholder="busy ? 'Manager is working…' : 'Message Manager — orchestrate worktrees, agents & PRs'"
+        :placeholder="busy ? 'Manager is working — queue a message…' : 'Message Manager — orchestrate worktrees, agents & PRs'"
         @focus="ensureStarted"
         @keydown.enter.prevent="quickSend"
       />
-      <span v-else class="mb-spacer" />
 
       <button
         class="mb-btn mb-wt-btn"
@@ -289,9 +292,13 @@ function onResizeUp() {
   localStorage.setItem(HEIGHT_KEY, String(panelHeight.value));
 }
 
+// Publish the always-visible strip height so the pet overlay walks ON TOP of
+// the Manager row instead of behind it.
+const STRIP_H = 38;
 onMounted(() => {
   window.addEventListener("mousemove", onResizeMove);
   window.addEventListener("mouseup", onResizeUp);
+  document.documentElement.style.setProperty("--manager-bar-h", `${STRIP_H}px`);
   if (expanded.value && typeof rootId.value === "number") {
     started.value = true;
     ensureControlSession(rootId.value);
@@ -300,6 +307,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("mousemove", onResizeMove);
   window.removeEventListener("mouseup", onResizeUp);
+  document.documentElement.style.setProperty("--manager-bar-h", "0px");
 });
 
 const SPAWN_MODE_WORKTREE = `Spawn mode: **worktree per agent** (the user enabled isolation). For each task, FIRST create a dedicated worktree, THEN spawn the agent with its \`--cwd\` set to that worktree path, so parallel agents never collide on the same working tree:
@@ -376,6 +384,11 @@ Be concise. Confirm what you did. If a request is ambiguous (which worktree? whi
 .mb-resize:hover { background: var(--accent, #3b82f6); opacity: 0.4; }
 
 /* ── Expanded panel ── */
+.mb-panel-wrap {
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: height 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
 .mb-panel {
   display: flex;
   flex-direction: column;
