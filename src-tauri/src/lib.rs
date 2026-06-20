@@ -3507,6 +3507,27 @@ fn iso_to_unix_ms(s: &str) -> Option<u64> {
 // out to `curl` to avoid pulling an HTTP-client crate into the build.
 static PLAN_USAGE_CACHE: OnceLock<Mutex<std::collections::HashMap<String, (std::time::Instant, serde_json::Value)>>> = OnceLock::new();
 
+/// Extract a usable accessToken from a creds JSON blob, rejecting expired ones.
+/// Burrow reads the token statically off disk/keychain and never refreshes it
+/// (the Claude CLI does that on launch via refreshToken). An expired token POSTed
+/// to the usage endpoint comes back as rate_limit_error / authentication_error —
+/// misleading. Treat expired as "no usable creds" so the caller falls back to the
+/// profile's local JSONL scan instead of surfacing a bogus rate-limit notice.
+fn token_if_valid(raw: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let oauth = &v["claudeAiOauth"];
+    if let Some(exp_ms) = oauth["expiresAt"].as_u64() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        if exp_ms < now_ms {
+            return None;
+        }
+    }
+    oauth["accessToken"].as_str().map(|s| s.to_string())
+}
+
 fn read_claude_oauth_token(app: &AppHandle, config_dir: Option<&str>) -> Option<String> {
     let mut raw: Option<String> = None;
     // An explicit profile config_dir: read ONLY that profile's creds — never fall
@@ -3529,8 +3550,7 @@ fn read_claude_oauth_token(app: &AppHandle, config_dir: Option<&str>) -> Option<
             .ok();
         // Explicit profile: stop here. None → caller surfaces no_credentials and
         // falls back to that profile's local JSONL scan, not the default account.
-        let v: serde_json::Value = serde_json::from_str(&raw?).ok()?;
-        return v["claudeAiOauth"]["accessToken"].as_str().map(|s| s.to_string());
+        return token_if_valid(&raw?);
     }
     // Default profile (no config_dir): ~/.claude/.credentials.json then keychain.
     if raw.is_none() {
@@ -3552,8 +3572,7 @@ fn read_claude_oauth_token(app: &AppHandle, config_dir: Option<&str>) -> Option<
             }
         }
     }
-    let v: serde_json::Value = serde_json::from_str(&raw?).ok()?;
-    v["claudeAiOauth"]["accessToken"].as_str().map(|s| s.to_string())
+    token_if_valid(&raw?)
 }
 
 /// Returns `{ ok: true, usage: {...} }` where `usage` is the raw upstream blob
