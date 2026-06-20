@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div class="toast-stack">
+    <div class="toast-stack" :class="`toast-stack--${ui.toastPosition}`">
       <TransitionGroup name="toast">
         <div
           v-for="toast in store.toasts"
@@ -22,20 +22,36 @@
 
 <script setup lang="ts">
 import { useNotificationsStore } from "@/stores/notifications";
+import { useUIStore } from "@/stores/ui";
 const store = useNotificationsStore();
+const ui = useUIStore();
 </script>
 
 <style scoped>
 .toast-stack {
   position: fixed;
-  bottom: 20px;
-  left: 20px;
   z-index: 9999;
   display: flex;
   flex-direction: column;
   gap: 8px;
   pointer-events: none;
 }
+
+/* Vertical anchor */
+.toast-stack--top-left,
+.toast-stack--top-center,
+.toast-stack--top-right    { top: 20px; }
+.toast-stack--bottom-left,
+.toast-stack--bottom-center,
+.toast-stack--bottom-right { bottom: 20px; }
+
+/* Horizontal anchor */
+.toast-stack--top-left,
+.toast-stack--bottom-left    { left: 20px; align-items: flex-start; }
+.toast-stack--top-right,
+.toast-stack--bottom-right   { right: 20px; align-items: flex-end; }
+.toast-stack--top-center,
+.toast-stack--bottom-center  { left: 50%; transform: translateX(-50%); align-items: center; }
 
 .toast {
   display: flex;
@@ -86,5 +102,11 @@ const store = useNotificationsStore();
 .toast-enter-active { transition: all 0.2s ease; }
 .toast-leave-active { transition: all 0.18s ease; }
 .toast-enter-from   { opacity: 0; transform: translateY(12px); }
-.toast-leave-to     { opacity: 0; transform: translateX(-24px); }
+/* Slide out toward the nearest screen edge per anchor */
+.toast-stack--bottom-left   .toast-leave-to,
+.toast-stack--top-left      .toast-leave-to   { opacity: 0; transform: translateX(-24px); }
+.toast-stack--bottom-right  .toast-leave-to,
+.toast-stack--top-right     .toast-leave-to   { opacity: 0; transform: translateX(24px); }
+.toast-stack--bottom-center .toast-leave-to   { opacity: 0; transform: translateY(24px); }
+.toast-stack--top-center    .toast-leave-to   { opacity: 0; transform: translateY(-24px); }
 </style>

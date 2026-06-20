@@ -85,7 +85,21 @@ interface Prefs {
   floatChatOpen: boolean; // expanded (true) vs collapsed to a button (false)
   sidebarWidth: number; // left sidebar panel width in px
   rightPanelWidth: number; // right panel width in px
+  toastPosition: ToastPosition; // screen anchor for toast notifications
 }
+
+// Screen anchor for the toast stack (ToastStack.vue).
+export type ToastPosition =
+  | "top-left" | "top-center" | "top-right"
+  | "bottom-left" | "bottom-center" | "bottom-right";
+export const TOAST_POSITIONS: { id: ToastPosition; label: string }[] = [
+  { id: "top-left", label: "Top left" },
+  { id: "top-center", label: "Top center" },
+  { id: "top-right", label: "Top right" },
+  { id: "bottom-left", label: "Bottom left" },
+  { id: "bottom-center", label: "Bottom center" },
+  { id: "bottom-right", label: "Bottom right" },
+];
 
 // Agent transitions that can trigger an ntfy push.
 export type NtfyEvent = "done" | "waiting" | "permission" | "error";
@@ -144,6 +158,7 @@ const DEFAULT_PREFS: Prefs = {
   floatChatOpen: false,
   sidebarWidth: 220,
   rightPanelWidth: 300,
+  toastPosition: "bottom-left",
 };
 
 function loadPrefs(): Prefs {
@@ -207,6 +222,7 @@ export const useUIStore = defineStore("ui", () => {
   const floatChatOpen = ref(loaded.floatChatOpen);
   const sidebarWidth = ref(loaded.sidebarWidth ?? 220);
   const rightPanelWidth = ref(loaded.rightPanelWidth ?? 300);
+  const toastPosition = ref<ToastPosition>(loaded.toastPosition ?? "bottom-left");
   // In-memory blob URL for the current wallpaper (not persisted).
   const bgImageUrl = ref<string>("");
   const missionActiveCount = ref(0);
@@ -360,6 +376,7 @@ export const useUIStore = defineStore("ui", () => {
         floatChatOpen: floatChatOpen.value,
         sidebarWidth: sidebarWidth.value,
         rightPanelWidth: rightPanelWidth.value,
+        toastPosition: toastPosition.value,
       } satisfies Prefs),
     );
   }
@@ -375,7 +392,7 @@ export const useUIStore = defineStore("ui", () => {
      soundWaitingId, soundWaitingCustomPath, soundVolume, rightPanelVisible, maxAgents, debugOverlay, floatCorner, worktreesDir, mode, missionShowActivity,
      ntfyEnabled, ntfyServer, ntfyTopic, ntfyToken, ntfyEvents, ntfyOnlyWhenAway,
      petsEnabled, petsSpeech, petsLeveling, floatChatEnabled, floatChatOpen,
-     sidebarWidth, rightPanelWidth],
+     sidebarWidth, rightPanelWidth, toastPosition],
     () => {
       savePrefs();
       applyTheme();
@@ -512,5 +529,6 @@ export const useUIStore = defineStore("ui", () => {
     toggleFloatChat,
     sidebarWidth,
     rightPanelWidth,
+    toastPosition,
   };
 });

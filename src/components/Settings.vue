@@ -670,6 +670,23 @@
           <div class="sec-divider" />
 
           <div class="settings-group">
+            <span class="group-label">Toasts</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Position</span>
+                <span class="field-desc">Where on-screen toast notifications appear</span>
+              </div>
+              <select
+                class="select"
+                :value="ui.toastPosition"
+                @change="ui.toastPosition = ($event.target as HTMLSelectElement).value as ToastPosition"
+              >
+                <option v-for="p in TOAST_POSITIONS" :key="p.id" :value="p.id">{{ p.label }}</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-group">
             <span class="group-label">General</span>
             <div class="field">
               <div class="field-info">
@@ -1349,7 +1366,7 @@ import { useAgentsStore, type AgentIcon } from "@/stores/agents";
 import { useScriptsStore, type Script } from "@/stores/scripts";
 import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { useUIStore, UI_FONTS, TERMINAL_FONTS, NTFY_EVENTS, type NtfyEvent } from "@/stores/ui";
+import { useUIStore, UI_FONTS, TERMINAL_FONTS, NTFY_EVENTS, TOAST_POSITIONS, type NtfyEvent, type ToastPosition } from "@/stores/ui";
 import { testNtfy } from "@/lib/ntfy";
 import { useUpdateStore } from "@/stores/update";
 import { THEMES } from "@/themes";
