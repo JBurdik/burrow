@@ -18,15 +18,19 @@
     >
       <div class="mb-panel" :style="{ height: panelHeight + 'px' }">
         <div class="mb-chat">
+          <!-- One ClaudeChat per engaged repo, kept mounted and v-show'd. This is
+               what lets a busy Manager keep streaming when you switch workspace:
+               we flip visibility instead of unmounting (which would claude_stop). -->
           <ClaudeChat
-            v-if="controlChatId !== null"
-            ref="chatRef"
-            :key="controlChatId"
+            v-for="m in mountedManagers"
+            v-show="m.repoId === rootId"
+            :key="m.sessionId"
+            :ref="(el) => setChatRef(m.repoId, el)"
             compact
             hide-composer
-            :chat-id="controlChatId"
-            :workspace-id="rootId"
-            :cwd="rootCwd"
+            :chat-id="m.sessionId"
+            :workspace-id="m.repoId"
+            :cwd="m.cwd"
             :append-system-prompt="managerPrimer"
           />
         </div>
@@ -118,7 +122,12 @@ const ui = useUIStore();
 const chats = useClaudeChatsStore();
 const wsStore = useWorkspaceStore();
 
-const chatRef = ref<InstanceType<typeof ClaudeChat> | null>(null);
+// One live ClaudeChat instance per engaged repo (function refs keyed by repo id).
+const chatRefs = new Map<number, InstanceType<typeof ClaudeChat>>();
+function setChatRef(repoId: number, el: unknown) {
+  if (el) chatRefs.set(repoId, el as InstanceType<typeof ClaudeChat>);
+  else chatRefs.delete(repoId);
+}
 const quickEl = ref<HTMLInputElement | null>(null);
 const quickText = ref("");
 
@@ -136,9 +145,11 @@ function toggleExpanded() {
   ui.toggleFloatChat();
 }
 
-// ── Active workspace anchoring (same model as the old FloatChat) ──
-// Only re-anchor while the Manager is idle, so switching workspaces mid-turn
-// doesn't kill the running claude process.
+// ── Active workspace anchoring ──
+// Re-anchor immediately on every workspace switch. We do NOT defer while a task
+// runs: each engaged repo keeps its own ClaudeChat mounted (see mountedManagers),
+// so a busy Manager keeps streaming in the background — switching only flips
+// which one is visible, it never unmounts/kills the running claude.
 const activeWsId = ref<number>(props.wsId);
 const activeCwd = ref<string>(props.cwd);
 
@@ -167,7 +178,30 @@ function saveMap(m: Record<number, number>) {
   localStorage.setItem(MAP_KEY, JSON.stringify(m));
 }
 
-const controlChatId = ref<number | null>(null);
+// Reactive map of root-repo id → its Manager session id. Drives which chats are
+// mounted; seeded from the persisted map for sessions that still exist.
+const sessionIdByRepo = ref<Record<number, number>>({});
+{
+  const map = loadMap();
+  for (const [repo, sid] of Object.entries(map)) {
+    if (chats.sessions.find((s) => s.id === sid)) sessionIdByRepo.value[Number(repo)] = sid;
+  }
+}
+
+// One mounted ClaudeChat per engaged repo (kept alive, v-show'd) so switching
+// workspaces never tears down a busy Manager.
+const mountedManagers = computed(() =>
+  Object.entries(sessionIdByRepo.value).map(([repo, sid]) => {
+    const id = Number(repo);
+    const ws = wsStore.workspaces.find((w) => w.id === id);
+    return { repoId: id, sessionId: sid, cwd: ws?.path ?? rootCwd.value };
+  }),
+);
+
+// The session id anchored to the currently active root repo (if any).
+const activeSessionId = computed<number | null>(() =>
+  typeof rootId.value === "number" ? sessionIdByRepo.value[rootId.value] ?? null : null,
+);
 
 // Worktree spawn preference (persisted globally) — reflected in the primer.
 const WT_KEY = "burrow.floatchat.worktreeMode";
@@ -179,25 +213,23 @@ function selectWorktreeMode(v: boolean) {
   wtMenuOpen.value = false;
 }
 
-// Adopt the active workspace only when the Manager is idle.
+// Adopt the active workspace on every switch (no busy guard — the busy repo's
+// chat stays mounted hidden, so re-anchoring can't kill it).
 watch(
   () => [props.wsId, props.cwd] as const,
   ([wsId, cwd]) => {
-    const isBusy = controlChatId.value
-      ? chats.sessions.find((s) => s.id === controlChatId.value)?.busy
-      : false;
-    if (!isBusy) {
-      activeWsId.value = wsId;
-      activeCwd.value = cwd;
-    }
+    activeWsId.value = wsId;
+    activeCwd.value = cwd;
   },
 );
 
 function ensureControlSession(repoId: number) {
+  const existing = sessionIdByRepo.value[repoId];
+  if (existing && chats.sessions.find((s) => s.id === existing)) return;
   const map = loadMap();
-  const existing = map[repoId];
-  if (existing && chats.sessions.find((s) => s.id === existing)) {
-    controlChatId.value = existing;
+  const mapped = map[repoId];
+  if (mapped && chats.sessions.find((s) => s.id === mapped)) {
+    sessionIdByRepo.value[repoId] = mapped;
     return;
   }
   // create() flips the workspace's active chat; restore it so the in-tab Claude
@@ -208,29 +240,28 @@ function ensureControlSession(repoId: number) {
   if (prevActive) chats.setActive(repoId, prevActive);
   map[repoId] = sess.id;
   saveMap(map);
-  controlChatId.value = sess.id;
+  sessionIdByRepo.value[repoId] = sess.id;
 }
 
-// Start lazily the first time the bar is expanded (or input focused).
+// Resolve a session for the active repo only when the Manager is actually
+// engaged (bar expanded). Switching while collapsed does NOT spawn a claude.
 watch(
   () => [expanded.value, rootId.value] as const,
   ([isOpen, repoId]) => {
     if (isOpen && typeof repoId === "number") {
       started.value = true;
       ensureControlSession(repoId);
-    } else if (started.value && typeof repoId === "number") {
-      // Already running: keep the session pointer current as we switch repos.
-      ensureControlSession(repoId);
     }
   },
   { immediate: true },
 );
 
-// The live Manager session row (status/busy mirror the in-tab chat model).
+// The live Manager session row (status/busy mirror the in-tab chat model) for
+// the currently active repo.
 const session = computed(() =>
-  controlChatId.value === null
+  activeSessionId.value === null
     ? null
-    : chats.sessions.find((s) => s.id === controlChatId.value) ?? null,
+    : chats.sessions.find((s) => s.id === activeSessionId.value) ?? null,
 );
 const busy = computed(() => !!session.value?.busy);
 
@@ -274,8 +305,9 @@ async function quickSend() {
   quickText.value = "";
   ensureStarted();
   if (!expanded.value) ui.toggleFloatChat();
+  const repoId = rootId.value;
   await nextTick();
-  chatRef.value?.sendMessage(text);
+  chatRefs.get(repoId)?.sendMessage(text);
 }
 
 // ── Resizable expanded panel height ──
