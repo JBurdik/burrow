@@ -50,31 +50,6 @@
 
     <!-- Claude plan-usage strip — real utilization %, same data claude.ai shows.
          One bar per limit window (5h session, weekly, weekly-Sonnet). -->
-    <!-- Profile selector: always visible when multiple profiles exist -->
-    <div v-if="profilesStore.profiles.length > 1" class="tb-menu-wrap usage-profile-wrap" style="-webkit-app-region:no-drag" data-tauri-drag-region>
-      <button
-        class="usage-profile-btn"
-        :class="{ 'usage-profile-active': usageProfileId !== DEFAULT_PROFILE_ID }"
-        :title="`Showing usage for: ${usageProfile?.name ?? 'Default'}`"
-        @click.stop="usageProfileMenuOpen = !usageProfileMenuOpen"
-      >
-        <PhUserGear :size="10" />
-        <span class="usage-profile-name">{{ usageProfile?.name ?? 'Default' }}</span>
-        <PhCaretDown :size="7" weight="bold" />
-      </button>
-      <div v-if="usageProfileMenuOpen" class="tb-menu usage-profile-menu" @click.stop>
-        <button
-          v-for="p in profilesStore.profiles"
-          :key="p.id"
-          class="tb-menu-item"
-          :class="{ 'usage-profile-item-active': usageProfileId === p.id }"
-          @click="selectUsageProfile(p.id)"
-        >
-          <PhUserGear :size="12" />
-          {{ p.name }}
-        </button>
-      </div>
-    </div>
     <div
       v-if="usageBars.length || usageError"
       class="usage-strip"
@@ -238,10 +213,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus, PhSkull, PhUserGear } from "@phosphor-icons/vue";
+import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus, PhSkull } from "@phosphor-icons/vue";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
 import { useGitStore } from "@/stores/git";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
@@ -326,19 +300,6 @@ type ExtraUsage = { is_enabled: boolean; monthly_limit?: number; used_credits?: 
 type PlanUsage = Record<string, UsageWindow | undefined> & { extra_usage?: ExtraUsage };
 type UsageBar = { key: string; label: string; pct: number; resets?: string; local?: boolean; credit?: boolean };
 
-// ── Usage profile selector ──────────────────────────────────────────────────
-const profilesStore = useProfilesStore();
-const USAGE_PROFILE_KEY = "burrow.titlebar.usageProfileId";
-const usageProfileId = ref<string>(localStorage.getItem(USAGE_PROFILE_KEY) ?? DEFAULT_PROFILE_ID);
-const usageProfile = computed(() => profilesStore.get(usageProfileId.value));
-const usageProfileMenuOpen = ref(false);
-function selectUsageProfile(id: string) {
-  usageProfileId.value = id;
-  localStorage.setItem(USAGE_PROFILE_KEY, id);
-  usageProfileMenuOpen.value = false;
-  refreshUsage();
-}
-
 const planUsage = ref<PlanUsage | null>(null);
 const localUsage = ref<{ outputTokens: number; turnCount: number } | null>(null);
 const usageError = ref<string | null>(null);
@@ -348,35 +309,10 @@ let usageTimer: number | undefined;
 // fall back to local transcript scan instead of showing an error.
 const LOCAL_FALLBACK_ERRORS = new Set(["token_expired", "no_credentials", "permission_error"]);
 
-async function refreshUsage(force = false) {
-  const profile = usageProfile.value;
-  const cd = profile?.configDir;
-  const args: Record<string, unknown> = {};
-  if (cd) args.configDir = cd;
-  if (force) args.force = true;
+async function refreshUsage() {
   const prevError = usageError.value;
-
-  // Org/team accounts can't use the OAuth usage API — go straight to local JSONL scan.
-  if (profile?.orgAccount) {
-    planUsage.value = null;
-    usageError.value = null;
-    try {
-      const local = await invoke<{ outputTokens: number; turnCount: number }>(
-        "claude_usage_5h",
-        cd ? { configDir: cd } : {},
-      );
-      localUsage.value = local;
-    } catch (e) {
-      usageError.value = "invoke_failed";
-      if (prevError !== "invoke_failed") {
-        notifStore.push({ type: "error", title: "Claude usage unavailable", body: String(e) });
-      }
-    }
-    return;
-  }
-
   try {
-    const j = await invoke<{ ok: boolean; usage?: PlanUsage; error?: string; message?: string }>("claude_plan_usage", args);
+    const j = await invoke<{ ok: boolean; usage?: PlanUsage; error?: string; message?: string }>("claude_plan_usage");
     if (j?.ok && j.usage) {
       planUsage.value = j.usage;
       localUsage.value = null;
@@ -387,18 +323,14 @@ async function refreshUsage(force = false) {
         // Missing credentials — read local transcripts instead.
         planUsage.value = null;
         usageError.value = null;
-        const local = await invoke<{ outputTokens: number; turnCount: number }>(
-          "claude_usage_5h",
-          cd ? { configDir: cd } : {},
-        );
+        const local = await invoke<{ outputTokens: number; turnCount: number }>("claude_usage_5h", {});
         localUsage.value = local;
       } else {
         localUsage.value = null;
         usageError.value = err;
         if (err !== prevError) {
-          const pname = profile?.name ?? "Default";
           const body = j?.message ?? err;
-          notifStore.push({ type: "error", title: "Claude usage unavailable", body: `${body} (${pname})` });
+          notifStore.push({ type: "error", title: "Claude usage unavailable", body });
         }
       }
     }
@@ -598,7 +530,6 @@ function onDocClick() {
   menuOpen.value = false;
   notifOpen.value = false;
   branchPickerOpen.value = false;
-  usageProfileMenuOpen.value = false;
   if (statsOpen.value) { statsOpen.value = false; clearInterval(statsTimer); }
 }
 onMounted(() => {
@@ -870,27 +801,6 @@ const isDev = import.meta.env.DEV;
 }
 .usage-strip.error { opacity: 0.5; }
 .usage-icon { color: #d97706; flex-shrink: 0; }
-
-.usage-profile-wrap { position: relative; display: flex; margin-right: 4px; }
-.usage-profile-btn {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  background: none;
-  border: none;
-  border-radius: 4px;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: 9px;
-  padding: 1px 4px;
-  transition: color .12s, background .12s;
-}
-.usage-profile-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
-.usage-profile-active { color: var(--accent) !important; }
-.usage-profile-name { max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.usage-profile-menu { top: calc(100% + 4px); left: 0; min-width: 140px; }
-.usage-profile-item-active { color: var(--accent); }
 
 .usage-bar {
   display: inline-flex;
