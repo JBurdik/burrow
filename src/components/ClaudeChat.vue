@@ -1473,6 +1473,13 @@ watch(() => props.chatId, () => nextTick(() => inputEl.value?.focus()));
 watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
   if (activeId === props.chatId) nextTick(() => scrollToBottom());
 });
+
+// Exposed for host shells (e.g. the Manager bar) that drive this chat from an
+// external compact input: send a message and focus the textarea.
+function focusInput() {
+  nextTick(() => { inputEl.value?.focus(); autoResize(); });
+}
+defineExpose({ sendMessage, focusInput });
 </script>
 
 <style scoped>

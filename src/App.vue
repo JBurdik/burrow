@@ -40,6 +40,11 @@
       <div v-show="ui.rightPanelVisible" class="resize-handle panel-resize-right" @mousedown="startResize('right', $event)" />
       <RightPanel v-show="ui.rightPanelVisible" class="panel-right" :cwd="ws.active?.path ?? ''" :is-git="ws.active?.is_git !== false" />
     </div>
+    <ManagerBar
+      v-if="ui.floatChatEnabled && ws.active"
+      :cwd="ws.active.path"
+      :ws-id="ws.active.id"
+    />
     <Spotlight
       ref="spotlightRef"
       @launch="(cmd) => activeTerm()?.spawnAgent(cmd)"
@@ -52,13 +57,6 @@
     <ToastStack />
     <UpdateBanner />
     <Teleport to="body"><PetOverlay v-if="ui.petsEnabled" /></Teleport>
-    <Teleport to="body">
-      <FloatChat
-        v-if="ui.floatChatEnabled && ws.active"
-        :cwd="ws.active.path"
-        :ws-id="ws.active.id"
-      />
-    </Teleport>
 
     <!-- Keyboard cheatsheet overlay (⌘/) -->
     <Teleport to="body">
@@ -102,7 +100,7 @@ import Spotlight from "@/components/Spotlight.vue";
 import ToastStack from "@/components/ToastStack.vue";
 import UpdateBanner from "@/components/UpdateBanner.vue";
 import PetOverlay from "@/components/PetOverlay.vue";
-import FloatChat from "@/components/FloatChat.vue";
+import ManagerBar from "@/components/ManagerBar.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
 import { useGitStore } from "@/stores/git";
