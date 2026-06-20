@@ -51,17 +51,47 @@
         @keydown.enter.prevent="quickSend"
       />
 
-      <button
-        class="mb-btn mb-wt-btn"
-        :class="{ 'mb-wt-on': worktreeMode }"
-        :title="worktreeMode
-          ? 'Spawn mode: worktree per agent (isolated) — click for active branch'
-          : 'Spawn mode: active branch (shared) — click for worktree per agent'"
-        @click="toggleWorktreeMode"
-      >
-        <PhTree v-if="worktreeMode" :size="14" weight="bold" />
-        <PhGitBranch v-else :size="14" weight="bold" />
-      </button>
+      <!-- Spawn-target picker: clear labeled dropdown (replaces the cryptic
+           icon toggle). Tells you where the Manager puts new agents. -->
+      <div class="mb-wt">
+        <button
+          class="mb-wt-btn"
+          :title="'Where the Manager spawns new agents'"
+          @click="wtMenuOpen = !wtMenuOpen"
+        >
+          <PhTree v-if="worktreeMode" :size="13" weight="bold" />
+          <PhGitBranch v-else :size="13" weight="bold" />
+          <span class="mb-wt-label">{{ worktreeMode ? 'New worktree' : 'Current branch' }}</span>
+          <PhCaretUp :size="9" weight="bold" class="mb-wt-caret" />
+        </button>
+        <div v-if="wtMenuOpen" class="mb-wt-menu">
+          <div class="mb-wt-menu-head">Spawn agents in…</div>
+          <button
+            class="mb-wt-item"
+            :class="{ 'mb-wt-item-on': !worktreeMode }"
+            @click="selectWorktreeMode(false)"
+          >
+            <PhGitBranch :size="14" weight="bold" />
+            <div class="mb-wt-item-text">
+              <span class="mb-wt-item-title">Current branch</span>
+              <span class="mb-wt-item-sub">Shared working tree — fast, agents see each other's edits</span>
+            </div>
+            <PhCheck v-if="!worktreeMode" :size="13" weight="bold" class="mb-wt-item-check" />
+          </button>
+          <button
+            class="mb-wt-item"
+            :class="{ 'mb-wt-item-on': worktreeMode }"
+            @click="selectWorktreeMode(true)"
+          >
+            <PhTree :size="14" weight="bold" />
+            <div class="mb-wt-item-text">
+              <span class="mb-wt-item-title">New worktree each</span>
+              <span class="mb-wt-item-sub">Isolated branch per agent — safe for parallel work</span>
+            </div>
+            <PhCheck v-if="worktreeMode" :size="13" weight="bold" class="mb-wt-item-check" />
+          </button>
+        </div>
+      </div>
       <button
         class="mb-btn"
         :title="expanded ? 'Collapse Manager (⌘J)' : 'Expand Manager (⌘J)'"
@@ -76,7 +106,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
-import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp } from "@phosphor-icons/vue";
+import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck } from "@phosphor-icons/vue";
 import ClaudeChat from "./ClaudeChat.vue";
 import { useUIStore } from "@/stores/ui";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
@@ -143,7 +173,11 @@ const controlChatId = ref<number | null>(null);
 const WT_KEY = "burrow.floatchat.worktreeMode";
 const worktreeMode = ref<boolean>(localStorage.getItem(WT_KEY) === "1");
 watch(worktreeMode, (v) => localStorage.setItem(WT_KEY, v ? "1" : "0"));
-function toggleWorktreeMode() { worktreeMode.value = !worktreeMode.value; }
+const wtMenuOpen = ref(false);
+function selectWorktreeMode(v: boolean) {
+  worktreeMode.value = v;
+  wtMenuOpen.value = false;
+}
 
 // Adopt the active workspace only when the Manager is idle.
 watch(
@@ -272,9 +306,15 @@ function onResizeUp() {
 // Publish the always-visible strip height so the pet overlay walks ON TOP of
 // the Manager row instead of behind it.
 const STRIP_H = 38;
+function onDocMouseDown(e: MouseEvent) {
+  if (wtMenuOpen.value && !(e.target as HTMLElement)?.closest(".mb-wt")) {
+    wtMenuOpen.value = false;
+  }
+}
 onMounted(() => {
   window.addEventListener("mousemove", onResizeMove);
   window.addEventListener("mouseup", onResizeUp);
+  window.addEventListener("mousedown", onDocMouseDown);
   document.documentElement.style.setProperty("--manager-bar-h", `${STRIP_H}px`);
   if (expanded.value && typeof rootId.value === "number") {
     started.value = true;
@@ -284,6 +324,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("mousemove", onResizeMove);
   window.removeEventListener("mouseup", onResizeUp);
+  window.removeEventListener("mousedown", onDocMouseDown);
   document.documentElement.style.setProperty("--manager-bar-h", "0px");
 });
 
@@ -448,5 +489,65 @@ Be concise. Confirm what you did. If a request is ambiguous (which worktree? whi
   flex-shrink: 0;
 }
 .mb-btn:hover { background: var(--bg-hover, rgba(255, 255, 255, 0.08)); color: var(--text-primary, #e2e8f0); }
-.mb-wt-btn.mb-wt-on { color: var(--accent, #3b82f6); background: var(--bg-hover, rgba(59, 130, 246, 0.14)); }
+
+/* ── Spawn-target picker ── */
+.mb-wt { position: relative; flex-shrink: 0; }
+.mb-wt-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary, #94a3b8);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mb-wt-btn:hover { background: var(--bg-hover, rgba(255, 255, 255, 0.08)); color: var(--text-primary, #e2e8f0); }
+.mb-wt-label { font-weight: 500; }
+.mb-wt-caret { opacity: 0.6; }
+
+.mb-wt-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: 260px;
+  padding: 6px;
+  background-color: var(--bg-dropdown, var(--bg-panel, #111));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  z-index: 70;
+}
+.mb-wt-menu-head {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted, #64748b);
+  padding: 4px 8px 6px;
+}
+.mb-wt-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary, #94a3b8);
+  cursor: pointer;
+  text-align: left;
+}
+.mb-wt-item:hover { background: var(--bg-hover, rgba(255, 255, 255, 0.07)); }
+.mb-wt-item-on { color: var(--text-primary, #e2e8f0); }
+.mb-wt-item-on > svg:first-child { color: var(--accent, #3b82f6); }
+.mb-wt-item-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.mb-wt-item-title { font-size: 12px; font-weight: 600; color: var(--text-primary, #e2e8f0); }
+.mb-wt-item-sub { font-size: 10px; line-height: 1.3; color: var(--text-muted, #64748b); }
+.mb-wt-item-check { color: var(--accent, #3b82f6); flex-shrink: 0; }
 </style>
