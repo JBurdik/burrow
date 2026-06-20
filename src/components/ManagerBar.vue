@@ -17,21 +17,6 @@
       :style="{ height: (expanded ? panelHeight : 0) + 'px' }"
     >
       <div class="mb-panel" :style="{ height: panelHeight + 'px' }">
-        <!-- Context chips: the root repo's worktrees for quick focus -->
-        <div v-if="worktrees.length" class="mb-chips">
-          <PhTree :size="12" weight="bold" class="mb-chips-icon" />
-          <button
-            v-for="wt in worktrees"
-            :key="wt.id"
-            class="mb-chip"
-            :class="{ 'mb-chip-on': activeWsId === wt.id }"
-            :title="wt.path"
-            @click="focusWs(wt)"
-          >
-            <PhGitBranch :size="11" weight="bold" />
-            <span class="mb-chip-label">{{ wt.name }}</span>
-          </button>
-        </div>
         <div class="mb-chat">
           <ClaudeChat
             v-if="controlChatId !== null"
@@ -95,7 +80,7 @@ import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp } from "@phospho
 import ClaudeChat from "./ClaudeChat.vue";
 import { useUIStore } from "@/stores/ui";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
-import { useWorkspaceStore, type Workspace } from "@/stores/workspace";
+import { useWorkspaceStore } from "@/stores/workspace";
 
 const props = defineProps<{ cwd: string; wsId: number }>();
 
@@ -141,14 +126,6 @@ const root = computed(() => {
 const rootId = computed(() => root.value?.id ?? activeWsId.value);
 const rootCwd = computed(() => root.value?.path ?? activeCwd.value);
 const rootName = computed(() => root.value?.name ?? "this repo");
-
-// The root repo's worktrees — shown as quick-focus chips above the chat.
-const worktrees = computed<Workspace[]>(() =>
-  wsStore.workspaces.filter((w) => w.parent_id === rootId.value),
-);
-function focusWs(w: Workspace) {
-  wsStore.open(w);
-}
 
 // One persistent Manager session per ROOT repo, reused across open/collapse,
 // worktree switches, and app restarts. Keyed by root repo id in localStorage.
@@ -395,33 +372,6 @@ Be concise. Confirm what you did. If a request is ambiguous (which worktree? whi
   min-height: 0;
   border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
 }
-.mb-chips {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.06));
-  flex-shrink: 0;
-}
-.mb-chips-icon { color: var(--text-muted, #64748b); flex-shrink: 0; }
-.mb-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
-  background: transparent;
-  color: var(--text-secondary, #94a3b8);
-  font-size: 11px;
-  cursor: pointer;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.mb-chip:hover { background: var(--bg-hover, rgba(255, 255, 255, 0.06)); color: var(--text-primary, #e2e8f0); }
-.mb-chip-on { border-color: var(--accent, #3b82f6); color: var(--accent, #3b82f6); }
-.mb-chip-label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 .mb-chat {
   flex: 1;
   min-height: 0;
