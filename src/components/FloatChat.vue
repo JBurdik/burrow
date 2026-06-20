@@ -42,6 +42,7 @@
         :workspace-id="rootId"
         :cwd="rootCwd"
         :append-system-prompt="managerPrimer"
+        :avatar-src="managerAvatar"
       />
     </div>
   </div>
@@ -54,6 +55,7 @@ import ClaudeChat from "./ClaudeChat.vue";
 import { useUIStore } from "@/stores/ui";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { useWorkspaceStore } from "@/stores/workspace";
+import managerAvatar from "@/assets/manager-avatar.png";
 
 const props = defineProps<{ cwd: string; wsId: number }>();
 
@@ -236,6 +238,16 @@ ${worktreeMode.value ? SPAWN_MODE_WORKTREE : SPAWN_MODE_BRANCH}
 - \`burrow list-tabs [--ws ID]\` — list a workspace's tabs (pty-id, title).
 - \`burrow new-tab [--ws ID] [--cmd CMD]\` — open a new terminal tab (optionally run CMD).
 - \`burrow focus-workspace <ID>\` / \`burrow focus-tab <ID>\` — switch the UI.
+- \`burrow tab-rename <pty-id> <new-name>\` — rename a terminal tab.
+- \`burrow tab-close <pty-id> [--force]\` — kill a tab's PTY and remove it. \`--force\` skips the busy/unsaved confirm. **Confirm with the user first** when the tab may have unsaved or in-flight work.
+- \`burrow workspace-create <name> <path>\` — register a new workspace at \`path\` and open it.
+
+## Inspecting the repo (read-only — no agent tab needed)
+- \`burrow git-status [--cwd DIR]\` — \`git status\` for the repo/worktree.
+- \`burrow git-log [--n N] [--cwd DIR]\` — last N commits (\`--oneline\`, default 20).
+- \`burrow git-diff [--staged] [--cwd DIR]\` — working-tree diff (\`--staged\` = staged/cached).
+- \`burrow run [--cwd DIR] <cmd...>\` — run a shell command and capture its stdout+stderr (30 s timeout). Use this for quick reads (grep/find/cat/ls) instead of spawning a whole agent. Keep it read-only; for anything that edits code, spawn an agent.
+- \`--cwd DIR\` on any of these targets a specific repo or worktree dir (default: this repo).
 
 ## Orchestration
 - \`burrow worktree <branch> [--base-ref REF]\` — create a git worktree (nested under the repo). Returns the new worktree path.
@@ -248,7 +260,7 @@ ${worktreeMode.value ? SPAWN_MODE_WORKTREE : SPAWN_MODE_BRANCH}
 - \`burrow pr-view <number>\` — show a PR's details.
 - \`burrow pr-merge <number> [--squash]\` — merge a PR.
 
-Be concise. Confirm what you did. If a request is ambiguous (which worktree? which agent? which PR?), run the relevant \`list\` command first to ground yourself, then act. Destructive actions (worktree-remove, pr-merge) require explicit user confirmation first.`);
+Be concise. Confirm what you did. If a request is ambiguous (which worktree? which agent? which PR?), run the relevant \`list\` command first to ground yourself, then act. Destructive actions (worktree-remove, pr-merge, tab-close) require explicit user confirmation first.`);
 </script>
 
 <style scoped>

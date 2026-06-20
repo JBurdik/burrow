@@ -289,6 +289,7 @@
         <div class="chat-input-toolbar">
           <!-- Left: share selection, model dropdown, perm mode -->
           <div class="toolbar-left">
+            <img v-if="avatarSrc" :src="avatarSrc" class="toolbar-avatar" alt="Manager" />
             <button
               v-if="editorCtx.selection"
               class="toolbar-btn"
@@ -469,6 +470,9 @@ const props = defineProps<{
   // sends from its own external input via the exposed sendMessage(). Permission
   // / plan / question gates stay visible.
   hideComposer?: boolean;
+  // Optional avatar shown at the start of the composer's bottom toolbar row
+  // (used by the Manager bar to give the agent a face).
+  avatarSrc?: string;
 }>();
 
 const chats = useClaudeChatsStore();
@@ -2266,6 +2270,16 @@ defineExpose({ sendMessage, focusInput });
   display: flex;
   align-items: center;
   gap: 4px;
+}
+.toolbar-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  object-position: center 18%;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.18));
+  flex-shrink: 0;
+  margin-right: 2px;
 }
 
 .toolbar-right {

@@ -1518,6 +1518,29 @@ onMounted(() => {
             if (ws) wsStore.open(ws);
             tabsStore.add(targetWs, r.cmd || undefined);
           }
+        } else if (r.kind === "tab-rename") {
+          // Rename a tab by its (pty) id — find its owning (mounted) workspace and
+          // route through the tabs store, same as the Sidebar rename. r.cmd = title.
+          const tabId = Number(r.tabid);
+          const title = r.cmd;
+          for (const [wid, list] of Object.entries(tabsStore.tabsByWs)) {
+            if (list.some((t) => t.id === tabId)) { tabsStore.rename(Number(wid), tabId, title); break; }
+          }
+        } else if (r.kind === "tab-close") {
+          // Close a tab by its (pty) id via the owning workspace's tabs store.
+          const tabId = Number(r.tabid);
+          for (const [wid, list] of Object.entries(tabsStore.tabsByWs)) {
+            if (list.some((t) => t.id === tabId)) { tabsStore.close(Number(wid), tabId); break; }
+          }
+        } else if (r.kind === "workspace-create") {
+          // Add a workspace (DB insert via the store) and open it. r.cmd = name,
+          // r.cwd = path. The store reloads so the Sidebar reflects it immediately.
+          try {
+            const ws = await wsStore.create(r.cmd, r.cwd);
+            wsStore.open(ws);
+          } catch (err) {
+            console.error("burrow workspace-create failed:", err);
+          }
         } else {
           const leaf = addTab(r.cmd, { cwd: r.cwd || undefined, resultToken: r.token || undefined, background: true });
           if (r.tmuxWin) {

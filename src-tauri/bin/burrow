@@ -22,7 +22,7 @@
 # Sub-agents run INTERACTIVELY on your subscription (plain `claude`, never -p).
 
 sub="$1"
-[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane|list-workspaces|list-tabs|focus-workspace|focus-tab|new-tab <args>" >&2; exit 1; }
+[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane|list-workspaces|list-tabs|focus-workspace|focus-tab|new-tab|tab-rename|tab-close|workspace-create|git-status|git-log|git-diff|run <args>" >&2; exit 1; }
 shift
 
 case "$sub" in
@@ -861,8 +861,138 @@ PY
     exit 0
     ;;
 
+  tab-rename)
+    # burrow tab-rename <pty-id> <new-name>   — rename a terminal tab.
+    # UI action (fire-and-forget): drops a request dir the origin workspace's
+    # Terminal claims and applies (in-memory title + DB persist). The tab's
+    # workspace must be mounted (it normally is when expanded in the Sidebar).
+    tabid="$1"; [ $# -gt 0 ] && shift; name="$*"
+    [ -n "$tabid" ] && [ -n "$name" ] || { echo "usage: burrow tab-rename <pty-id> <new-name>" >&2; exit 1; }
+    reqdir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}/requests"
+    mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "tab-rename" > "$d/kind"
+    printf '%s' "$ws"        > "$d/ws"
+    printf '%s' "$tabid"     > "$d/tabid"
+    printf '%s' "$name"      > "$d/name"
+    : > "$d/ready"
+    echo "burrow: renaming tab $tabid → '$name'" >&2
+    exit 0
+    ;;
+
+  tab-close)
+    # burrow tab-close <pty-id> [--force]   — kill a tab's PTY and remove it.
+    # UI action. --force skips the "busy/unsaved" confirm prompt in the UI.
+    tabid=""; force=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --force) force="1"; shift ;;
+        --)      shift; break ;;
+        -*)      echo "burrow tab-close: unknown flag $1" >&2; exit 1 ;;
+        *)       tabid="$1"; shift ;;
+      esac
+    done
+    [ -n "$tabid" ] || { echo "usage: burrow tab-close <pty-id> [--force]" >&2; exit 1; }
+    reqdir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}/requests"
+    mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "tab-close" > "$d/kind"
+    printf '%s' "$ws"        > "$d/ws"
+    printf '%s' "$tabid"     > "$d/tabid"
+    printf '%s' "$force"     > "$d/force"
+    : > "$d/ready"
+    echo "burrow: closing tab $tabid" >&2
+    exit 0
+    ;;
+
+  workspace-create)
+    # burrow workspace-create <name> <path>   — add a workspace row and open it.
+    # UI action: the origin Terminal calls the workspace store's create (DB insert)
+    # then opens it, so the Sidebar reflects it immediately.
+    name="$1"; path="$2"
+    [ -n "$name" ] && [ -n "$path" ] || { echo "usage: burrow workspace-create <name> <path>" >&2; exit 1; }
+    case "$path" in /*) ;; *) path="$PWD/$path" ;; esac   # absolutize relative paths
+    reqdir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}/requests"
+    mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "workspace-create" > "$d/kind"
+    printf '%s' "$ws"              > "$d/ws"
+    printf '%s' "$name"            > "$d/name"
+    printf '%s' "$path"            > "$d/path"
+    : > "$d/ready"
+    echo "burrow: creating workspace '$name' at $path" >&2
+    exit 0
+    ;;
+
+  git-status|git-log|git-diff|run)
+    # Read commands answered ENTIRELY in Rust (no frontend). Drop a request dir
+    # with a token + the git/run params, then block polling <token>.result — same
+    # transport as list-workspaces. --cwd targets a repo/worktree dir (default: the
+    # origin workspace).
+    #   git-status [--cwd DIR]
+    #   git-log    [--n N] [--cwd DIR]          (N defaults to 20)
+    #   git-diff   [--staged] [--cwd DIR]
+    #   run        [--cwd DIR] <cmd...>         (stdout+stderr, 30s timeout)
+    n=""; staged=""; path=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --cwd)    path="$2"; shift 2 ;;
+        --n)      n="$2";    shift 2 ;;
+        --staged) staged="1"; shift ;;
+        --)       shift; break ;;
+        -*)       if [ "$sub" = "run" ]; then break; else echo "burrow $sub: unknown flag $1" >&2; exit 1; fi ;;
+        *)        break ;;
+      esac
+    done
+    # `run` takes the remaining args as the command to execute. Re-quote each arg
+    # (program bare, rest single-quoted) so it re-parses correctly under `sh -c`.
+    runcmd=""
+    if [ "$sub" = "run" ]; then
+      [ -n "$1" ] || { echo "burrow run: no command given" >&2; exit 1; }
+      runcmd="$1"; shift
+      for a in "$@"; do
+        esc=$(printf '%s' "$a" | sed "s/'/'\\\\''/g")
+        runcmd="$runcmd '$esc'"
+      done
+    fi
+    dir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}"
+    reqdir="$dir/requests"; mkdir -p "$reqdir" || { echo "burrow: cannot create $reqdir" >&2; exit 1; }
+    ws="${BURROW_CWD:-$PWD}"
+    token="ctl.$$.${RANDOM:-0}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX") || { echo "burrow: mktemp failed" >&2; exit 1; }
+    printf '%s' "$sub"     > "$d/kind"
+    printf '%s' "$ws"      > "$d/ws"
+    printf '%s' "$token"   > "$d/token"
+    printf '%s' "$path"    > "$d/path"
+    printf '%s' "$n"       > "$d/n"
+    printf '%s' "$staged"  > "$d/staged"
+    printf '%s' "$runcmd"  > "$d/cmd"
+    : > "$d/ready"
+    waited=0
+    while [ ! -f "$dir/$token.done" ]; do
+      sleep 1; waited=$((waited + 1))
+      [ "$waited" -ge 35 ] && { echo "burrow $sub: timed out (is Burrow running?)" >&2; exit 1; }
+    done
+    [ -f "$dir/$token.result" ] && cat "$dir/$token.result"
+    rm -f "$dir/$token.done" "$dir/$token.result"
+    exit 0
+    ;;
+
+  tab-output)
+    # burrow tab-output <pty-id> [--lines N]
+    # Not supported: Burrow does not expose a per-PTY scrollback buffer to the CLI
+    # (the daemon keeps only a small replay ring, not addressable history). Read the
+    # tab in the UI, or have the agent in that tab redirect its output to a file.
+    echo "burrow tab-output: not supported — no addressable PTY scrollback buffer." >&2
+    echo "(open the tab in Burrow, or redirect the command's output to a file you can read)" >&2
+    exit 1
+    ;;
+
   *)
-    echo "burrow: unknown command '$sub' (use spawn|worktree|worktree-remove|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane|list-workspaces|list-tabs|focus-workspace|focus-tab|new-tab|pr-create|pr-list|pr-view|pr-merge)" >&2
+    echo "burrow: unknown command '$sub' (use spawn|worktree|worktree-remove|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane|list-workspaces|list-tabs|focus-workspace|focus-tab|new-tab|tab-rename|tab-close|workspace-create|git-status|git-log|git-diff|run|pr-create|pr-list|pr-view|pr-merge)" >&2
     exit 1
     ;;
 esac

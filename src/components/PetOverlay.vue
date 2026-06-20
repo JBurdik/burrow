@@ -18,8 +18,11 @@
     petsSpeech   — show the speech bubbles
     petsLeveling — pets grow + earn a crown the more turns their agent finishes
 
-  Pure CSS box-shadow pixel sprites — no image assets. Overlay is
-  pointer-events:none except the pets themselves (click to pet → wiggle).
+  Two sprite backends: inline-SVG species (the zoo) and image-sprite pets
+  sliced from assets/*-pet-sprites.png (frames in src/assets/pets/). While
+  TEST_ONLY_IMAGES is on, agents render only as image pets (cat / turtle),
+  assigned by tab id. Overlay is pointer-events:none except the pets
+  themselves (click to pet → wiggle).
 -->
 <template>
   <div class="pet-overlay" aria-hidden="true">
@@ -37,9 +40,11 @@
       <div
         class="pet-sprite"
         :class="{ walk: p.moving, wiggle: p.wiggling }"
-        :style="{ '--f': p.facing * FACE[p.species] }"
-        v-html="SPRITES[p.species]"
-      />
+        :style="{ '--f': p.facing * (p.img ? 1 : FACE[p.species]) }"
+      >
+        <img v-if="p.img" :src="p.img" draggable="false" alt="" />
+        <span v-else v-html="SPRITES[p.species]" />
+      </div>
       <div class="pet-shadow" />
       <div v-if="p.status === 'idle'" class="pet-z">z</div>
       <div v-if="p.status === 'done' || p.status === 'review'" class="pet-spark">✦</div>
@@ -76,8 +81,8 @@ const wsStore = useWorkspaceStore();
 // ── SVG sprite system ─────────────────────────────────────────────────────────
 // Hand-drawn kawaii critters, one inline SVG per species (viewBox 0 0 48 48).
 // Crisp at any scale — no pixel grid. Rendered at SPRITE px below.
-const SPRITE_W = 56;
-const SPRITE_H = 56;
+const SPRITE_W = 64;
+const SPRITE_H = 64;
 
 interface Species {
   name: string;
@@ -206,6 +211,42 @@ const SPRITES = SPECIES.map(
   (s) => `<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">${s.svg}</svg>`,
 );
 
+// ── Image-sprite pets (sliced from assets/*-pet-sprites.png) ──────────────────
+// Each pet is a frame set, one entry per behaviour. While TEST_ONLY_IMAGES is
+// on, agents render only as these image pets (no SVG zoo), assigned by tab id.
+import catWork0 from "@/assets/pets/cat-work-0.png";
+import catWork1 from "@/assets/pets/cat-work-1.png";
+import catIdle from "@/assets/pets/cat-idle.png";
+import catAttn from "@/assets/pets/cat-attn.png";
+import catHappy from "@/assets/pets/cat-happy.png";
+import turtleWork0 from "@/assets/pets/turtle-work-0.png";
+import turtleWork1 from "@/assets/pets/turtle-work-1.png";
+import turtleIdle from "@/assets/pets/turtle-idle.png";
+import turtleAttn from "@/assets/pets/turtle-attn.png";
+import turtleHappy from "@/assets/pets/turtle-happy.png";
+
+interface ImagePet {
+  run: string[]; // running — multi-frame loop
+  idle: string[];
+  attn: string[]; // waiting / permission / error
+  happy: string[]; // done / review
+}
+const IMAGE_PETS: ImagePet[] = [
+  { run: [catWork0, catWork1], idle: [catIdle], attn: [catAttn], happy: [catHappy] },
+  { run: [turtleWork0, turtleWork1], idle: [turtleIdle], attn: [turtleAttn], happy: [turtleHappy] },
+];
+
+const TEST_ONLY_IMAGES = false;
+
+// Pick the image-pet frame for a status; `now` cycles the running loop.
+function imageFrame(petIdx: number, status: TermStatus, now: number): string {
+  const p = IMAGE_PETS[petIdx];
+  if (status === "running") return p.run[Math.floor(now / 14) % p.run.length];
+  if (status === "done" || status === "review") return p.happy[0];
+  if (status === "waiting" || status === "permission" || status === "error") return p.attn[0];
+  return p.idle[0];
+}
+
 // Which way each sprite is drawn (1 = right). Front-facing critters are 1 (a
 // flip is invisible); the duck is in profile facing LEFT, so it's -1 — its
 // render flip = facing * FACE keeps the beak pointing where it walks.
@@ -239,6 +280,7 @@ interface PetView {
   quip: string;
   level: number;
   crown: boolean;
+  img?: string; // image-sprite frame (cat); undefined → SVG species
 }
 
 const pets = ref<PetView[]>([]);
@@ -346,6 +388,9 @@ function step() {
       quip: QUIP[status] ?? "",
       level: r.level,
       crown: ui.petsLeveling && r.level >= 3,
+      img: TEST_ONLY_IMAGES
+        ? imageFrame(((id % IMAGE_PETS.length) + IMAGE_PETS.length) % IMAGE_PETS.length, status, now)
+        : undefined,
     });
   }
   pets.value = views;
@@ -412,6 +457,19 @@ onBeforeUnmount(() => cancelAnimationFrame(raf));
   width: 100%;
   height: 100%;
   display: block;
+}
+.pet-sprite img,
+.pet-sprite span {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.pet-sprite img {
+  object-fit: contain;
+  object-position: 50% 100%; /* feet on the floor line */
+  user-select: none;
 }
 
 /* ── Facing + walk live on the SPRITE, so the .pet state-bounces never mirror

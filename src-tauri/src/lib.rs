@@ -1365,6 +1365,8 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
             kind_peek.as_str(),
             "list-workspaces" | "list-tabs" | "focus-workspace" | "focus-tab" | "new-tab"
                 | "worktree-remove" | "pr-create" | "pr-list" | "pr-view" | "pr-merge"
+                | "tab-rename" | "tab-close" | "workspace-create"
+                | "git-status" | "git-log" | "git-diff" | "run" | "tab-output"
         ) {
             if ws != cwd { continue; }
             let token = read("token");
@@ -1474,6 +1476,76 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
                         Err(e) => format!("error: {e}"),
                     };
                     write_control_result(&app, &token, &text);
+                }
+                "git-status" | "git-log" | "git-diff" => {
+                    // Git read commands — run in the optional --cwd dir (a repo or
+                    // worktree path), else the origin workspace. Answered in Rust.
+                    let path = read("path");
+                    let run_dir = if path.is_empty() { ws.clone() } else { path };
+                    let git_args: Vec<String> = match kind_peek.as_str() {
+                        "git-status" => vec!["status".into()],
+                        "git-log" => {
+                            // -N (default 20); reject a non-numeric --n so it can't
+                            // smuggle extra git flags.
+                            let n = read("n");
+                            let n = if n.trim().chars().all(|c| c.is_ascii_digit()) && !n.trim().is_empty() {
+                                n.trim().to_string()
+                            } else { "20".to_string() };
+                            vec!["log".into(), "--oneline".into(), format!("-{n}")]
+                        }
+                        // git-diff
+                        _ => {
+                            if read("staged") == "1" { vec!["diff".into(), "--cached".into()] }
+                            else { vec!["diff".into()] }
+                        }
+                    };
+                    let argref: Vec<&str> = git_args.iter().map(|s| s.as_str()).collect();
+                    let text = match git_in(&run_dir, &argref) {
+                        Ok(o) => if o.trim().is_empty() { "(no output)".to_string() } else { o },
+                        Err(e) => format!("error: {e}"),
+                    };
+                    write_control_result(&app, &token, &text);
+                }
+                "run" => {
+                    // Run an arbitrary shell command (read-only by convention) and
+                    // capture stdout+stderr. 30s timeout. Lets the Manager grep/find/
+                    // cat without spawning a whole agent tab.
+                    let path = read("path");
+                    let run_dir = if path.is_empty() { ws.clone() } else { path };
+                    let text = if cmd.trim().is_empty() {
+                        "error: no command".to_string()
+                    } else {
+                        run_shell_capture(&run_dir, &cmd, 30)
+                    };
+                    write_control_result(&app, &token, &text);
+                }
+                "tab-output" => {
+                    // No addressable scrollback buffer is exposed to the CLI — the
+                    // script already explains this and exits 1 before blocking, so
+                    // this arm is just a safety net if a request still lands.
+                    write_control_result(
+                        &app, &token,
+                        "error: tab-output not supported (no addressable PTY scrollback)",
+                    );
+                }
+                "tab-rename" | "tab-close" | "workspace-create" => {
+                    // UI actions carrying extra fields: tab-rename uses name→cmd +
+                    // tabid; tab-close uses tabid + force→base; workspace-create uses
+                    // name→cmd + path→cwd. Pushed to the frontend like focus-*.
+                    let name = read("name");
+                    let path = read("path");
+                    let force = read("force");
+                    out.push(SpawnRequest {
+                        kind: kind_peek.clone(),
+                        cmd: name,
+                        token: String::new(),
+                        cwd: path,
+                        branch: String::new(),
+                        base: force,
+                        tmux_win: String::new(),
+                        wsid,
+                        tabid,
+                    });
                 }
                 _ => {
                     // focus-workspace / focus-tab / new-tab → frontend UI action.
@@ -1775,6 +1847,51 @@ fn git_in(repo: &str, args: &[&str]) -> Result<String, String> {
             Err(if err.trim().is_empty() { format!("git exited with {}", out.status.code().unwrap_or(-1)) } else { err })
         }
         Err(e) => Err(e.to_string()),
+    }
+}
+
+// Run a shell command in `cwd`, capturing stdout+stderr, killing it after
+// `timeout_secs`. Used by the Manager's `burrow run` (ad-hoc read-only commands).
+// The child runs in a thread so we can time it out; on timeout we SIGTERM by pid
+// (Child can't be killed after wait_with_output() moves it into the thread).
+fn run_shell_capture(cwd: &str, cmd: &str, timeout_secs: u64) -> String {
+    use std::process::{Command, Stdio};
+    let child = match Command::new("/bin/sh")
+        .arg("-c").arg(cmd)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return format!("error: failed to run: {e}"),
+    };
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
+        Ok(Ok(out)) => {
+            let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+            let err = String::from_utf8_lossy(&out.stderr);
+            if !err.trim().is_empty() {
+                if !s.is_empty() && !s.ends_with('\n') { s.push('\n'); }
+                s.push_str(&err);
+            }
+            if s.trim().is_empty() {
+                format!("(no output; exit {})", out.status.code().unwrap_or(-1))
+            } else {
+                s
+            }
+        }
+        Ok(Err(e)) => format!("error: {e}"),
+        Err(_) => {
+            // Timed out — reap the runaway child by pid so it doesn't linger.
+            let _ = Command::new("/bin/kill").arg("-TERM").arg(pid.to_string()).output();
+            format!("error: command timed out after {timeout_secs}s")
+        }
     }
 }
 
