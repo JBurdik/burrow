@@ -473,6 +473,12 @@ const props = defineProps<{
   // Optional avatar shown at the start of the composer's bottom toolbar row
   // (used by the Manager bar to give the agent a face).
   avatarSrc?: string;
+  // Use a dedicated localStorage key for the model selection instead of the
+  // shared global one, so this chat's model is independent of every other chat
+  // (the Manager keeps its own model). Falls back to the global key.
+  modelKey?: string;
+  // Initial model when nothing is stored under modelKey yet.
+  defaultModel?: string;
 }>();
 
 const chats = useClaudeChatsStore();
@@ -548,10 +554,13 @@ const CLAUDE_MODELS = [
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ] as const;
 type ClaudeModelId = typeof CLAUDE_MODELS[number]["id"];
-const MODEL_KEY = "burrow.claude.model";
+const MODEL_KEY = props.modelKey ?? "burrow.claude.model";
 function loadModel(): ClaudeModelId {
   const v = localStorage.getItem(MODEL_KEY);
   if (CLAUDE_MODELS.some((m) => m.id === v)) return v as ClaudeModelId;
+  if (props.defaultModel && CLAUDE_MODELS.some((m) => m.id === props.defaultModel)) {
+    return props.defaultModel as ClaudeModelId;
+  }
   return "claude-sonnet-4-6";
 }
 const selectedModel = ref<ClaudeModelId>(loadModel());
