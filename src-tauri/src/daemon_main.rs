@@ -36,7 +36,7 @@ const BROADCAST_CAP: usize = 8192;
 // the old daemon so the change takes effect after an auto-update. Leaving it
 // unchanged across app-only releases keeps live PTY sessions alive across updates.
 // MUST stay identical to DAEMON_PROTO_VERSION in lib.rs.
-const DAEMON_PROTO_VERSION: &str = "2";
+const DAEMON_PROTO_VERSION: &str = "3";
 
 struct RingBuffer {
     chunks: VecDeque<Vec<u8>>,
@@ -215,6 +215,7 @@ async fn handle_client(stream: tokio::net::UnixStream, state: Arc<DaemonState>) 
             "KillPty" => cmd_kill(&msg, id, &w, &state).await?,
             "GetForeground" => cmd_foreground(&msg, id, &w, &state).await?,
             "ListSessions" => cmd_list(id, &w, &state).await?,
+            "SnapshotPty" => cmd_snapshot(&msg, id, &w, &state).await?,
             "Version" => reply(&w, id, json!({"ok": true, "version": DAEMON_PROTO_VERSION})).await?,
             _ => reply(&w, id, json!({"ok": false, "error": "unknown command"})).await?,
         }
@@ -384,6 +385,20 @@ async fn cmd_list(id: u64, w: &WriterRef, state: &Arc<DaemonState>) -> Res {
         "alive": s.alive.load(Ordering::Acquire),
     })).collect();
     reply(w, id, json!({"ok": true, "sessions": list})).await
+}
+
+async fn cmd_snapshot(msg: &Value, id: u64, w: &WriterRef, state: &Arc<DaemonState>) -> Res {
+    let pty_id = msg["pty_id"].as_u64().unwrap_or(0) as u32;
+    let session = {
+        let sessions = state.sessions.read().await;
+        sessions.get(&pty_id).cloned()
+    };
+    let Some(session) = session else {
+        return reply(w, id, json!({"ok": false, "error": "session not found"})).await;
+    };
+    let snapshot = session.ring.lock().unwrap().snapshot();
+    let data = general_purpose::STANDARD.encode(snapshot);
+    reply(w, id, json!({"ok": true, "pty_id": pty_id, "data": data})).await
 }
 
 // ── PTY spawning ──────────────────────────────────────────────────────────────
