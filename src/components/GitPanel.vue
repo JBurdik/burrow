@@ -119,96 +119,130 @@
 
       <!-- LEFT: file lists + commit -->
       <div class="gp-left">
-        <div class="gp-scroll">
 
-          <!-- STAGED -->
-          <div class="gp-section-row">
-            <span class="gp-section-label">Staged <span v-if="git.staged.length" class="gp-badge">{{ git.staged.length }}</span></span>
-            <button v-if="git.staged.length" class="gp-sec-btn" @click="git.unstageAll()">−All</button>
+        <!-- COMMIT FILES MODE -->
+        <template v-if="selectedCommit">
+          <div class="gp-commit-browse-header">
+            <button class="gp-icon-btn" @click="clearSelectedCommit" title="Back to changes">
+              <PhArrowLeft :size="12" />
+            </button>
+            <span class="gp-log-hash" style="flex-shrink:0">{{ selectedCommit.shortHash }}</span>
+            <span class="gp-commit-browse-subject" :title="selectedCommit.subject">{{ selectedCommit.subject }}</span>
+            <span v-if="commitFiles.length" class="gp-badge" style="flex-shrink:0">{{ commitFiles.length }}</span>
           </div>
-          <div v-if="git.staged.length === 0" class="gp-empty">Nothing staged</div>
-          <div
-            v-for="f in git.staged"
-            :key="'s:' + f.path"
-            class="gp-file"
-            :class="{ active: activeDiff?.path === f.path && activeDiff?.staged }"
-            @click="toggleDiff(f.path, true)"
-          >
-            <span class="gp-status staged">{{ f.x }}</span>
-            <span class="gp-file-path" :title="f.path">{{ f.path }}</span>
-            <button class="gp-file-btn" @click.stop="git.unstageFile(f.path)" title="Unstage">−</button>
-          </div>
-
-          <!-- CHANGES -->
-          <div class="gp-section-row" style="margin-top: 10px">
-            <span class="gp-section-label">Changes <span v-if="changesCount" class="gp-badge">{{ changesCount }}</span></span>
-            <button v-if="changesCount" class="gp-sec-btn" @click="git.stageAll()">+All</button>
-          </div>
-          <div v-if="!changesCount" class="gp-empty">Working tree clean</div>
-          <div
-            v-for="f in git.unstaged"
-            :key="'u:' + f.path"
-            class="gp-file"
-            :class="{ active: activeDiff?.path === f.path && !activeDiff?.staged }"
-            @click="toggleDiff(f.path, false)"
-          >
-            <span class="gp-status modified">{{ f.y }}</span>
-            <span class="gp-file-path" :title="f.path">{{ f.path }}</span>
-            <div class="gp-file-btns">
-              <button class="gp-file-btn stage" @click.stop="git.stageFile(f.path)" title="Stage">+</button>
-              <button class="gp-file-btn discard" @click.stop="git.discardFile(f.path)" title="Discard">✕</button>
+          <div class="gp-scroll">
+            <div v-if="commitFilesLoading" class="gp-empty" style="padding-top:12px">Loading…</div>
+            <div v-else-if="!commitFiles.length" class="gp-empty" style="padding-top:12px">No files changed</div>
+            <div
+              v-for="f in commitFiles"
+              :key="f.path"
+              class="gp-file"
+              :class="{ active: commitDiff?.filePath === f.path }"
+              @click="openCommitFileDiff(f)"
+            >
+              <span class="gp-status" :class="commitFileStatusClass(f.status)">{{ f.status }}</span>
+              <span class="gp-file-path" :title="f.path">{{ f.path }}</span>
+              <span class="gp-cf-stat">
+                <span v-if="f.added" class="gp-cf-add">+{{ f.added }}</span>
+                <span v-if="f.deleted" class="gp-cf-del">-{{ f.deleted }}</span>
+              </span>
             </div>
           </div>
-          <div
-            v-for="f in git.untracked"
-            :key="'t:' + f.path"
-            class="gp-file"
-          >
-            <span class="gp-status untracked">?</span>
-            <span class="gp-file-path" :title="f.path">{{ f.path }}</span>
-            <div class="gp-file-btns">
-              <button class="gp-file-btn stage" @click.stop="git.stageFile(f.path)" title="Stage">+</button>
+        </template>
+
+        <!-- NORMAL MODE: staged + changes + commit area -->
+        <template v-else>
+          <div class="gp-scroll">
+
+            <!-- STAGED -->
+            <div class="gp-section-row">
+              <span class="gp-section-label">Staged <span v-if="git.staged.length" class="gp-badge">{{ git.staged.length }}</span></span>
+              <button v-if="git.staged.length" class="gp-sec-btn" @click="git.unstageAll()">−All</button>
+            </div>
+            <div v-if="git.staged.length === 0" class="gp-empty">Nothing staged</div>
+            <div
+              v-for="f in git.staged"
+              :key="'s:' + f.path"
+              class="gp-file"
+              :class="{ active: activeDiff?.path === f.path && activeDiff?.staged }"
+              @click="toggleDiff(f.path, true)"
+            >
+              <span class="gp-status staged">{{ f.x }}</span>
+              <span class="gp-file-path" :title="f.path">{{ f.path }}</span>
+              <button class="gp-file-btn" @click.stop="git.unstageFile(f.path)" title="Unstage">−</button>
+            </div>
+
+            <!-- CHANGES -->
+            <div class="gp-section-row" style="margin-top: 10px">
+              <span class="gp-section-label">Changes <span v-if="changesCount" class="gp-badge">{{ changesCount }}</span></span>
+              <button v-if="changesCount" class="gp-sec-btn" @click="git.stageAll()">+All</button>
+            </div>
+            <div v-if="!changesCount" class="gp-empty">Working tree clean</div>
+            <div
+              v-for="f in git.unstaged"
+              :key="'u:' + f.path"
+              class="gp-file"
+              :class="{ active: activeDiff?.path === f.path && !activeDiff?.staged }"
+              @click="toggleDiff(f.path, false)"
+            >
+              <span class="gp-status modified">{{ f.y }}</span>
+              <span class="gp-file-path" :title="f.path">{{ f.path }}</span>
+              <div class="gp-file-btns">
+                <button class="gp-file-btn stage" @click.stop="git.stageFile(f.path)" title="Stage">+</button>
+                <button class="gp-file-btn discard" @click.stop="git.discardFile(f.path)" title="Discard">✕</button>
+              </div>
+            </div>
+            <div
+              v-for="f in git.untracked"
+              :key="'t:' + f.path"
+              class="gp-file"
+            >
+              <span class="gp-status untracked">?</span>
+              <span class="gp-file-path" :title="f.path">{{ f.path }}</span>
+              <div class="gp-file-btns">
+                <button class="gp-file-btn stage" @click.stop="git.stageFile(f.path)" title="Stage">+</button>
+              </div>
             </div>
           </div>
-        </div>
 
-        <!-- Commit area (pinned to bottom of left column) -->
-        <div class="gp-commit">
-          <textarea
-            v-model="git.commitMsg"
-            class="gp-commit-input"
-            placeholder="Commit message…"
-            rows="3"
-            @keydown.ctrl.enter="git.commit()"
-            @keydown.meta.enter="git.commit()"
-          />
-          <div class="gp-type-chips">
-            <button
-              v-for="t in COMMIT_TYPES"
-              :key="t"
-              class="gp-chip"
-              :class="{ active: activeType === t }"
-              @click="applyType(t)"
-            >{{ t }}</button>
+          <!-- Commit area (pinned to bottom of left column) -->
+          <div class="gp-commit">
+            <textarea
+              v-model="git.commitMsg"
+              class="gp-commit-input"
+              placeholder="Commit message…"
+              rows="3"
+              @keydown.ctrl.enter="git.commit()"
+              @keydown.meta.enter="git.commit()"
+            />
+            <div class="gp-type-chips">
+              <button
+                v-for="t in COMMIT_TYPES"
+                :key="t"
+                class="gp-chip"
+                :class="{ active: activeType === t }"
+                @click="applyType(t)"
+              >{{ t }}</button>
+            </div>
+            <div class="gp-commit-btns">
+              <button
+                class="gp-commit-btn"
+                :disabled="!git.commitMsg.trim() || git.staged.length === 0"
+                @click="git.commit()"
+                title="⌘↵"
+              >
+                <PhGitCommit :size="12" /> Commit
+              </button>
+              <button
+                class="gp-commit-btn primary"
+                :disabled="!git.commitMsg.trim() || git.staged.length === 0 || git.pushing"
+                @click="commitAndPush()"
+              >
+                <PhArrowUp :size="12" /> Commit & Push
+              </button>
+            </div>
           </div>
-          <div class="gp-commit-btns">
-            <button
-              class="gp-commit-btn"
-              :disabled="!git.commitMsg.trim() || git.staged.length === 0"
-              @click="git.commit()"
-              title="⌘↵"
-            >
-              <PhGitCommit :size="12" /> Commit
-            </button>
-            <button
-              class="gp-commit-btn primary"
-              :disabled="!git.commitMsg.trim() || git.staged.length === 0 || git.pushing"
-              @click="commitAndPush()"
-            >
-              <PhArrowUp :size="12" /> Commit & Push
-            </button>
-          </div>
-        </div>
+        </template>
       </div>
 
       <!-- RIGHT: diff + history -->
@@ -261,7 +295,7 @@
               v-for="(c, i) in git.log"
               :key="c.hash"
               class="gp-log-row"
-              :class="{ unpushed: i < git.ahead, active: commitDiff?.hash === c.hash }"
+              :class="{ unpushed: i < git.ahead, active: selectedCommit?.hash === c.hash }"
               :title="c.subject + '\n' + c.author + (i < git.ahead ? '\n↑ Not pushed' : '')"
               @click="openCommitDiff(c)"
             >
@@ -305,7 +339,12 @@ const newBranchName = ref("");
 const newBranchInputRef = ref<HTMLInputElement | null>(null);
 const showHistory = ref(true);
 const activeDiff = ref<{ path: string; staged: boolean } | null>(null);
-const commitDiff = ref<{ hash: string; subject: string; text: string } | null>(null);
+const commitDiff = ref<{ hash: string; subject: string; text: string; filePath?: string } | null>(null);
+
+interface CommitFile { path: string; status: string; added: number; deleted: number }
+const selectedCommit = ref<GitCommit | null>(null);
+const commitFiles = ref<CommitFile[]>([]);
+const commitFilesLoading = ref(false);
 
 const COMMIT_TYPES = ["feat", "fix", "docs", "chore", "refactor", "test", "style"] as const;
 
@@ -387,20 +426,69 @@ async function commitAndPush() {
 }
 
 async function openCommitDiff(c: GitCommit) {
-  if (commitDiff.value?.hash === c.hash) {
+  const w = wsStore.topLevel.find((w) => w.id === selectedWsId.value);
+  if (!w) return;
+
+  if (selectedCommit.value?.hash === c.hash) {
+    selectedCommit.value = null;
+    commitFiles.value = [];
     commitDiff.value = null;
     return;
   }
-  const w = wsStore.topLevel.find((w) => w.id === selectedWsId.value);
-  if (!w) return;
-  const out = await invoke<{ stdout: string; stderr: string; code: number }>("run_git", {
-    cwd: w.path,
-    args: ["show", c.hash],
-  });
-  if (out.code !== 0 || !out.stdout) return;
+
+  selectedCommit.value = c;
+  commitDiff.value = null;
   activeDiff.value = null;
   git.clearDiff();
-  commitDiff.value = { hash: c.hash, subject: `${c.shortHash} ${c.subject}`, text: out.stdout };
+  commitFilesLoading.value = true;
+  try {
+    const [nsOut, numOut] = await Promise.all([
+      invoke<{ stdout: string; code: number }>("run_git", {
+        cwd: w.path, args: ["show", "--name-status", "--format=", c.hash],
+      }),
+      invoke<{ stdout: string; code: number }>("run_git", {
+        cwd: w.path, args: ["show", "--numstat", "--format=", c.hash],
+      }),
+    ]);
+    const nsLines = nsOut.stdout.split("\n").filter((l) => l.trim() && l.includes("\t"));
+    const numLines = numOut.stdout.split("\n").filter((l) => l.trim() && l.includes("\t"));
+    commitFiles.value = nsLines.map((line, i) => {
+      const nsParts = line.split("\t");
+      const status = nsParts[0][0];
+      const path = nsParts[nsParts.length - 1];
+      const numLine = numLines[i] || "";
+      const numParts = numLine.split("\t");
+      const added = parseInt(numParts[0]) || 0;
+      const deleted = parseInt(numParts[1]) || 0;
+      return { path, status, added, deleted };
+    });
+  } finally {
+    commitFilesLoading.value = false;
+  }
+}
+
+async function openCommitFileDiff(f: CommitFile) {
+  if (!selectedCommit.value) return;
+  const w = wsStore.topLevel.find((w) => w.id === selectedWsId.value);
+  if (!w) return;
+  if (commitDiff.value?.filePath === f.path) { commitDiff.value = null; return; }
+  const out = await invoke<{ stdout: string; code: number }>("run_git", {
+    cwd: w.path, args: ["show", selectedCommit.value.hash, "--", f.path],
+  });
+  commitDiff.value = { hash: selectedCommit.value.hash, subject: f.path, text: out.stdout, filePath: f.path };
+}
+
+function clearSelectedCommit() {
+  selectedCommit.value = null;
+  commitFiles.value = [];
+  commitDiff.value = null;
+}
+
+function commitFileStatusClass(s: string) {
+  if (s === "A") return "cf-added";
+  if (s === "D") return "cf-deleted";
+  if (s === "R" || s === "C") return "cf-renamed";
+  return "cf-modified";
 }
 </script>
 
@@ -1034,4 +1122,41 @@ body {
   white-space: nowrap;
 }
 .gp-log-time { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+
+/* Commit file browse mode */
+.gp-commit-browse-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 6px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--border) 18%, var(--bg-panel));
+  flex-shrink: 0;
+  min-width: 0;
+}
+.gp-commit-browse-subject {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status letters for commit file list */
+.gp-status.cf-added    { color: var(--green); }
+.gp-status.cf-deleted  { color: var(--red); }
+.gp-status.cf-renamed  { color: var(--accent); }
+.gp-status.cf-modified { color: var(--yellow); }
+
+/* +/- stat badges in commit file list */
+.gp-cf-stat {
+  display: flex;
+  gap: 3px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.gp-cf-add { color: var(--green); }
+.gp-cf-del { color: var(--red); }
 </style>

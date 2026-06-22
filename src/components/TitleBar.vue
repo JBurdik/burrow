@@ -164,20 +164,30 @@
     </div>
 
     <div class="titlebar-end">
-      <div class="tb-menu-wrap">
+      <div class="tb-menu-wrap tb-folder-wrap">
         <button
-          class="tb-btn"
+          class="tb-btn tb-folder-quick"
+          :title="OPEN_IN_META[lastOpenIn].title"
+          :disabled="!folderPath"
+          @click.stop="openIn(lastOpenIn)"
+        >
+          <PhFolderOpen :size="14" />
+          <span class="tb-folder-label">{{ OPEN_IN_META[lastOpenIn].label }}</span>
+        </button>
+        <button
+          class="tb-btn tb-folder-caret"
           title="Open folder in…"
           :disabled="!folderPath"
           @click.stop="menuOpen = !menuOpen"
         >
-          <PhFolderOpen :size="14" />
           <PhCaretDown :size="9" />
         </button>
         <div v-if="menuOpen" class="tb-menu" @click.stop>
-          <button class="tb-menu-item" @click="openIn('finder')"><PhFolderNotchOpen :size="14" />Reveal in Finder</button>
-          <button class="tb-menu-item" @click="openIn('vscode')"><PhCode :size="14" />Open in VS Code</button>
-          <button class="tb-menu-item" @click="openIn('zed')"><PhLightning :size="14" />Open in Zed</button>
+          <button class="tb-menu-item" :class="{ 'tb-menu-item--active': lastOpenIn === 'finder' }" @click="openIn('finder')"><PhFolderNotchOpen :size="14" />Reveal in Finder</button>
+          <button class="tb-menu-item" :class="{ 'tb-menu-item--active': lastOpenIn === 'vscode' }" @click="openIn('vscode')"><PhCode :size="14" />Open in VS Code</button>
+          <button class="tb-menu-item" :class="{ 'tb-menu-item--active': lastOpenIn === 'zed' }" @click="openIn('zed')"><PhLightning :size="14" />Open in Zed</button>
+          <div class="tb-menu-sep" />
+          <button class="tb-menu-item" @click="copyPath()"><PhCopy :size="14" />Copy Path</button>
         </div>
       </div>
       <div class="tb-menu-wrap">
@@ -249,7 +259,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus, PhSkull, PhUserGear, PhSignOut } from "@phosphor-icons/vue";
+import { PhHouse, PhGitBranch, PhSidebarSimple, PhFolderOpen, PhGear, PhCaretDown, PhFolderNotchOpen, PhCode, PhLightning, PhGauge, PhCpu, PhMemory, PhStack, PhBroom, PhArrowsClockwise, PhBell, PhCheckCircle, PhWarning, PhInfo, PhPlus, PhSkull, PhUserGear, PhSignOut, PhCopy } from "@phosphor-icons/vue";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
@@ -261,6 +271,13 @@ const props = defineProps<{ workspaceName?: string; branch?: string; folderPath?
 defineEmits(["back", "toggle-rightpanel", "open-settings"]);
 
 const menuOpen = ref(false);
+type OpenInTarget = "finder" | "vscode" | "zed";
+const lastOpenIn = ref<OpenInTarget>((localStorage.getItem("tb-last-open-in") as OpenInTarget) ?? "finder");
+const OPEN_IN_META: Record<OpenInTarget, { title: string; label: string }> = {
+  finder: { title: "Reveal in Finder", label: "Finder" },
+  vscode:  { title: "Open in VS Code", label: "VS Code" },
+  zed:     { title: "Open in Zed",     label: "Zed" },
+};
 
 // ── Branch picker ───────────────────────────────────────────────────────────
 const git = useGitStore();
@@ -604,14 +621,22 @@ async function restartDaemon() {
   }
 }
 
-async function openIn(target: "finder" | "vscode" | "zed") {
+async function openIn(target: OpenInTarget) {
   menuOpen.value = false;
   if (!props.folderPath) return;
+  lastOpenIn.value = target;
+  localStorage.setItem("tb-last-open-in", target);
   try {
     await invoke("open_path_in", { path: props.folderPath, target });
   } catch (e) {
     console.error("open_path_in failed", e);
   }
+}
+
+async function copyPath() {
+  menuOpen.value = false;
+  if (!props.folderPath) return;
+  await navigator.clipboard.writeText(props.folderPath);
 }
 
 function onDocClick() {
@@ -827,6 +852,15 @@ const isDev = import.meta.env.DEV;
 .tb-menu-item:disabled { opacity: 0.4; cursor: default; }
 .tb-menu-item:disabled:hover { background: none; color: var(--text-secondary); }
 .tb-menu-item.danger:hover { background: rgba(220, 60, 60, 0.15); color: #ff7676; }
+.tb-menu-item--active { color: var(--accent); }
+
+.tb-menu-sep { height: 1px; background: var(--border); margin: 4px 0; }
+
+/* Split folder button: icon + label fires last-used, caret opens menu */
+.tb-folder-wrap { gap: 0; }
+.tb-folder-quick { border-radius: 5px 0 0 5px; padding-right: 6px; gap: 5px; }
+.tb-folder-label { font-size: 11px; font-weight: 500; }
+.tb-folder-caret { border-radius: 0 5px 5px 0; padding-left: 5px; padding-right: 5px; border-left: 1px solid var(--border); }
 
 .stats-menu { min-width: 200px; padding: 8px; }
 
