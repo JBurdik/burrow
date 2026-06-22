@@ -2,6 +2,8 @@ import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { resolve } from "path";
 
+const isMobileBuild = process.env.VITE_TARGET === "mobile";
+
 export default defineConfig(async () => ({
   plugins: [vue()],
   resolve: {
@@ -18,6 +20,12 @@ export default defineConfig(async () => ({
     // bundle; the dev server (unminified) was fine. Disabling minification is the
     // safe fix for a desktop app where the JS loads from local disk (size is moot).
     minify: false,
+    outDir: isMobileBuild ? "dist-mobile" : "dist",
+    rollupOptions: {
+      input: isMobileBuild
+        ? { mobile: resolve(__dirname, "mobile.html") }
+        : { main: resolve(__dirname, "index.html") },
+    },
   },
   clearScreen: false,
   server: {

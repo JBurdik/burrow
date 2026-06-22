@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-mobile
 .DS_Store
 src-tauri/target
 src-tauri/gen

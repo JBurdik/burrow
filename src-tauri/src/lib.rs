@@ -109,7 +109,7 @@ const TMUX_SHIM: &str = include_str!("../bin/tmux");
 // daemon-side PTY behavior changes, so app-only updates don't needlessly restart
 // the daemon (which would kill live PTY sessions). A mismatch on launch retires the
 // stale daemon so the new behavior takes effect after an auto-update.
-const DAEMON_PROTO_VERSION: &str = "2";
+const DAEMON_PROTO_VERSION: &str = "3";
 
 // Cached bin dir: written once per app session. Subsequent create_pty calls skip
 // the file writes and chmod (2 writes + 2 fsyncs per tab was measurably slow).
