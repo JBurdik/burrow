@@ -2423,7 +2423,6 @@ async fn claude_start(
         // AskUserQuestion never reach the UI. We reply with claude_respond_control.
         "--permission-prompt-tool".to_string(), "stdio".to_string(),
         "--mcp-config".to_string(), mcp_config,
-        "--strict-mcp-config".to_string(),
     ];
     if let Some(sid) = resume_session_id {
         args.push("--resume".to_string());
