@@ -29,6 +29,9 @@
         <PhTree v-if="worktreeMode" :size="13" weight="bold" />
         <PhGitBranch v-else :size="13" weight="bold" />
       </button>
+      <button class="fc-head-btn" title="Reset session (clears history, starts fresh)" @click="resetSession">
+        <PhArrowCounterClockwise :size="13" weight="bold" />
+      </button>
       <button class="fc-head-btn" title="Collapse" @click="ui.toggleFloatChat()">
         <PhMinus :size="13" weight="bold" />
       </button>
@@ -51,7 +54,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { PhSparkle, PhMinus, PhGitBranch, PhTree } from "@phosphor-icons/vue";
+import { PhSparkle, PhMinus, PhGitBranch, PhTree, PhArrowCounterClockwise } from "@phosphor-icons/vue";
 import { getDefaultManagerPrimer, SPAWN_MODE_WORKTREE, SPAWN_MODE_BRANCH } from "@/utils/managerPrimer";
 import ClaudeChat from "./ClaudeChat.vue";
 import { useUIStore } from "@/stores/ui";
@@ -199,6 +202,16 @@ const launcherTitle = computed(() => {
     default: return "Manager — orchestrate worktrees, agents & PRs with chat";
   }
 });
+
+function resetSession() {
+  const repoId = rootId.value;
+  if (typeof repoId !== "number") return;
+  const map = loadMap();
+  delete map[repoId];
+  saveMap(map);
+  controlChatId.value = null;
+  ensureControlSession(repoId);
+}
 
 onMounted(() => {
   if (ui.floatChatOpen && typeof rootId.value === "number") ensureControlSession(rootId.value);

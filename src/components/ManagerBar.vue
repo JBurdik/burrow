@@ -165,6 +165,9 @@
         <PhCaretDown v-if="expanded" :size="15" weight="bold" />
         <PhCaretUp v-else :size="15" weight="bold" />
       </button>
+      <button class="mb-btn" title="Reset Manager session (clears conversation history, starts fresh)" @click="resetSession">
+        <PhArrowCounterClockwise :size="15" weight="bold" />
+      </button>
       <button class="mb-btn" title="Project config" @click="emit('openProjectConfig')">
         <PhGear :size="15" weight="bold" />
       </button>
@@ -174,7 +177,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
-import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu, PhGear } from "@phosphor-icons/vue";
+import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu, PhGear, PhArrowCounterClockwise } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import ClaudeChat from "./ClaudeChat.vue";
 import { useUIStore } from "@/stores/ui";
@@ -464,6 +467,16 @@ function ensureControlSession(repoId: number) {
   map[repoId] = sess.id;
   saveMap(map);
   sessionIdByRepo.value[repoId] = sess.id;
+}
+
+function resetSession() {
+  const repoId = rootId.value;
+  if (typeof repoId !== "number") return;
+  const map = loadMap();
+  delete map[repoId];
+  saveMap(map);
+  delete sessionIdByRepo.value[repoId];
+  ensureControlSession(repoId);
 }
 
 // Resolve a session for the active repo only when the Manager is actually
