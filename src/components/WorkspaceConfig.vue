@@ -18,7 +18,7 @@
       <!-- Tab: Manager Prompt -->
       <div v-if="tab === 'prompt'" class="wc-body">
         <p class="wc-hint">
-          Saved to <code>{{ workspacePath }}/.burrow/manager.md</code>. Overrides the default Manager system prompt for this project.
+          Saved to <code>{{ workspacePath }}/.burrow/manager.md</code>. This is the full Manager system prompt for this project — edit or extend it as needed.
         </p>
         <textarea
           v-model="promptContent"
@@ -80,6 +80,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { PhX, PhPlus, PhTrash } from '@phosphor-icons/vue'
 import { useScriptsStore } from '@/stores/scripts'
+import { getDefaultManagerPrimer } from '@/utils/managerPrimer'
 
 const props = defineProps<{
   workspacePath: string
@@ -97,11 +98,13 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 async function loadPrompt() {
   try {
-    promptContent.value = await invoke<string>('read_text_file', {
+    const content = await invoke<string>('read_text_file', {
       path: props.workspacePath + '/.burrow/manager.md',
     })
+    const stripped = content.replace(/<!--[\s\S]*?-->/g, '').trim()
+    promptContent.value = stripped || getDefaultManagerPrimer(false)
   } catch {
-    promptContent.value = ''
+    promptContent.value = getDefaultManagerPrimer(false)
   }
 }
 
