@@ -687,10 +687,10 @@ Be concise. Confirm what you did. If a request is ambiguous (which worktree? whi
 /* ── Bottom strip ── */
 .mb-strip {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
-  height: 38px;
-  padding: 0 10px;
+  min-height: 38px;
+  padding: 6px 10px;
   flex-shrink: 0;
 }
 .mb-strip-icon { color: var(--accent, #3b82f6); flex-shrink: 0; }
