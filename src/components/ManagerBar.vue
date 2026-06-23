@@ -46,16 +46,45 @@
       <span class="mb-status-dot" :class="`mb-dot-${dotKind}`" :title="dotTitle" />
       <span class="mb-strip-sub" :title="rootCwd">{{ rootName }}</span>
 
-      <!-- Quick single-line input straight into the Manager (always present) -->
-      <input
-        ref="quickEl"
-        v-model="quickText"
-        class="mb-quick"
-        type="text"
-        :placeholder="busy ? 'Manager is working — queue a message…' : 'Message Manager — orchestrate worktrees, agents & PRs'"
-        @focus="ensureStarted"
-        @keydown.enter.prevent="quickSend"
-      />
+      <!-- Quick input with multiline + suggestions -->
+      <div class="mb-quick-wrap">
+        <!-- /command suggestions -->
+        <div v-if="cmdSuggestions.length" class="mb-suggestions">
+          <div
+            v-for="(s, i) in cmdSuggestions"
+            :key="s.name"
+            class="mb-suggestion"
+            :class="{ 'mb-sug-active': i === cmdIdx }"
+            @mousedown.prevent="applyCmd(s.name)"
+          >
+            <span class="mb-sug-name">/{{ s.name }}</span>
+            <span class="mb-sug-desc">{{ s.description }}</span>
+          </div>
+        </div>
+        <!-- @file suggestions -->
+        <div v-if="atSuggestions.length" class="mb-suggestions">
+          <div
+            v-for="(p, i) in atSuggestions"
+            :key="p"
+            class="mb-suggestion"
+            :class="{ 'mb-sug-active': i === atIdx }"
+            @mousedown.prevent="applyAt(p)"
+          >
+            <span class="mb-sug-name">@{{ p.slice(p.lastIndexOf('/') + 1) }}</span>
+            <span class="mb-sug-desc">{{ p }}</span>
+          </div>
+        </div>
+        <textarea
+          ref="quickEl"
+          v-model="quickText"
+          class="mb-quick"
+          rows="1"
+          :placeholder="busy ? 'Manager is working — queue a message…' : 'Message Manager… (Enter=send, Shift+Enter=newline, @file, /cmd)'"
+          @focus="ensureStarted"
+          @keydown="onQuickKeydown"
+          @input="onQuickInput"
+        />
+      </div>
 
       <!-- Model picker (Manager has its own model, default Sonnet) -->
       <div class="mb-wt">
@@ -143,6 +172,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu } from "@phosphor-icons/vue";
+import { invoke } from "@tauri-apps/api/core";
 import ClaudeChat from "./ClaudeChat.vue";
 import { useUIStore } from "@/stores/ui";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
@@ -160,8 +190,122 @@ function setChatRef(repoId: number, el: unknown) {
   if (el) chatRefs.set(repoId, el as InstanceType<typeof ClaudeChat>);
   else chatRefs.delete(repoId);
 }
-const quickEl = ref<HTMLInputElement | null>(null);
+const quickEl = ref<HTMLTextAreaElement | null>(null);
 const quickText = ref("");
+
+// ── Suggestions ─────────────────────────────────────────────────────────────
+interface Command { name: string; description: string }
+const cmdSuggestions = ref<Command[]>([]);
+const cmdIdx = ref(0);
+const atSuggestions = ref<string[]>([]);
+const atIdx = ref(0);
+const fileList = ref<string[]>([]);
+let fileListLoaded = false;
+
+async function ensureFileList() {
+  if (fileListLoaded) return;
+  fileListLoaded = true;
+  try {
+    const out = await invoke<{ stdout: string }>("run_git", {
+      cwd: rootCwd.value,
+      args: ["ls-files", "--cached", "--others", "--exclude-standard"],
+    });
+    fileList.value = out.stdout.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 20000);
+  } catch { fileList.value = []; }
+}
+
+function updateCmdSuggestions() {
+  const m = quickText.value.match(/^\/(\S*)$/);
+  if (!m) { cmdSuggestions.value = []; return; }
+  const q = m[1].toLowerCase();
+  const cmds = chatRefs.get(rootId.value)?.allCommands ?? [];
+  cmdSuggestions.value = (cmds as Command[]).filter((c) => c.name.toLowerCase().startsWith(q));
+  cmdIdx.value = 0;
+}
+
+function atQueryBeforeCursor(): string | null {
+  const el = quickEl.value;
+  const pos = el?.selectionStart ?? quickText.value.length;
+  const upto = quickText.value.slice(0, pos);
+  const m = upto.match(/(?:^|\s)@([^\s@]*)$/);
+  return m ? m[1] : null;
+}
+
+async function updateAtSuggestions() {
+  const q = atQueryBeforeCursor();
+  if (q === null) { atSuggestions.value = []; return; }
+  await ensureFileList();
+  if (atQueryBeforeCursor() !== q) return;
+  const ql = q.toLowerCase();
+  atSuggestions.value = fileList.value
+    .filter((p) => p.toLowerCase().includes(ql))
+    .sort((a, b) => {
+      const ab = a.slice(a.lastIndexOf("/") + 1).toLowerCase();
+      const bb = b.slice(b.lastIndexOf("/") + 1).toLowerCase();
+      return (Number(!ab.startsWith(ql)) - Number(!bb.startsWith(ql))) || a.length - b.length;
+    })
+    .slice(0, 8);
+  atIdx.value = 0;
+}
+
+function applyCmd(name: string) {
+  quickText.value = `/${name} `;
+  cmdSuggestions.value = [];
+  nextTick(() => { quickEl.value?.focus(); quickAutoResize(); });
+}
+
+function applyAt(path: string) {
+  const el = quickEl.value;
+  const pos = el?.selectionStart ?? quickText.value.length;
+  const upto = quickText.value.slice(0, pos);
+  const after = quickText.value.slice(pos);
+  const m = upto.match(/@([^\s@]*)$/);
+  if (!m) return;
+  const base = upto.slice(0, upto.length - m[0].length);
+  quickText.value = `${base}@${path} ${after}`;
+  atSuggestions.value = [];
+  nextTick(() => { quickEl.value?.focus(); quickAutoResize(); });
+}
+
+function quickAutoResize() {
+  const el = quickEl.value;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 120) + "px";
+}
+
+function onQuickInput() {
+  quickAutoResize();
+  updateCmdSuggestions();
+  updateAtSuggestions();
+}
+
+function onQuickKeydown(e: KeyboardEvent) {
+  if (atSuggestions.value.length > 0) {
+    if (e.key === "ArrowDown") { e.preventDefault(); atIdx.value = Math.min(atIdx.value + 1, atSuggestions.value.length - 1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); atIdx.value = Math.max(atIdx.value - 1, 0); return; }
+    if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.metaKey)) { e.preventDefault(); applyAt(atSuggestions.value[atIdx.value]); return; }
+    if (e.key === "Escape") { atSuggestions.value = []; return; }
+  }
+  if (cmdSuggestions.value.length > 0) {
+    if (e.key === "ArrowDown") { e.preventDefault(); cmdIdx.value = Math.min(cmdIdx.value + 1, cmdSuggestions.value.length - 1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); cmdIdx.value = Math.max(cmdIdx.value - 1, 0); return; }
+    if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.metaKey)) { e.preventDefault(); applyCmd(cmdSuggestions.value[cmdIdx.value].name); return; }
+    if (e.key === "Escape") { cmdSuggestions.value = []; return; }
+  }
+  // Shift+Enter or Cmd+Enter = newline
+  if (e.key === "Enter" && (e.shiftKey || e.metaKey)) {
+    e.preventDefault();
+    const el = quickEl.value!;
+    const s = el.selectionStart ?? quickText.value.length;
+    const en = el.selectionEnd ?? s;
+    quickText.value = quickText.value.slice(0, s) + "\n" + quickText.value.slice(en);
+    nextTick(() => { el.selectionStart = el.selectionEnd = s + 1; quickAutoResize(); });
+    return;
+  }
+  // plain Enter = send
+  if (e.key === "Enter") { e.preventDefault(); quickSend(); }
+}
 
 // Expanded state is shared with the existing ui pref (floatChatOpen) so ⌘J and the
 // persisted preference keep working unchanged. `started` gates the first claude
@@ -361,6 +505,9 @@ async function quickSend() {
   const text = quickText.value.trim();
   if (!text) return;
   quickText.value = "";
+  cmdSuggestions.value = [];
+  atSuggestions.value = [];
+  nextTick(() => { quickAutoResize(); });
   ensureStarted();
   // Stay collapsed on send — the message runs in the background; the strip's
   // status dot reflects progress. User expands only when they want to read.
@@ -558,21 +705,71 @@ Be concise. Confirm what you did. If a request is ambiguous (which worktree? whi
   white-space: nowrap;
 }
 .mb-spacer { flex: 1; }
-.mb-quick {
+.mb-quick-wrap {
   flex: 1;
   min-width: 0;
-  height: 26px;
+  position: relative;
+}
+.mb-quick {
+  width: 100%;
+  min-height: 26px;
+  max-height: 120px;
+  box-sizing: border-box;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
   border-radius: 7px;
   background: var(--bg-base, #0d0d0d);
   color: var(--text-primary, #e2e8f0);
   font-family: var(--font-ui);
   font-size: 12px;
-  padding: 0 10px;
+  padding: 4px 10px;
   outline: none;
+  resize: none;
+  overflow-y: auto;
+  line-height: 18px;
+  display: block;
 }
 .mb-quick::placeholder { color: var(--text-muted, #64748b); }
 .mb-quick:focus { border-color: var(--accent, #3b82f6); }
+
+/* Suggestions dropdown above the input */
+.mb-suggestions {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--bg-dropdown, #18181c);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 80;
+}
+.mb-suggestion {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.mb-suggestion:hover,
+.mb-sug-active { background: rgba(255, 255, 255, 0.06); }
+.mb-sug-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: #a78bfa;
+  flex-shrink: 0;
+  min-width: 90px;
+}
+.mb-sug-desc {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.38);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ── Status dot ── */
 .mb-status-dot {

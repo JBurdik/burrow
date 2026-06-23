@@ -1496,7 +1496,7 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 function focusInput() {
   nextTick(() => { inputEl.value?.focus(); autoResize(); });
 }
-defineExpose({ sendMessage, focusInput, selectModel, selectedModel });
+defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands });
 </script>
 
 <style scoped>
