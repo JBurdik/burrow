@@ -392,8 +392,9 @@ watch(rootCwd, async (cwd) => {
   } catch { /* ignore — dir may already exist or path invalid */ }
   try {
     const content = await invoke<string>('read_text_file', { path: cwd + '/.burrow/manager.md' });
-    // Don't inject placeholder comments as active prompt
-    projectManagerPrompt.value = content.replace(/<!--[\s\S]*?-->/g, '').trim();
+    const stripped = content.replace(/<!--[\s\S]*?-->/g, '').trim();
+    const isPlaceholder = stripped === '# Project-specific Manager instructions' || stripped === '';
+    projectManagerPrompt.value = isPlaceholder ? '' : stripped;
   } catch {
     projectManagerPrompt.value = '';
   }

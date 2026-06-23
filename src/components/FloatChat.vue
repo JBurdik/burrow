@@ -209,7 +209,9 @@ watch(rootCwd, async (cwd) => {
   if (!cwd) return;
   try {
     const content = await invoke<string>('read_text_file', { path: cwd + '/.burrow/manager.md' });
-    projectManagerPrompt.value = content.replace(/<!--[\s\S]*?-->/g, '').trim();
+    const stripped = content.replace(/<!--[\s\S]*?-->/g, '').trim();
+    const isPlaceholder = stripped === '# Project-specific Manager instructions' || stripped === '';
+    projectManagerPrompt.value = isPlaceholder ? '' : stripped;
   } catch {
     projectManagerPrompt.value = '';
   }
