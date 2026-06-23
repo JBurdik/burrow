@@ -1436,6 +1436,9 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
                         Ok(m) => m,
                         Err(e) => format!("error: {e}"),
                     };
+                    if !text.starts_with("error:") {
+                        let _ = app.emit("workspaces-changed", ());
+                    }
                     write_control_result(&app, &token, &text);
                 }
                 "pr-create" | "pr-list" | "pr-view" | "pr-merge" => {

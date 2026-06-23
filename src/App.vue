@@ -275,6 +275,7 @@ async function openNewWorkspace() {
 let updateTimer: number | undefined;
 let unlistenFloat: UnlistenFn | null = null;
 let unlistenMenuUpdate: UnlistenFn | null = null;
+let unlistenWorkspacesChanged: UnlistenFn | null = null;
 
 // Short warm synth arpeggio on app startup — no asset, no user gesture needed in
 // the app webview; fails silently if the AudioContext is blocked.
@@ -322,6 +323,10 @@ onMounted(async () => {
     update.check({ silent: false });
   });
 
+  unlistenWorkspacesChanged = await listen("workspaces-changed", () => {
+    ws.load();
+  });
+
   // Float bubble "focus main" — switch to the right workspace + leaf
   unlistenFloat = await listen<{ ptyId: number; wsId: number }>(
     "float-focus-tab",
@@ -343,6 +348,7 @@ onBeforeUnmount(() => {
   if (updateTimer) clearInterval(updateTimer);
   unlistenMenuUpdate?.();
   unlistenFloat?.();
+  unlistenWorkspacesChanged?.();
 });
 
 function onKeydown(e: KeyboardEvent) {
