@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Burrow — XState: jak a proč</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --bg-panel: #111;
+    --bg-code: #0a0a0a;
+    --border: #222;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --purple: #a78bfa;
+    --red: #ef4444;
+    --orange: #fb923c;
+    --blue: #60a5fa;
+    --mono: "JetBrains Mono", "Fira Code", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.7; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 48px 24px 100px; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+  .tagline { color: var(--muted); font-size: 15px; margin-bottom: 48px; }
+  h2 { font-size: 18px; font-weight: 700; margin: 40px 0 14px; color: var(--text); }
+  h3 { font-size: 14px; font-weight: 700; margin: 24px 0 8px; color: var(--blue); }
+  p { color: #94a3b8; margin-bottom: 12px; font-size: 13px; }
+  p strong { color: #cbd5e1; }
+  ul { padding-left: 18px; margin-bottom: 12px; }
+  li { margin-bottom: 6px; color: #94a3b8; font-size: 13px; }
+  li strong { color: #cbd5e1; }
+  code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px; color: #93c5fd; }
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    overflow-x: auto;
+    margin: 16px 0 24px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.65;
+  }
+  .kw  { color: #c084fc; }  /* keywords */
+  .fn  { color: #60a5fa; }  /* function names */
+  .str { color: #86efac; }  /* strings */
+  .cm  { color: #475569; }  /* comments */
+  .ty  { color: #fcd34d; }  /* types */
+  .op  { color: #e2e8f0; }  /* operators / punctuation */
+  .num { color: #fb923c; }  /* numbers */
+  .state-chip {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    letter-spacing: 0.04em;
+    margin: 0 2px;
+  }
+  .s-idle       { background: rgba(100,116,139,0.2); color: #94a3b8; border: 1px solid #334155; }
+  .s-running    { background: rgba(251,146,60,0.15); color: #fb923c; border: 1px solid rgba(251,146,60,0.3); }
+  .s-waiting    { background: rgba(96,165,250,0.15); color: #60a5fa; border: 1px solid rgba(96,165,250,0.3); }
+  .s-permission { background: rgba(234,179,8,0.15);  color: #eab308; border: 1px solid rgba(234,179,8,0.3); }
+  .s-done       { background: rgba(34,197,94,0.15);  color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
+  .s-review     { background: rgba(34,197,94,0.1);   color: #4ade80; border: 1px solid rgba(34,197,94,0.25); }
+  .s-error      { background: rgba(239,68,68,0.15);  color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+  .diagram {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    margin: 16px 0 24px;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 2.2;
+    color: var(--muted);
+  }
+  .diagram .arrow { color: #334155; margin: 0 6px; }
+  .diagram .event { color: #a78bfa; font-size: 10px; font-style: italic; }
+  .box-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0 24px; }
+  .box {
+    flex: 1; min-width: 180px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .box h4 { font-size: 12px; font-weight: 700; margin-bottom: 8px; }
+  .box.bad  h4 { color: #f87171; }
+  .box.good h4 { color: #4ade80; }
+  .box p { font-size: 12px; margin: 0; }
+  .divider { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+  .callout {
+    background: rgba(96,165,250,0.07);
+    border: 1px solid rgba(96,165,250,0.2);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 16px 0 24px;
+    font-size: 13px;
+    color: #93c5fd;
+  }
+  .callout strong { color: #bfdbfe; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>XState v Burrow</h1>
+  <div class="tagline">Co to je, proč to tady máme a jak to reálně používáme.</div>
+
+  <!-- ── Co je XState ── -->
+  <h2>Co je XState</h2>
+  <p>
+    XState je knihovna pro <strong>konečné stavové automaty</strong> (finite-state machines, FSM) a stavové diagramy.
+    Místo hromady <code>if/else</code> a roztroušených <code>status = 'running'</code> popisuješ
+    <strong>stavy a přechody deklarativně</strong> — co se smí stát v jakém stavu a co se stane při přechodu.
+  </p>
+  <p>
+    Verze 5 (kterou používáme) je kompletní přepis — žádné <code>interpret()</code>, žádné <code>createMachine()</code>
+    bez <code>setup()</code>. Actors jsou first-class, typy jsou odvozeny automaticky.
+  </p>
+
+  <div class="callout">
+    <strong>Klíčový insight:</strong> FSM ti zakáže nemožné přechody. Nemůžeš přejít z <span class="state-chip s-idle">idle</span>
+    rovnou do <span class="state-chip s-review">review</span> — stroj to prostě ignoruje. Imperativní kód tenhle guardrail nemá.
+  </div>
+
+  <!-- ── Proč to používáme ── -->
+  <h2>Proč to v Burrow používáme</h2>
+
+  <div class="box-row">
+    <div class="box bad">
+      <h4>❌ Bez XState (původní kód)</h4>
+      <p>Desítky míst kde se <code>leaf.status = 'running'</code> píše napříč Terminal.vue, RightPanel, stores.
+         Přechod chybí? Bug. Zapomeneš vyčistit? Stuck stav. Pořadí eventů špatně? Race condition.</p>
+    </div>
+    <div class="box good">
+      <h4>✅ S XState</h4>
+      <p>Jeden stroj, jedna pravda. Přechody jsou explicitní — co není v diagramu, nemůže nastat.
+         Logika je čitelná vizuálně. Debugger zobrazí historii eventů. Testy jsou triviální.</p>
+    </div>
+  </div>
+
+  <p>Konkrétní přínosy pro Burrow:</p>
+  <ul>
+    <li><strong>Stuck orange dot</strong> — nemůže nastat, pokud stroj nemá cestu jak v <span class="state-chip s-running">running</span> zůstat navždy.</li>
+    <li><strong>Premature done</strong> — guard <code>isWatching</code> je přímo v přechodu STOP → stroj zvolí <span class="state-chip s-done">done</span> nebo <span class="state-chip s-review">review</span> deterministicky.</li>
+    <li><strong>Error persistence</strong> — <span class="state-chip s-error">error</span> nemá žádný auto-timeout, jen <code>MARK_SEEN</code> nebo <code>START</code>. Nemůže se "ztratit".</li>
+    <li><strong>Vizuální tooling</strong> — statelyai.com / XState VSCode extension kreslí diagram přímo z kódu.</li>
+  </ul>
+
+  <!-- ── Diagram stavů ── -->
+  <h2>Diagram stavů agenta v Burrow</h2>
+
+  <div class="diagram">
+    <div>
+      <span class="state-chip s-idle">idle</span>
+      <span class="arrow">──<span class="event"> START </span>──▶</span>
+      <span class="state-chip s-running">running</span>
+    </div>
+    <div>
+      <span class="state-chip s-running">running</span>
+      <span class="arrow">──<span class="event"> WAIT </span>──▶</span>
+      <span class="state-chip s-waiting">waiting</span>
+      <span class="arrow">──<span class="event"> RESUME </span>──▶</span>
+      <span class="state-chip s-running">running</span>
+    </div>
+    <div>
+      <span class="state-chip s-running">running</span>
+      <span class="arrow">──<span class="event"> PERMISSION_REQUEST </span>──▶</span>
+      <span class="state-chip s-permission">permission</span>
+      <span class="arrow">──<span class="event"> RESUME </span>──▶</span>
+      <span class="state-chip s-running">running</span>
+    </div>
+    <div>
+      <span class="state-chip s-running">running</span>
+      <span class="arrow">──<span class="event"> STOP [watching] </span>──▶</span>
+      <span class="state-chip s-done">done</span>
+      <span class="arrow">──<span class="event"> 4 s auto </span>──▶</span>
+      <span class="state-chip s-idle">idle</span>
+    </div>
+    <div>
+      <span class="state-chip s-running">running</span>
+      <span class="arrow">──<span class="event"> STOP [!watching] </span>──▶</span>
+      <span class="state-chip s-review">review</span>
+      <span class="arrow">──<span class="event"> MARK_SEEN </span>──▶</span>
+      <span class="state-chip s-idle">idle</span>
+    </div>
+    <div>
+      <span class="state-chip s-running">running</span>
+      <span class="arrow">──<span class="event"> FAIL </span>──▶</span>
+      <span class="state-chip s-error">error</span>
+      <span class="arrow">──<span class="event"> RETRY / MARK_SEEN </span>──▶</span>
+      <span class="state-chip s-running">running</span> <span style="color:#475569">/ </span><span class="state-chip s-idle">idle</span>
+    </div>
+    <div>
+      <span style="color:#475569">Jakýkoliv stav</span>
+      <span class="arrow">──<span class="event"> INTERRUPT </span>──▶</span>
+      <span class="state-chip s-idle">idle</span>
+    </div>
+  </div>
+
+  <!-- ── Kód stroje ── -->
+  <h2>Kód: definice stroje (<code>src/machines/agentStatus.ts</code>)</h2>
+
+  <pre><span class="kw">import</span> { <span class="fn">setup</span>, <span class="fn">assign</span> } <span class="kw">from</span> <span class="str">"xstate"</span>;
+<span class="kw">import</span> { <span class="fn">useMachine</span> } <span class="kw">from</span> <span class="str">"@xstate/vue"</span>;
+
+<span class="cm">// 1. Typy eventů — co stroj akceptuje</span>
+<span class="kw">export type</span> <span class="ty">AgentStatusEvent</span> <span class="op">=</span>
+  <span class="op">|</span> { type<span class="op">:</span> <span class="str">"START"</span> }
+  <span class="op">|</span> { type<span class="op">:</span> <span class="str">"WAIT"</span> }
+  <span class="op">|</span> { type<span class="op">:</span> <span class="str">"RESUME"</span> }
+  <span class="op">|</span> { type<span class="op">:</span> <span class="str">"PERMISSION_REQUEST"</span> }
+  <span class="op">|</span> { type<span class="op">:</span> <span class="str">"STOP"</span>; watching<span class="op">:</span> <span class="ty">boolean</span> }   <span class="cm">// guard závisí na payload</span>
+  <span class="op">|</span> { type<span class="op">:</span> <span class="str">"FAIL"</span>; detail<span class="op">?:</span> <span class="ty">string</span> }
+  <span class="op">|</span> { type<span class="op">:</span> <span class="str">"MARK_SEEN"</span> }
+  <span class="op">|</span> { type<span class="op">:</span> <span class="str">"RETRY"</span> }
+  <span class="op">|</span> { type<span class="op">:</span> <span class="str">"INTERRUPT"</span> };
+
+<span class="cm">// 2. Kontext — data nesená strojem (jen error detail)</span>
+<span class="kw">interface</span> <span class="ty">AgentStatusContext</span> { detail<span class="op">?:</span> <span class="ty">string</span> }
+
+<span class="cm">// 3. setup() = typování + akce + guardy (vše typesafe)</span>
+<span class="kw">export const</span> agentStatusMachine <span class="op">=</span> <span class="fn">setup</span>({
+  types<span class="op">:</span> {
+    context<span class="op">:</span> {} <span class="kw">as</span> <span class="ty">AgentStatusContext</span>,
+    events<span class="op">:</span>  {} <span class="kw">as</span> <span class="ty">AgentStatusEvent</span>,
+  },
+  actions<span class="op">:</span> {
+    <span class="cm">// assign() vrátí parciální kontext — XState ho merguje</span>
+    clearError<span class="op">:</span> <span class="fn">assign</span>({ detail<span class="op">:</span> <span class="kw">undefined</span> }),
+    setDetail<span class="op">:</span>  <span class="fn">assign</span>({
+      detail<span class="op">:</span> ({ event }) <span class="op">=&gt;</span> event.type <span class="op">===</span> <span class="str">"FAIL"</span> ? event.detail : <span class="kw">undefined</span>,
+    }),
+  },
+  guards<span class="op">:</span> {
+    isWatching<span class="op">:</span>  ({ event }) <span class="op">=&gt;</span> event.type <span class="op">===</span> <span class="str">"STOP"</span> <span class="op">&amp;&amp;</span>  event.watching,
+    notWatching<span class="op">:</span> ({ event }) <span class="op">=&gt;</span> event.type <span class="op">===</span> <span class="str">"STOP"</span> <span class="op">&amp;&amp;</span> !event.watching,
+  },
+}).<span class="fn">createMachine</span>({
+  id<span class="op">:</span> <span class="str">"agentStatus"</span>,
+  initial<span class="op">:</span> <span class="str">"idle"</span>,
+  context<span class="op">:</span> { detail<span class="op">:</span> <span class="kw">undefined</span> },
+
+  states<span class="op">:</span> {
+    idle<span class="op">:</span> {
+      on<span class="op">:</span> { START<span class="op">:</span> <span class="str">"running"</span> },
+    },
+
+    running<span class="op">:</span> {
+      on<span class="op">:</span> {
+        WAIT<span class="op">:</span>               <span class="str">"waiting"</span>,
+        PERMISSION_REQUEST<span class="op">:</span> <span class="str">"permission"</span>,
+        STOP<span class="op">:</span> [
+          { guard<span class="op">:</span> <span class="str">"isWatching"</span>,  target<span class="op">:</span> <span class="str">"done"</span>   },
+          {                         target<span class="op">:</span> <span class="str">"review"</span> },
+        ],
+        FAIL<span class="op">:</span>      { target<span class="op">:</span> <span class="str">"error"</span>, actions<span class="op">:</span> <span class="str">"setDetail"</span> },
+        INTERRUPT<span class="op">:</span> <span class="str">"idle"</span>,
+      },
+    },
+
+    waiting<span class="op">:</span> {
+      on<span class="op">:</span> {
+        RESUME<span class="op">:</span> <span class="str">"running"</span>,
+        START<span class="op">:</span>  <span class="str">"running"</span>,      <span class="cm">// nový tah = reset čekání</span>
+        PERMISSION_REQUEST<span class="op">:</span> <span class="str">"permission"</span>,
+        STOP<span class="op">:</span>      [{ guard<span class="op">:</span> <span class="str">"isWatching"</span>, target<span class="op">:</span> <span class="str">"done"</span> }, { target<span class="op">:</span> <span class="str">"review"</span> }],
+        FAIL<span class="op">:</span>      { target<span class="op">:</span> <span class="str">"error"</span>, actions<span class="op">:</span> <span class="str">"setDetail"</span> },
+        INTERRUPT<span class="op">:</span> <span class="str">"idle"</span>,
+      },
+    },
+
+    permission<span class="op">:</span> {
+      on<span class="op">:</span> {
+        RESUME<span class="op">:</span>    <span class="str">"running"</span>,
+        START<span class="op">:</span>     <span class="str">"running"</span>,
+        STOP<span class="op">:</span>      [{ guard<span class="op">:</span> <span class="str">"isWatching"</span>, target<span class="op">:</span> <span class="str">"done"</span> }, { target<span class="op">:</span> <span class="str">"review"</span> }],
+        FAIL<span class="op">:</span>      { target<span class="op">:</span> <span class="str">"error"</span>, actions<span class="op">:</span> <span class="str">"setDetail"</span> },
+        INTERRUPT<span class="op">:</span> <span class="str">"idle"</span>,
+      },
+    },
+
+    done<span class="op">:</span> {
+      after<span class="op">:</span> { <span class="num">4000</span><span class="op">:</span> <span class="str">"idle"</span> },  <span class="cm">// auto-clear po 4 s</span>
+      on<span class="op">:</span> {
+        MARK_SEEN<span class="op">:</span> <span class="str">"idle"</span>,
+        START<span class="op">:</span>     { target<span class="op">:</span> <span class="str">"running"</span>, actions<span class="op">:</span> <span class="str">"clearError"</span> },
+      },
+    },
+
+    review<span class="op">:</span> {
+      on<span class="op">:</span> {              <span class="cm">// drží dokud uživatel tab neotevře</span>
+        MARK_SEEN<span class="op">:</span> <span class="str">"idle"</span>,
+        START<span class="op">:</span>     { target<span class="op">:</span> <span class="str">"running"</span>, actions<span class="op">:</span> <span class="str">"clearError"</span> },
+      },
+    },
+
+    error<span class="op">:</span> {
+      on<span class="op">:</span> {              <span class="cm">// nikdy auto-clear — musí uživatel vidět</span>
+        RETRY<span class="op">:</span>     { target<span class="op">:</span> <span class="str">"running"</span>, actions<span class="op">:</span> <span class="str">"clearError"</span> },
+        MARK_SEEN<span class="op">:</span> { target<span class="op">:</span> <span class="str">"idle"</span>,    actions<span class="op">:</span> <span class="str">"clearError"</span> },
+        START<span class="op">:</span>     { target<span class="op">:</span> <span class="str">"running"</span>, actions<span class="op">:</span> <span class="str">"clearError"</span> },
+      },
+    },
+  },
+});</pre>
+
+  <!-- ── Vue composable ── -->
+  <h2>Kód: Vue composable</h2>
+  <p>
+    <code>useAgentStatus()</code> zabalí stroj pro Vue — vrátí reaktivní <code>status</code> a <code>detail</code>
+    a funkci <code>send()</code>. Použij ji v každé komponentě, která potřebuje znát stav agenta.
+  </p>
+
+  <pre><span class="kw">export function</span> <span class="fn">useAgentStatus</span>()<span class="op">:</span> <span class="ty">AgentStatusComposable</span> {
+  <span class="cm">// useMachine() = XState actor životní cyklus svázaný s Vue komponentou</span>
+  <span class="kw">const</span> { snapshot, send } <span class="op">=</span> <span class="fn">useMachine</span>(agentStatusMachine);
+
+  <span class="cm">// snapshot.value.value = aktuální stav ("idle" | "running" | ...)</span>
+  <span class="kw">const</span> status <span class="op">=</span> <span class="fn">computed</span>(() <span class="op">=&gt;</span> snapshot.value.value <span class="kw">as</span> <span class="ty">TermStatus</span>);
+  <span class="kw">const</span> detail <span class="op">=</span> <span class="fn">computed</span>(() <span class="op">=&gt;</span> snapshot.value.context.detail);
+
+  <span class="kw">return</span> { status, detail, send, snapshot };
+}</pre>
+
+  <!-- ── Praktické použití ── -->
+  <h2>Praktické použití v Terminal.vue</h2>
+  <p>Každý <code>leaf</code> (tab) dostane vlastní instanci stroje. Hooky posílají eventy místo přímého přiřazení.</p>
+
+  <pre><span class="cm">// setup() v Terminal.vue</span>
+<span class="kw">const</span> agentMachines <span class="op">=</span> <span class="kw">new</span> <span class="ty">Map</span>&lt;<span class="ty">number</span>, <span class="ty">AgentStatusComposable</span>&gt;();
+
+<span class="kw">function</span> <span class="fn">getMachine</span>(leafId<span class="op">:</span> <span class="ty">number</span>) {
+  <span class="kw">if</span> (!agentMachines.<span class="fn">has</span>(leafId)) {
+    agentMachines.<span class="fn">set</span>(leafId, <span class="fn">useAgentStatus</span>());
+  }
+  <span class="kw">return</span> agentMachines.<span class="fn">get</span>(leafId)<span class="op">!</span>;
+}
+
+<span class="cm">// Příchod stavu z burrow hook → event do stroje</span>
+<span class="kw">function</span> <span class="fn">onAgentState</span>(tab<span class="op">:</span> <span class="ty">Tab</span>, leaf<span class="op">:</span> <span class="ty">Leaf</span>, state<span class="op">:</span> <span class="ty">string</span>) {
+  <span class="kw">const</span> m <span class="op">=</span> <span class="fn">getMachine</span>(leaf.id);
+  <span class="kw">switch</span> (state) {
+    <span class="kw">case</span> <span class="str">"running"</span><span class="op">:</span>
+      m.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"START"</span> }); <span class="kw">break</span>;
+    <span class="kw">case</span> <span class="str">"waiting"</span><span class="op">:</span>
+      m.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"WAIT"</span> }); <span class="kw">break</span>;
+    <span class="kw">case</span> <span class="str">"permission"</span><span class="op">:</span>
+      m.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"PERMISSION_REQUEST"</span> }); <span class="kw">break</span>;
+    <span class="kw">case</span> <span class="str">"done"</span><span class="op">:</span>
+      m.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"STOP"</span>, watching<span class="op">:</span> <span class="fn">isWatching</span>(tab) }); <span class="kw">break</span>;
+    <span class="kw">case</span> <span class="str">"error"</span><span class="op">:</span>
+      m.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"FAIL"</span>, detail<span class="op">:</span> leaf.statusDetail }); <span class="kw">break</span>;
+  }
+  <span class="cm">// status se čte ze stroje — žádné leaf.status = "..." přímé přiřazení</span>
+}
+
+<span class="cm">// Čtení stavu pro UI</span>
+<span class="kw">function</span> <span class="fn">leafStatus</span>(leaf<span class="op">:</span> <span class="ty">Leaf</span>)<span class="op">:</span> <span class="ty">TermStatus</span> {
+  <span class="kw">return</span> agentMachines.<span class="fn">get</span>(leaf.id)<span class="op">?.</span>status.value ?? <span class="str">"idle"</span>;
+}
+
+<span class="cm">// Cleanup při zavření tabu</span>
+<span class="kw">function</span> <span class="fn">closeTab</span>(leaf<span class="op">:</span> <span class="ty">Leaf</span>) {
+  agentMachines.<span class="fn">delete</span>(leaf.id);  <span class="cm">// actor se GC-uje, žádný leak</span>
+  <span class="cm">// ... zbytek cleanup ...</span>
+}</pre>
+
+  <h3>Použití v template</h3>
+  <pre><span class="op">&lt;</span><span class="fn">StatusDot</span>
+  <span class="op">:</span>status<span class="op">=</span><span class="str">"leafStatus(leaf)"</span>
+  <span class="op">:</span>detail<span class="op">=</span><span class="str">"agentMachines.get(leaf.id)?.detail.value"</span>
+<span class="op">/&gt;</span></pre>
+
+  <!-- ── Pinia store ── -->
+  <h2>Praktické použití v Pinia store (Claude chaty)</h2>
+  <p>
+    Vue composable <code>useMachine()</code> je svázaná s komponentou. V Pinia storu
+    potřebuješ nízkoúrovňové <code>createActor()</code>.
+  </p>
+
+  <pre><span class="kw">import</span> { <span class="fn">createActor</span> } <span class="kw">from</span> <span class="str">"xstate"</span>;
+<span class="kw">import</span> { agentStatusMachine } <span class="kw">from</span> <span class="str">"@/machines/agentStatus"</span>;
+
+<span class="cm">// Při vytvoření chat session</span>
+<span class="kw">function</span> <span class="fn">createSession</span>() {
+  <span class="kw">const</span> actor <span class="op">=</span> <span class="fn">createActor</span>(agentStatusMachine).<span class="fn">start</span>();
+
+  <span class="cm">// reaktivita přes .subscribe() → Pinia state</span>
+  actor.<span class="fn">subscribe</span>((snapshot) <span class="op">=&gt;</span> {
+    session.status <span class="op">=</span> snapshot.value <span class="kw">as</span> <span class="ty">TermStatus</span>;
+    session.statusDetail <span class="op">=</span> snapshot.context.detail;
+  });
+
+  <span class="kw">return</span> { ...session, _actor<span class="op">:</span> actor };
+}
+
+<span class="cm">// Příchod stavu z API streamu</span>
+<span class="kw">function</span> <span class="fn">setStatus</span>(sessionId<span class="op">:</span> <span class="ty">string</span>, state<span class="op">:</span> <span class="ty">string</span>) {
+  <span class="kw">const</span> actor <span class="op">=</span> sessions.<span class="fn">get</span>(sessionId)<span class="op">?.</span>_actor;
+  <span class="kw">if</span> (!actor) <span class="kw">return</span>;
+  <span class="kw">if</span> (state <span class="op">===</span> <span class="str">"running"</span>)    actor.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"START"</span> });
+  <span class="kw">if</span> (state <span class="op">===</span> <span class="str">"waiting"</span>)    actor.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"WAIT"</span> });
+  <span class="kw">if</span> (state <span class="op">===</span> <span class="str">"done"</span>)       actor.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"STOP"</span>, watching<span class="op">:</span> <span class="fn">isWatching</span>() });
+}
+
+<span class="cm">// Cleanup</span>
+<span class="kw">function</span> <span class="fn">destroySession</span>(sessionId<span class="op">:</span> <span class="ty">string</span>) {
+  sessions.<span class="fn">get</span>(sessionId)<span class="op">?.</span>_actor.<span class="fn">stop</span>();
+  sessions.<span class="fn">delete</span>(sessionId);
+}</pre>
+
+  <!-- ── Guardy ── -->
+  <h2>Guardy — podmíněné přechody</h2>
+  <p>
+    Guard je čistá funkce <code>(context, event) → boolean</code>. Stroj ho vyhodnotí při přechodu —
+    pokud vrátí <code>false</code>, přechod se neprovede a zkusí se další varianta.
+  </p>
+  <pre><span class="cm">// Stejný event STOP → různý cíl podle payload</span>
+STOP<span class="op">:</span> [
+  { guard<span class="op">:</span> <span class="str">"isWatching"</span>,  target<span class="op">:</span> <span class="str">"done"</span>   },  <span class="cm">// tab aktivní + focus = green flash</span>
+  {                         target<span class="op">:</span> <span class="str">"review"</span> },  <span class="cm">// tab mimo focus = zelený puls dokud neotevřeš</span>
+]</pre>
+
+  <p>
+    V imperativním kódu bylo tohle <code>if (isWatching()) leaf.status = 'done'; else leaf.status = 'review'</code>
+    schované v <code>settleDone()</code>. Se strojem je guard viditelný přímo v diagramu.
+  </p>
+
+  <!-- ── after/delayed ── -->
+  <h2>Časované přechody (<code>after</code>)</h2>
+  <p>
+    Stav <span class="state-chip s-done">done</span> se po 4 sekundách automaticky vrátí do
+    <span class="state-chip s-idle">idle</span>. Žádný <code>setTimeout</code>, žádný risk leaku —
+    stroj timer spravuje sám a při destrukci ho zastaví.
+  </p>
+  <pre>done<span class="op">:</span> {
+  after<span class="op">:</span> { <span class="num">4000</span><span class="op">:</span> <span class="str">"idle"</span> },  <span class="cm">// ← XState spustí timer při vstupu do stavu</span>
+  on<span class="op">:</span> {
+    MARK_SEEN<span class="op">:</span> <span class="str">"idle"</span>,         <span class="cm">// ← manual cancel (klik na tab)</span>
+    START<span class="op">:</span>     <span class="str">"running"</span>,       <span class="cm">// ← nový tah cancelluje timer</span>
+  },
+},</pre>
+
+  <!-- ── assign context ── -->
+  <h2>Kontext — data uvnitř stroje</h2>
+  <p>
+    Stroj nese minimální data (<strong>kontext</strong>) — v našem případě jen <code>detail</code>
+    (typ API chyby jako <code>"billing_error"</code>). <code>assign()</code> je čistá akce
+    která vrací parciální update kontextu.
+  </p>
+  <pre><span class="cm">// Při FAIL eventu stroj uloží detail do kontextu...</span>
+FAIL<span class="op">:</span> { target<span class="op">:</span> <span class="str">"error"</span>, actions<span class="op">:</span> <span class="str">"setDetail"</span> }
+
+<span class="cm">// ...a clearError ho vymaže při přechodu z error stavu</span>
+RETRY<span class="op">:</span> { target<span class="op">:</span> <span class="str">"running"</span>, actions<span class="op">:</span> <span class="str">"clearError"</span> }
+
+<span class="cm">// V template pak detail jde přímo jako tooltip status dotu:</span>
+<span class="op">&lt;</span><span class="fn">StatusDot</span> <span class="op">:</span>title<span class="op">=</span><span class="str">`error: ${detail}`</span> <span class="op">/&gt;</span></pre>
+
+  <!-- ── XState DevTools ── -->
+  <h2>DevTools a vizuální tooling</h2>
+  <p>
+    Jedna z největších výhod XState je ekosystém nástrojů:
+  </p>
+  <ul>
+    <li><strong>Stately Editor</strong> (stately.ai) — nakresli diagramy vizuálně, exportuj kód nebo importuj existující stroj.</li>
+    <li><strong>XState VSCode extension</strong> — zvýraznění syntaxe, vizualizace přímo v editoru, skok na stavy.</li>
+    <li><strong>XState Inspector</strong> (<code>@xstate/inspect</code>) — v dev modu zobrazí živé grafy všech běžících aktorů v prohlížeči.</li>
+    <li><strong>Testování</strong> — <code>machine.transition('running', { type: 'STOP', watching: false })</code> vrátí nový snapshot bez side-effectů. Čisté unit testy stavů bez mocků.</li>
+  </ul>
+
+  <pre><span class="cm">// Příklad unit testu (žádný Vue, žádný mount)</span>
+<span class="kw">import</span> { <span class="fn">createActor</span> } <span class="kw">from</span> <span class="str">"xstate"</span>;
+<span class="kw">import</span> { agentStatusMachine } <span class="kw">from</span> <span class="str">"./agentStatus"</span>;
+
+test(<span class="str">"STOP bez watching → review"</span>, () <span class="op">=&gt;</span> {
+  <span class="kw">const</span> actor <span class="op">=</span> <span class="fn">createActor</span>(agentStatusMachine).<span class="fn">start</span>();
+  actor.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"START"</span> });
+  actor.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"STOP"</span>, watching<span class="op">:</span> <span class="kw">false</span> });
+  expect(actor.<span class="fn">getSnapshot</span>().value).<span class="fn">toBe</span>(<span class="str">"review"</span>);  <span class="cm">// ✅</span>
+  actor.<span class="fn">stop</span>();
+});
+
+test(<span class="str">"STOP s watching → done, auto-idle po 4 s"</span>, <span class="kw">async</span> () <span class="op">=&gt;</span> {
+  vi.<span class="fn">useFakeTimers</span>();
+  <span class="kw">const</span> actor <span class="op">=</span> <span class="fn">createActor</span>(agentStatusMachine).<span class="fn">start</span>();
+  actor.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"START"</span> });
+  actor.<span class="fn">send</span>({ type<span class="op">:</span> <span class="str">"STOP"</span>, watching<span class="op">:</span> <span class="kw">true</span> });
+  expect(actor.<span class="fn">getSnapshot</span>().value).<span class="fn">toBe</span>(<span class="str">"done"</span>);
+  <span class="kw">await</span> vi.<span class="fn">advanceTimersByTimeAsync</span>(<span class="num">4001</span>);
+  expect(actor.<span class="fn">getSnapshot</span>().value).<span class="fn">toBe</span>(<span class="str">"idle"</span>);  <span class="cm">// ✅</span>
+  actor.<span class="fn">stop</span>();
+});</pre>
+
+  <hr class="divider" />
+
+  <!-- ── Kdy NEPOUŽÍVAT ── -->
+  <h2>Kdy XState nepoužívat</h2>
+  <ul>
+    <li>Jednoduchý boolean toggle (<code>isOpen</code>, <code>isLoading</code>) — <code>ref(false)</code> stačí.</li>
+    <li>Derived state bez side-effectů — <code>computed()</code> je lepší.</li>
+    <li>Async data fetching bez stavových přechodů — <code>useAsyncData</code> / TanStack Query.</li>
+  </ul>
+  <p>
+    XState svítí tam kde máš <strong>více jak 3 stavy</strong>, <strong>podmíněné přechody</strong>,
+    <strong>timery</strong>, nebo kde buguje pořadí eventů. Status agent tabů je přesně tento případ.
+  </p>
+
+</div>
+</body>
+</html>
