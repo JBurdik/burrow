@@ -46,14 +46,14 @@ export const agentStatusMachine = setup({
   actions: {
     clearError: assign({ detail: undefined }),
     setDetail: assign({
-      detail: ({ event }) =>
+      detail: ({ event }: { event: AgentStatusEvent }) =>
         event.type === "FAIL" ? event.detail : undefined,
     }),
   },
   guards: {
     // `watching` is carried on the STOP event (evaluated at transition time).
-    isWatching: ({ event }) => event.type === "STOP" && event.watching,
-    notWatching: ({ event }) => event.type === "STOP" && !event.watching,
+    isWatching: ({ event }: { event: AgentStatusEvent }) => event.type === "STOP" && event.watching,
+    notWatching: ({ event }: { event: AgentStatusEvent }) => event.type === "STOP" && !event.watching,
   },
 }).createMachine({
   id: "agentStatus",
