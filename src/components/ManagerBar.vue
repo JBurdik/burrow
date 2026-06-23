@@ -384,16 +384,11 @@ const activeSessionId = computed<number | null>(() =>
   typeof rootId.value === "number" ? sessionIdByRepo.value[rootId.value] ?? null : null,
 );
 
-const DEFAULT_MANAGER_MD = `# Project-specific Manager instructions
-
-<!-- Add project-specific context here: what this project does, coding conventions, team norms, preferred workflows, etc. The Manager will append this to its base system prompt. -->
-`;
-
 const projectManagerPrompt = ref('');
 watch(rootCwd, async (cwd) => {
   if (!cwd) return;
   try {
-    await invoke('scaffold_burrow_dir', { workspacePath: cwd, defaultManagerPrompt: DEFAULT_MANAGER_MD });
+    await invoke('scaffold_burrow_dir', { workspacePath: cwd, defaultManagerPrompt: getDefaultManagerPrimer(false) });
   } catch { /* ignore — dir may already exist or path invalid */ }
   try {
     const content = await invoke<string>('read_text_file', { path: cwd + '/.burrow/manager.md' });

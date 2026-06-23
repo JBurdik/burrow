@@ -102,7 +102,8 @@ async function loadPrompt() {
       path: props.workspacePath + '/.burrow/manager.md',
     })
     const stripped = content.replace(/<!--[\s\S]*?-->/g, '').trim()
-    promptContent.value = stripped || getDefaultManagerPrimer(false)
+    const isPlaceholder = stripped === '# Project-specific Manager instructions' || stripped === ''
+    promptContent.value = isPlaceholder ? getDefaultManagerPrimer(false) : stripped
   } catch {
     promptContent.value = getDefaultManagerPrimer(false)
   }
