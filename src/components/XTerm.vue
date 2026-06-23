@@ -536,8 +536,10 @@ onMounted(async () => {
   // Instead wait for the PTY to emit output and then fall quiet (prompt printed,
   // init done), with a hard cap so we never hang if the shell stays silent.
   if (props.initialCmd) {
+    // Insert launchArgs right after the binary name so flags precede the
+    // prompt positional arg — newer Claude Code requires flags before positional args.
     const cmd = launchArgs
-      ? `${props.initialCmd} ${launchArgs}`
+      ? props.initialCmd!.replace(/^(\S+)/, `$1 ${launchArgs}`)
       : props.initialCmd!;
     const QUIET_MS = 250;   // silence that signals "prompt is ready"
     const MAX_WAIT_MS = 5000;
