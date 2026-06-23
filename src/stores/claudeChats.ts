@@ -1,7 +1,10 @@
 import { ref, computed } from "vue";
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
+import { createActor } from "xstate";
 import type { TermStatus } from "@/lib/terminalStatus";
+import { agentStatusMachine } from "@/machines/agentStatus";
+import type { AgentStatusEvent } from "@/machines/agentStatus";
 
 export interface ClaudeSession {
   id: number;
@@ -66,6 +69,8 @@ function loadRules(): string[] {
   } catch { return []; }
 }
 
+type SessionActor = ReturnType<typeof createActor<typeof agentStatusMachine>>;
+
 export const useClaudeChatsStore = defineStore("claudeChats", () => {
   const sessions = ref<ClaudeSession[]>(loadSessions());
   const activeByWs = ref<Record<number, number>>(loadActive());
@@ -74,6 +79,21 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
   // "Allow always" rules — opaque match keys (e.g. "Bash:git" or "Write").
   // Matched against the key(s) derived from an incoming can_use_tool request.
   const permissionRules = ref<string[]>(loadRules());
+
+  // XState actors — one per session, keyed by session id. Not persisted.
+  const actors = new Map<number, SessionActor>();
+
+  function spawnActor(session: ClaudeSession): SessionActor {
+    const actor = createActor(agentStatusMachine).start();
+    actor.subscribe((snapshot) => {
+      session.status = snapshot.value as TermStatus;
+    });
+    actors.set(session.id, actor);
+    return actor;
+  }
+
+  // Restore actors for sessions loaded from localStorage (all start idle — correct since busy=false on persist).
+  sessions.value.forEach(spawnActor);
 
   function addPermissionRule(key: string) {
     if (!key || permissionRules.value.includes(key)) return;
@@ -116,6 +136,7 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
       messageCount: 0,
     };
     sessions.value.push(session);
+    spawnActor(session);
     activeByWs.value[workspaceId] = id;
     persist();
     return session;
@@ -140,6 +161,8 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
   async function remove(id: number) {
     const s = sessions.value.find((x) => x.id === id);
     if (!s) return;
+    actors.get(id)?.stop();
+    actors.delete(id);
     await invoke("claude_stop", { id }).catch(() => {});
     sessions.value = sessions.value.filter((x) => x.id !== id);
     // If removed was active, fall back to first remaining for that ws.
@@ -185,6 +208,14 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
     }
   }
 
+  function sendStatusEvent(id: number, event: AgentStatusEvent) {
+    actors.get(id)?.send(event);
+  }
+
+  function markSeen(id: number) {
+    actors.get(id)?.send({ type: "MARK_SEEN" });
+  }
+
   // Sessions whose workspace is currently in ws.opened — used by App.vue for keep-alive mounting.
   // The caller filters by opened workspace ids.
   const allSessions = computed(() => sessions.value);
@@ -209,5 +240,7 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
     addPermissionRule,
     hasPermissionRule,
     clearPermissionRules,
+    sendStatusEvent,
+    markSeen,
   };
 });

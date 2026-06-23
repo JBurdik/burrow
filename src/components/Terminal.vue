@@ -210,6 +210,8 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { createActor, type Actor } from "xstate";
+import { agentStatusMachine } from "@/machines/agentStatus";
 import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut, PhFileCode, PhGlobe } from "@phosphor-icons/vue";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
@@ -229,7 +231,6 @@ import { notifyNtfy } from "@/lib/ntfy";
 import type { NtfyEvent } from "@/stores/ui";
 import {
   aggregateStatus,
-  applyAgentEvent,
   applyBusy,
   applyNeedsInput,
   applyInterrupt,
@@ -237,7 +238,6 @@ import {
   deriveTabTitle,
   isDefaultTitle,
   type TermStatus,
-  type AgentEvent,
   type ReducerCtx,
 } from "@/lib/terminalStatus";
 import { useAgentHistoryStore } from "@/stores/agentHistory";
@@ -514,6 +514,8 @@ const doneTimers = new Map<number, ReturnType<typeof setTimeout>>();
 // ── Per-leaf hook-server event listeners ─────────────────────────────────────
 // Keyed by ptyId. Registered when a leaf is created, cleaned up when closed.
 const leafUnlisteners = new Map<number, UnlistenFn[]>();
+// XState actors for agent status — one per terminal leaf.
+const leafActors = new Map<number, Actor<typeof agentStatusMachine>>();
 const flashingLeafs = ref(new Set<number>());
 // Log strip: last N entries per tab (keyed by tab.id, NOT leaf.id).
 const tabLogs = ref<Record<number, LogEntry[]>>({});
@@ -526,6 +528,41 @@ function findTabIdByLeafId(leafId: number): number | null {
 }
 
 function registerLeafListeners(leafId: number) {
+  // XState actor — drives leaf.status for agent events.
+  const actor = createActor(agentStatusMachine);
+  actor.subscribe((snapshot) => {
+    for (const t of tabs.value) {
+      const leaf = findLeaf(t.root, leafId);
+      if (!leaf) continue;
+      const prev = leaf.status;
+      const next = snapshot.value as TermStatus;
+      leaf.status = next;
+      leaf.statusDetail = snapshot.context.detail;
+      leaf.busy = next === "running" || next === "waiting" || next === "permission";
+      if (prev !== next) {
+        if (next === "done") {
+          notifyDone(leaf.title, t.id);
+          maybeNtfy("done", leaf.title);
+          if (gitStore.cwd === props.cwd) gitStore.refresh(true);
+        } else if (next === "review") {
+          playSound("done");
+          notifyDone(leaf.title, t.id);
+          maybeNtfy("done", leaf.title);
+          if (gitStore.cwd === props.cwd) gitStore.refresh(true);
+        } else if (next === "waiting") {
+          playSound("waiting");
+        } else if (next === "permission") {
+          playSound("waiting");
+        } else if (next === "error") {
+          maybeNtfy("error", leaf.title);
+        }
+      }
+      break;
+    }
+  });
+  actor.start();
+  leafActors.set(leafId, actor);
+
   const unlisteners: UnlistenFn[] = [];
   Promise.all([
     listen<string>(`pty-status-text-${leafId}`, (ev) => {
@@ -587,6 +624,8 @@ function registerLeafListeners(leafId: number) {
 function unregisterLeafListeners(leafId: number) {
   leafUnlisteners.get(leafId)?.forEach((fn) => fn());
   leafUnlisteners.delete(leafId);
+  const actor = leafActors.get(leafId);
+  if (actor) { actor.stop(); leafActors.delete(leafId); }
 }
 
 /** Build a ReducerCtx for a given tab (provides watching + side-effect hooks). */
@@ -709,40 +748,43 @@ function isWatching(tab: Tab): boolean {
 function markTabSeen(tab: Tab) {
   const ctx = makeCtx(tab);
   for (const leaf of getAllLeaves(tab.root)) {
-    markLeafSeen(leaf, ctx);
+    const actor = leafActors.get(leaf.id);
+    if (actor) {
+      const state = actor.getSnapshot().value;
+      if (state === "done" || state === "review" || state === "error") {
+        actor.send({ type: "MARK_SEEN" });
+      }
+    } else {
+      markLeafSeen(leaf, ctx);
+    }
   }
 }
 
 // The agent's hook state (running | waiting | done), forwarded verbatim from
-// XTerm. ONE semantic event → one clean transition, so a trailing "waiting" can
-// never clobber a fresh "done". A new turn arrives as "running", which is the
-// only thing that resurrects a finished leaf — exactly right.
+// XTerm. ONE semantic event → one clean transition via the XState actor, so a
+// trailing "waiting" can never clobber a fresh "done".
 function onAgentState(id: number, s: string, detail?: string) {
+  const actor = leafActors.get(id);
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
-    if (s === "error") {
-      // Failed turn (StopFailure). Stash the cause (rate_limit|overloaded|…) for the
-      // tooltip, then settle to the red, persists-until-seen `error` status.
-      const wasError = leaf.status === "error";
-      leaf.statusDetail = detail || undefined;
-      applyAgentEvent(leaf, "error", makeCtx(tab));
-      historyStore.addEvent(leaf.id, "error");
-      if (!wasError) maybeNtfy("error", leaf.title);
-      break;
+    // Track turn count before sending (subscription updates leaf.status after send).
+    if (s === "running" && leaf.status !== "running") {
+      leaf.round = (leaf.round ?? 0) + 1;
     }
-    if (s === "running" || s === "waiting" || s === "permission" || s === "done") {
-      // New round = a distinct "running" episode (UserPromptSubmit or first launch).
-      if (s === "running" && leaf.status !== "running") {
-        leaf.round = (leaf.round ?? 0) + 1;
-        leaf.statusDetail = undefined;   // a fresh turn clears any stale error cause
+    historyStore.addEvent(leaf.id, s);
+    if (actor) {
+      if (s === "running") {
+        actor.send({ type: "START" });
+      } else if (s === "waiting") {
+        actor.send({ type: "WAIT" });
+      } else if (s === "permission") {
+        actor.send({ type: "PERMISSION_REQUEST" });
+      } else if (s === "done") {
+        actor.send({ type: "STOP", watching: isWatching(tab) });
+      } else if (s === "error") {
+        actor.send({ type: "FAIL", detail: detail || undefined });
       }
-      // Fire ntfy on the rising edge only (status actually changes), so repeated
-      // events of the same state don't spam. `done` is handled in onSettled.
-      const changed = leaf.status !== s;
-      applyAgentEvent(leaf, s as AgentEvent, makeCtx(tab));
-      historyStore.addEvent(leaf.id, s);
-      if (changed && (s === "waiting" || s === "permission")) maybeNtfy(s, leaf.title);
     }
     break;
   }
@@ -801,6 +843,11 @@ async function notifyDone(leafTitle: string, tabId?: number) {
 // "done"/"review" badge, no sound). Only act on a live running/waiting leaf so a
 // stray ESC at an idle prompt is a harmless no-op.
 function onLeafInterrupt(id: number) {
+  const actor = leafActors.get(id);
+  if (actor) {
+    actor.send({ type: "INTERRUPT" });
+    return;
+  }
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
@@ -810,6 +857,7 @@ function onLeafInterrupt(id: number) {
 }
 
 function onLeafNeedsInput(id: number, needs: boolean) {
+  if (leafActors.has(id)) return; // actor owns status for agent leaves
   for (const tab of tabs.value) {
     const leaf = findLeaf(tab.root, id);
     if (!leaf) continue;
