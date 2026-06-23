@@ -447,7 +447,6 @@ import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
 import { useNotificationsStore } from "@/stores/notifications";
-import type { TermStatus } from "@/lib/terminalStatus";
 import { useEditorContextStore } from "@/stores/editorContext";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { marked } from "marked";
@@ -951,21 +950,10 @@ function applyClaudeTitle(raw: unknown) {
   chats.sync(props.chatId, { title: raw.trim().slice(0, 60) });
 }
 
-// Derive the Sidebar status dot from live chat state. Generic tool / file-edit
-// requests are a hard allow/deny gate → "permission" (amber + bell); a question /
-// plan prompt is a soft "waiting"; an in-flight turn is "running".
-function chatStatus(): TermStatus {
-  if (pendingPermission.value || pendingDiff.value) return "permission";
-  if (pendingQuestion.value || pendingPlan.value) return "waiting";
-  if (busy.value) return "running";
-  return "idle";
-}
-
 function syncStore() {
   chats.sync(props.chatId, {
     busy: busy.value,
     messageCount: messages.value.filter((m) => m.role !== "tool").length,
-    status: chatStatus(),
   });
 }
 
@@ -995,16 +983,20 @@ function onLine(line: string) {
     if (cr.toolName === "AskUserQuestion") {
       questionAnswers.value = {};
       pendingQuestion.value = cr;
+      chats.sendStatusEvent(props.chatId, { type: "WAIT" });
     } else if (cr.toolName === "ExitPlanMode") {
       planFeedback.value = "";
       pendingPlan.value = cr;
+      chats.sendStatusEvent(props.chatId, { type: "WAIT" });
     } else if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(cr.toolName)) {
       pendingDiff.value = cr;
+      chats.sendStatusEvent(props.chatId, { type: "PERMISSION_REQUEST" });
     } else {
       pendingPermission.value = cr;
+      chats.sendStatusEvent(props.chatId, { type: "PERMISSION_REQUEST" });
     }
     notifyPermission(cr);
-    syncStore(); // surface the permission/waiting dot in the Sidebar
+    syncStore(); // surface busy/messageCount in the Sidebar
     scrollToBottom();
     return;
   }
@@ -1079,6 +1071,7 @@ function onLine(line: string) {
     if (type === "exit" && suppressNextDone.value) {
       suppressNextDone.value = false;
     } else {
+      chats.sendStatusEvent(props.chatId, { type: "STOP", watching: document.hasFocus() });
       notifyDone();
     }
     // Flush one queued message (next turn will flush the next one).
@@ -1122,6 +1115,7 @@ async function sendMessage(forcedText?: string) {
   const msgImages = pendingImages.value.length > 0 ? [...pendingImages.value] : undefined;
   messages.value.push({ id: nextMsgId++, role: "user", text, images: msgImages });
   busy.value = true;
+  chats.sendStatusEvent(props.chatId, { type: "START" });
 
   // Auto-title from first user message (only if still at default and Claude hasn't set one yet)
   if (!claudeGeneratedTitle.value) {
@@ -1141,6 +1135,7 @@ async function sendMessage(forcedText?: string) {
   } catch (e) {
     messages.value.push({ id: nextMsgId++, role: "assistant", text: `Error: ${e}` });
     busy.value = false;
+    chats.sendStatusEvent(props.chatId, { type: "INTERRUPT" });
     syncStore();
   }
 }
@@ -1154,8 +1149,8 @@ async function respondControl(requestId: string, response: Record<string, unknow
     messages.value.push({ id: nextMsgId++, role: "assistant", text: `Control response failed: ${e}` });
     saveMessages(props.chatId, messages.value);
   }
-  // Callers clear the pending ref before calling us, so this re-derives the dot
-  // (permission/waiting → running/idle) once the gate is answered.
+  // Transition machine back to running — callers clear the pending ref before calling us.
+  chats.sendStatusEvent(props.chatId, { type: "RESUME" });
   syncStore();
 }
 
@@ -1267,6 +1262,7 @@ async function abortTurn() {
   messageQueue.value = [];
   const last = messages.value[messages.value.length - 1];
   if (last?.partial) last.partial = false;
+  chats.sendStatusEvent(props.chatId, { type: "INTERRUPT" });
   syncStore();
 }
 
@@ -1432,6 +1428,7 @@ function onWindowKeydown(e: KeyboardEvent) {
 }
 
 onMounted(async () => {
+  chats.markSeen(props.chatId);
   window.addEventListener("keydown", onWindowKeydown);
   window.addEventListener("mousedown", onPermMenuOutside);
   window.addEventListener("mousedown", onModelMenuOutside);
