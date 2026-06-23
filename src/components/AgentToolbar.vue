@@ -90,7 +90,7 @@ const scriptsStore = useScriptsStore();
 const wsStore = useWorkspaceStore();
 
 const scriptsOpen = ref(false);
-const mergedScripts = computed(() => scriptsStore.scriptsFor(wsStore.active?.id));
+const mergedScripts = computed(() => scriptsStore.scriptsFor(wsStore.active?.path));
 
 function runScript(s: Script) {
   const cmd = scriptsStore.commandLine(s);

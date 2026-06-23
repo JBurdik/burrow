@@ -165,13 +165,16 @@
         <PhCaretDown v-if="expanded" :size="15" weight="bold" />
         <PhCaretUp v-else :size="15" weight="bold" />
       </button>
+      <button class="mb-btn" title="Project config" @click="emit('openProjectConfig')">
+        <PhGear :size="15" weight="bold" />
+      </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
-import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu } from "@phosphor-icons/vue";
+import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu, PhGear } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import ClaudeChat from "./ClaudeChat.vue";
 import { useUIStore } from "@/stores/ui";
@@ -179,6 +182,7 @@ import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { useWorkspaceStore } from "@/stores/workspace";
 
 const props = defineProps<{ cwd: string; wsId: number }>();
+const emit = defineEmits<{ openProjectConfig: [] }>();
 
 const ui = useUIStore();
 const chats = useClaudeChatsStore();
@@ -378,6 +382,26 @@ const mountedManagers = computed(() =>
 const activeSessionId = computed<number | null>(() =>
   typeof rootId.value === "number" ? sessionIdByRepo.value[rootId.value] ?? null : null,
 );
+
+const DEFAULT_MANAGER_MD = `# Project-specific Manager instructions
+
+<!-- Add project-specific context here: what this project does, coding conventions, team norms, preferred workflows, etc. The Manager will append this to its base system prompt. -->
+`;
+
+const projectManagerPrompt = ref('');
+watch(rootCwd, async (cwd) => {
+  if (!cwd) return;
+  try {
+    await invoke('scaffold_burrow_dir', { workspacePath: cwd, defaultManagerPrompt: DEFAULT_MANAGER_MD });
+  } catch { /* ignore — dir may already exist or path invalid */ }
+  try {
+    const content = await invoke<string>('read_text_file', { path: cwd + '/.burrow/manager.md' });
+    // Don't inject placeholder comments as active prompt
+    projectManagerPrompt.value = content.replace(/<!--[\s\S]*?-->/g, '').trim();
+  } catch {
+    projectManagerPrompt.value = '';
+  }
+}, { immediate: true });
 
 // Worktree spawn preference (persisted globally) — reflected in the primer.
 const WT_KEY = "burrow.floatchat.worktreeMode";
@@ -640,7 +664,7 @@ ${worktreeMode.value ? SPAWN_MODE_WORKTREE : SPAWN_MODE_BRANCH}
 - \`burrow pr-view <number>\` — show a PR's details.
 - \`burrow pr-merge <number> [--squash]\` — merge a PR.
 
-Be concise. Confirm what you did. If a request is ambiguous (which worktree? which agent? which PR?), run the relevant \`list\` command first to ground yourself, then act. Destructive actions (worktree-remove, pr-merge) require explicit user confirmation first.`);
+Be concise. Confirm what you did. If a request is ambiguous (which worktree? which agent? which PR?), run the relevant \`list\` command first to ground yourself, then act. Destructive actions (worktree-remove, pr-merge) require explicit user confirmation first.${projectManagerPrompt.value ? '\n\n---\n\n## Project-specific instructions\n\n' + projectManagerPrompt.value : ''}`);
 </script>
 
 <style scoped>

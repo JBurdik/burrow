@@ -44,6 +44,13 @@
       v-if="ui.floatChatEnabled && ws.active"
       :cwd="ws.active.path"
       :ws-id="ws.active.id"
+      @open-project-config="showProjectConfig = true"
+    />
+    <WorkspaceConfig
+      v-if="showProjectConfig && ws.active"
+      :workspace-path="ws.active.path"
+      :workspace-name="ws.active.name"
+      @close="showProjectConfig = false"
     />
     <Spotlight
       ref="spotlightRef"
@@ -102,6 +109,7 @@ import ToastStack from "@/components/ToastStack.vue";
 import UpdateBanner from "@/components/UpdateBanner.vue";
 import PetOverlay from "@/components/PetOverlay.vue";
 import ManagerBar from "@/components/ManagerBar.vue";
+import WorkspaceConfig from "@/components/WorkspaceConfig.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
 import { useGitStore } from "@/stores/git";
@@ -115,6 +123,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 let resizing: 'left' | 'right' | null = null;
 let resizeStartX = 0;
 let resizeStartWidth = 0;
+
+const showProjectConfig = ref(false);
 
 const ws = useWorkspaceStore();
 const ui = useUIStore();

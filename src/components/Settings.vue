@@ -350,14 +350,14 @@
               <span class="group-label">
                 {{ activeWsId != null ? `This repo — ${activeWsName}` : "This repo" }}
               </span>
-              <button class="add-btn" :disabled="activeWsId == null" @click="activeWsId != null && scriptsStore.addRepo(activeWsId)">
+              <button class="add-btn" :disabled="activeWsPath == null" @click="activeWsPath != null && scriptsStore.addScript(activeWsPath)">
                 <PhPlus :size="11" /> Add Script
               </button>
             </div>
-            <p v-if="activeWsId == null" class="cfg-hint">Open a workspace to add repo-specific scripts.</p>
+            <p v-if="activeWsPath == null" class="cfg-hint">Open a workspace to add repo-specific scripts.</p>
 
             <div
-              v-for="s in (activeWsId != null ? scriptsStore.repoScripts[activeWsId] || [] : [])"
+              v-for="s in (activeWsPath != null ? scriptsStore.scriptsFor(activeWsPath) : [])"
               :key="s.id"
               class="script-card"
             >
@@ -373,7 +373,7 @@
                   <span class="sc-toggle-label">Continue on error</span>
                 </label>
                 <span class="spacer" />
-                <button class="row-del" title="Remove script" @click="activeWsId != null && scriptsStore.removeRepo(activeWsId, s.id)">
+                <button class="row-del" title="Remove script" @click="activeWsPath != null && scriptsStore.removeScript(activeWsPath, s.id)">
                   <PhTrash :size="13" />
                 </button>
               </div>
@@ -391,46 +391,6 @@
             </div>
           </div>
 
-          <!-- Global scripts -->
-          <div class="settings-group">
-            <div class="scripts-group-head">
-              <span class="group-label">Global — all workspaces</span>
-              <button class="add-btn" @click="scriptsStore.addGlobal()">
-                <PhPlus :size="11" /> Add Script
-              </button>
-            </div>
-
-            <div v-for="s in scriptsStore.globalScripts" :key="s.id" class="script-card">
-              <div class="sc-head">
-                <label class="dot-label" title="Pick color">
-                  <span class="dot" :style="{ background: s.color || '#34d399' }" />
-                  <input type="color" class="color-input" :value="s.color || '#34d399'" @input="s.color = val($event)" />
-                </label>
-                <input class="inp sc-name" :value="s.name" placeholder="Script name" @input="s.name = val($event)" />
-                <label class="sc-toggle" title="Continue on error — chain steps with ; instead of &&">
-                  <input type="checkbox" :checked="s.continueOnError" @change="s.continueOnError = ($event.target as HTMLInputElement).checked" />
-                  <span class="toggle-track"><span class="toggle-thumb" /></span>
-                  <span class="sc-toggle-label">Continue on error</span>
-                </label>
-                <span class="spacer" />
-                <button class="row-del" title="Remove script" @click="scriptsStore.removeGlobal(s.id)">
-                  <PhTrash :size="13" />
-                </button>
-              </div>
-              <div class="sc-steps">
-                <div v-for="(_, i) in s.steps" :key="i" class="sc-step">
-                  <span class="sc-step-idx">{{ i + 1 }}</span>
-                  <input class="inp mono sc-step-inp" :value="s.steps[i]" placeholder="npm install" @input="setStep(s, i, val($event))" />
-                  <button class="sc-step-btn" title="Move up" :disabled="i === 0" @click="moveStep(s, i, i - 1)"><PhArrowUp :size="12" /></button>
-                  <button class="sc-step-btn" title="Move down" :disabled="i === s.steps.length - 1" @click="moveStep(s, i, i + 1)"><PhArrowDown :size="12" /></button>
-                  <button class="sc-step-btn del" title="Remove step" @click="removeStep(s, i)"><PhX :size="12" /></button>
-                </div>
-                <button class="add-btn sc-add-step" @click="addStep(s)"><PhPlus :size="11" /> Add step</button>
-              </div>
-              <div class="sc-preview"><span class="sc-preview-label">Runs:</span> <code>{{ scriptPreview(s) }}</code></div>
-            </div>
-            <div v-if="scriptsStore.globalScripts.length === 0" class="tbl-empty">No global scripts yet.</div>
-          </div>
         </section>
 
         <!-- Claude Profiles -->
@@ -1391,6 +1351,7 @@ const update = useUpdateStore();
 // ── Scripts ──
 // The active repo's scripts are scoped to the active workspace.
 const activeWsId = computed(() => wsStore.active?.id ?? null);
+const activeWsPath = computed(() => wsStore.active?.path ?? null);
 const activeWsName = computed(() => wsStore.active?.name ?? "");
 
 // Step helpers mutate the reactive Script in place — the store's deep watcher

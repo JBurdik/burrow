@@ -145,7 +145,7 @@ const sections = computed(() => {
       action: () => { emit("launch", agentsStore.commandLine(a)); close(); },
     }));
 
-  const scriptItems: SpotlightItem[] = scriptsStore.scriptsFor(wsStore.active?.id)
+  const scriptItems: SpotlightItem[] = scriptsStore.scriptsFor(wsStore.active?.path)
     .filter((s) => scriptsStore.commandLine(s) && (!q || s.name.toLowerCase().includes(q) || scriptsStore.commandLine(s).toLowerCase().includes(q)))
     .map((s) => {
       const color = s.color || "#34d399";

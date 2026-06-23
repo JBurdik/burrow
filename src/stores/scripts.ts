@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
-import { ref, watch } from "vue";
+import { ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 
 // A Script is an ORDERED LIST OF STEPS run SEQUENTIALLY in one terminal tab.
 // Steps are chained into a single shell command line:
@@ -14,49 +15,14 @@ export interface Script {
   color?: string;
 }
 
-const GLOBAL_KEY = "agentic-ide.scripts.global";
-const REPO_KEY = "agentic-ide.scripts.repo";
-
-function loadGlobal(): Script[] {
-  try {
-    const raw = localStorage.getItem(GLOBAL_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed.map(normalize);
-    }
-  } catch {
-    /* fall through */
-  }
-  return [];
-}
-
-function loadRepo(): Record<number, Script[]> {
-  try {
-    const raw = localStorage.getItem(REPO_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        const out: Record<number, Script[]> = {};
-        for (const [k, v] of Object.entries(parsed)) {
-          if (Array.isArray(v)) out[Number(k)] = v.map(normalize);
-        }
-        return out;
-      }
-    }
-  } catch {
-    /* fall through */
-  }
-  return {};
-}
-
-function normalize(s: any): Script {
+function normalize(s: Record<string, unknown>): Script {
   return {
     id: String(s?.id ?? makeId()),
     name: String(s?.name ?? "Script"),
-    steps: Array.isArray(s?.steps) ? s.steps.map((x: any) => String(x)) : [],
+    steps: Array.isArray(s?.steps) ? (s.steps as unknown[]).map((x) => String(x)) : [],
     continueOnError: !!s?.continueOnError,
-    icon: s?.icon,
-    color: s?.color,
+    icon: s?.icon != null ? String(s.icon) : undefined,
+    color: s?.color != null ? String(s.color) : undefined,
   };
 }
 
@@ -68,57 +34,123 @@ function makeId(): string {
 
 const PALETTE = ["#60a5fa", "#34d399", "#a78bfa", "#f472b6", "#fbbf24", "#22d3ee"];
 
+function parseTomlValue(val: string): unknown {
+  if (val === "true") return true;
+  if (val === "false") return false;
+  if (val.startsWith("[") && val.endsWith("]")) {
+    const inner = val.slice(1, -1).trim();
+    if (!inner) return [];
+    // Simple CSV split respecting quoted strings
+    const items: unknown[] = [];
+    let cur = "";
+    let inQ = false;
+    for (let i = 0; i < inner.length; i++) {
+      const ch = inner[i];
+      if (ch === '"' && inner[i - 1] !== "\\") { inQ = !inQ; continue; }
+      if (ch === "," && !inQ) { items.push(cur); cur = ""; continue; }
+      cur += ch;
+    }
+    if (cur.trim()) items.push(cur.trim());
+    return items;
+  }
+  if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+    return val.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  return val;
+}
+
+function parseScriptsToml(content: string): Script[] {
+  const scripts: Script[] = [];
+  const sections = content.split(/^\[\[scripts\]\]\s*$/m).slice(1);
+  for (const section of sections) {
+    const raw: Record<string, unknown> = {};
+    for (const line of section.split("\n")) {
+      const m = line.match(/^\s*(\w+)\s*=\s*(.+?)\s*$/);
+      if (!m) continue;
+      raw[m[1]] = parseTomlValue(m[2].trim());
+    }
+    if (raw.id || raw.name) scripts.push(normalize(raw));
+  }
+  return scripts;
+}
+
+function escapeToml(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function serializeScriptsToml(scripts: Script[]): string {
+  return scripts.map((s) => {
+    const stepsArr = "[" + s.steps.map((x) => `"${escapeToml(x)}"`).join(", ") + "]";
+    let block = `[[scripts]]\n`;
+    block += `id = "${escapeToml(s.id)}"\n`;
+    block += `name = "${escapeToml(s.name)}"\n`;
+    block += `steps = ${stepsArr}\n`;
+    block += `continueOnError = ${s.continueOnError}\n`;
+    if (s.color) block += `color = "${escapeToml(s.color)}"\n`;
+    if (s.icon) block += `icon = "${escapeToml(s.icon)}"\n`;
+    return block;
+  }).join("\n");
+}
+
 export const useScriptsStore = defineStore("scripts", () => {
-  const globalScripts = ref<Script[]>(loadGlobal());
-  // Per-workspace scripts keyed by workspace id.
-  const repoScripts = ref<Record<number, Script[]>>(loadRepo());
+  const scriptsCache = ref<Record<string, Script[]>>({});
 
-  watch(globalScripts, (v) => localStorage.setItem(GLOBAL_KEY, JSON.stringify(v)), { deep: true });
-  watch(repoScripts, (v) => localStorage.setItem(REPO_KEY, JSON.stringify(v)), { deep: true });
+  async function loadForPath(workspacePath: string): Promise<Script[]> {
+    try {
+      const content = await invoke<string>("read_text_file", {
+        path: workspacePath + "/.burrow/config.toml",
+      });
+      const parsed = parseScriptsToml(content);
+      scriptsCache.value[workspacePath] = parsed;
+      return parsed;
+    } catch {
+      scriptsCache.value[workspacePath] = [];
+      return [];
+    }
+  }
 
-  function blank(idx: number): Script {
-    return {
+  async function saveForPath(workspacePath: string): Promise<void> {
+    const scripts = scriptsCache.value[workspacePath] ?? [];
+    const content = serializeScriptsToml(scripts);
+    await invoke("write_text_file", {
+      path: workspacePath + "/.burrow/config.toml",
+      content,
+    });
+  }
+
+  function scriptsFor(workspacePath: string | null | undefined): Script[] {
+    if (!workspacePath) return [];
+    return scriptsCache.value[workspacePath] ?? [];
+  }
+
+  function addScript(workspacePath: string): void {
+    const list = scriptsCache.value[workspacePath] ?? [];
+    list.push({
       id: makeId(),
       name: "New Script",
       steps: [""],
       continueOnError: false,
-      color: PALETTE[idx % PALETTE.length],
-    };
+      color: PALETTE[list.length % PALETTE.length],
+    });
+    scriptsCache.value[workspacePath] = list;
+    saveForPath(workspacePath);
   }
 
-  // ── Global ──────────────────────────────────────────────────────────────
-  function addGlobal() {
-    globalScripts.value.push(blank(globalScripts.value.length));
-  }
-  function updateGlobal(id: string, patch: Partial<Omit<Script, "id">>) {
-    const s = globalScripts.value.find((x) => x.id === id);
+  function updateScript(
+    workspacePath: string,
+    id: string,
+    patch: Partial<Omit<Script, "id">>,
+  ): void {
+    const s = (scriptsCache.value[workspacePath] ?? []).find((x) => x.id === id);
     if (s) Object.assign(s, patch);
-  }
-  function removeGlobal(id: string) {
-    globalScripts.value = globalScripts.value.filter((x) => x.id !== id);
+    saveForPath(workspacePath);
   }
 
-  // ── Per-repo ────────────────────────────────────────────────────────────
-  function addRepo(wsId: number) {
-    const list = repoScripts.value[wsId] ?? (repoScripts.value[wsId] = []);
-    list.push(blank(list.length));
-  }
-  function updateRepo(wsId: number, id: string, patch: Partial<Omit<Script, "id">>) {
-    const s = repoScripts.value[wsId]?.find((x) => x.id === id);
-    if (s) Object.assign(s, patch);
-  }
-  function removeRepo(wsId: number, id: string) {
-    const list = repoScripts.value[wsId];
+  function removeScript(workspacePath: string, id: string): void {
+    const list = scriptsCache.value[workspacePath];
     if (!list) return;
-    repoScripts.value[wsId] = list.filter((x) => x.id !== id);
-  }
-
-  // Merged view for a workspace: repo scripts first, then globals; dedupe by id,
-  // repo wins.
-  function scriptsFor(wsId: number | null | undefined): Script[] {
-    const repo = (wsId != null && repoScripts.value[wsId]) || [];
-    const seen = new Set(repo.map((s) => s.id));
-    return [...repo, ...globalScripts.value.filter((s) => !seen.has(s.id))];
+    scriptsCache.value[workspacePath] = list.filter((x) => x.id !== id);
+    saveForPath(workspacePath);
   }
 
   // Join steps into a single shell line. && (stop on first failure) by default;
@@ -129,15 +161,12 @@ export const useScriptsStore = defineStore("scripts", () => {
   }
 
   return {
-    globalScripts,
-    repoScripts,
-    addGlobal,
-    updateGlobal,
-    removeGlobal,
-    addRepo,
-    updateRepo,
-    removeRepo,
+    scriptsCache,
     scriptsFor,
+    loadForPath,
+    addScript,
+    updateScript,
+    removeScript,
     commandLine,
   };
 });

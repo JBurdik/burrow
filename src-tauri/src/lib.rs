@@ -2132,6 +2132,31 @@ fn read_text_file_checked(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn scaffold_burrow_dir(workspace_path: String, default_manager_prompt: String) -> Result<(), String> {
+    let base = std::path::Path::new(&workspace_path);
+    let burrow_dir = base.join(".burrow");
+    std::fs::create_dir_all(&burrow_dir).map_err(|e| e.to_string())?;
+
+    let manager_md = burrow_dir.join("manager.md");
+    if !manager_md.exists() {
+        std::fs::write(&manager_md, &default_manager_prompt).map_err(|e| e.to_string())?;
+    }
+
+    let config_toml = burrow_dir.join("config.toml");
+    if !config_toml.exists() {
+        let default_toml = "# Burrow project config\n# Uncomment and edit to add scripts:\n\n# [[scripts]]\n# id = \"dev\"\n# name = \"dev\"\n# steps = [\"pnpm dev\"]\n# continueOnError = false\n# color = \"#60a5fa\"\n";
+        std::fs::write(&config_toml, default_toml).map_err(|e| e.to_string())?;
+    }
+
+    let skill_dir = base.join(".claude").join("skills").join("burrow");
+    std::fs::create_dir_all(&skill_dir).map_err(|e| e.to_string())?;
+    let skill_file = skill_dir.join("SKILL.md");
+    std::fs::write(&skill_file, BURROW_SKILL_MD).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
 fn read_file_base64(path: String) -> Result<String, String> {
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     Ok(general_purpose::STANDARD.encode(&bytes))
@@ -4021,6 +4046,7 @@ pub fn run() {
             write_text_file,
             read_text_file,
             read_text_file_checked,
+            scaffold_burrow_dir,
             lsp_start,
             lsp_send,
             lsp_stop,
