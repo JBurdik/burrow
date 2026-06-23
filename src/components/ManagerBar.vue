@@ -14,7 +14,7 @@
     <div
       v-if="started"
       class="mb-panel-wrap"
-      :style="{ height: (expanded ? panelHeight : 0) + 'px' }"
+      :style="{ height: (expanded ? panelHeight : 0) + 'px', transition: isResizing ? 'none' : undefined }"
     >
       <div class="mb-panel" :style="{ height: panelHeight + 'px' }">
         <div class="mb-chat">
@@ -542,23 +542,23 @@ const HEIGHT_KEY = "burrow.manager.height";
 const panelHeight = ref<number>(
   Math.min(Math.max(parseInt(localStorage.getItem(HEIGHT_KEY) ?? "360", 10) || 360, 160), 900),
 );
-let resizing = false;
+const isResizing = ref(false);
 let startY = 0;
 let startH = 0;
 function startResize(e: MouseEvent) {
-  resizing = true;
+  isResizing.value = true;
   startY = e.clientY;
   startH = panelHeight.value;
   e.preventDefault();
 }
 function onResizeMove(e: MouseEvent) {
-  if (!resizing) return;
+  if (!isResizing.value) return;
   const max = Math.round(window.innerHeight * 0.8);
   panelHeight.value = Math.min(Math.max(startH - (e.clientY - startY), 160), max);
 }
 function onResizeUp() {
-  if (!resizing) return;
-  resizing = false;
+  if (!isResizing.value) return;
+  isResizing.value = false;
   localStorage.setItem(HEIGHT_KEY, String(panelHeight.value));
 }
 
@@ -679,6 +679,7 @@ const managerPrimer = computed(() => {
   padding: 4px 10px;
   outline: none;
   resize: none;
+  overflow-x: hidden;
   overflow-y: auto;
   line-height: 18px;
   display: block;
