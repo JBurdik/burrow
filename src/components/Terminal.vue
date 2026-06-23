@@ -83,6 +83,13 @@
       </div>
     </TransitionGroup>
 
+    <div
+      v-if="activeAgentLeafId !== null && historyStore.getTimeline(activeAgentLeafId).length > 0"
+      class="agent-timeline-strip"
+    >
+      <AgentTimeline :pty-id="activeAgentLeafId" />
+    </div>
+
     <div v-if="tabs.length > 0" class="terminal-body">
       <div
         v-for="tab in tabs"
@@ -233,6 +240,8 @@ import {
   type AgentEvent,
   type ReducerCtx,
 } from "@/lib/terminalStatus";
+import { useAgentHistoryStore } from "@/stores/agentHistory";
+import AgentTimeline from "@/components/AgentTimeline.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore } from "@/stores/ui";
 import { useTerminalTabsStore } from "@/stores/terminalTabs";
@@ -249,6 +258,7 @@ const chatsStore = useClaudeChatsStore();
 const tabsStore = useTerminalTabsStore();
 const notifStore = useNotificationsStore();
 const gitStore = useGitStore();
+const historyStore = useAgentHistoryStore();
 
 interface Tab {
   id: number;
@@ -717,6 +727,7 @@ function onAgentState(id: number, s: string, detail?: string) {
       const wasError = leaf.status === "error";
       leaf.statusDetail = detail || undefined;
       applyAgentEvent(leaf, "error", makeCtx(tab));
+      historyStore.addEvent(leaf.id, "error");
       if (!wasError) maybeNtfy("error", leaf.title);
       break;
     }
@@ -730,6 +741,7 @@ function onAgentState(id: number, s: string, detail?: string) {
       // events of the same state don't spam. `done` is handled in onSettled.
       const changed = leaf.status !== s;
       applyAgentEvent(leaf, s as AgentEvent, makeCtx(tab));
+      historyStore.addEvent(leaf.id, s);
       if (changed && (s === "waiting" || s === "permission")) maybeNtfy(s, leaf.title);
     }
     break;
@@ -1162,6 +1174,7 @@ async function closeTab(tabId: number) {
       .map((l) => {
         const p = invoke("kill_pty", { id: l.id }).catch(() => {});
         unregisterLeafListeners(l.id);
+        historyStore.clear(l.id);
         return p;
       }),
   );
@@ -1209,6 +1222,7 @@ async function closePane(leafId: number) {
     // Await the kill (see closeTab) so it lands before re-persist / app-quit.
     await invoke("kill_pty", { id: leafId }).catch(() => {});
     unregisterLeafListeners(leafId);
+    historyStore.clear(leafId);
   }
   const newRoot = removeLeaf(tab.root, leafId)!;
   tab.root = newRoot;
@@ -1599,6 +1613,14 @@ function repaintAll() {
   xtermRefs.forEach((x) => x?.repaint?.());
 }
 
+// ID of the focused agent leaf — used to drive AgentTimeline display.
+const activeAgentLeafId = computed((): number | null => {
+  const tab = tabs.value.find((t) => t.id === activeTabId.value);
+  if (!tab) return null;
+  const leaf = findLeaf(tab.root, focusedLeafId.value) ?? getFirstLeaf(tab.root);
+  return leaf.isAgent ? leaf.id : null;
+});
+
 defineExpose({ addTab, spawnAgent, adoptPty, openDiffInTab, openFileInTab, insertContext, focusLeaf, openClaudeChat, openBrowserTab, refitAll, repaintAll });
 </script>
 
@@ -1756,6 +1778,15 @@ defineExpose({ addTab, spawnAgent, adoptPty, openDiffInTab, openFileInTab, inser
 .tab:hover .tab-float { opacity: 0.45; }
 .tab-close:hover { opacity: 1 !important; background: rgba(239, 68, 68, 0.18); color: var(--red); }
 .tab-float:hover { opacity: 1 !important; background: rgba(255, 255, 255, 0.09); }
+
+/* Agent turn timeline — shown below the tab/log strips for agent tabs */
+.agent-timeline-strip {
+  height: 120px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  overflow: hidden;
+}
 
 .terminal-body {
   flex: 1;

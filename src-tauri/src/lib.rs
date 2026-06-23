@@ -891,6 +891,12 @@ fn start_hook_server(app: AppHandle) {
                             );
                         }
                     }
+                    "/agent-done" => {
+                        // burrow capture: sub-agent finished, result ready for collect.
+                        if let Some(token) = val["token"].as_str() {
+                            let _ = app.emit("agent-done", token.to_string());
+                        }
+                    }
                     "/log" => {
                         // burrow log: append a timestamped log entry for this tab.
                         if let Some(pty_id) = val["ptyId"].as_u64() {

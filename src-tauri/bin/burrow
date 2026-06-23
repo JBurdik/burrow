@@ -400,6 +400,15 @@ case "$sub" in
     # `burrow hook` Stop (same event), so without this the sub-agent's status dot
     # would stay stuck orange after it finishes. (No-op outside Burrow.)
     burrow status done
+    # Notify the Manager that a sub-agent result is ready for collect.
+    # No-op if not in a Burrow PTY or if the hook server isn't reachable.
+    if [ -n "$BURROW_PTY_ID" ] && [ -n "$token" ]; then
+      _port=$(head -n1 "$BURROW_HOME_DIR/hook.port" 2>/dev/null)
+      [ -z "$_port" ] && _port="$BURROW_HOOK_PORT"
+      [ -n "$_port" ] && curl -sf -o /dev/null -X POST "http://127.0.0.1:$_port/agent-done" \
+        -H 'Content-Type: application/json' \
+        -d "{\"token\":\"$token\"}" 2>/dev/null || true
+    fi
     exit 0
     ;;
 

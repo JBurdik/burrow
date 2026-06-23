@@ -179,6 +179,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu, PhGear, PhArrowCounterClockwise } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import ClaudeChat from "./ClaudeChat.vue";
 import { useUIStore } from "@/stores/ui";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
@@ -584,6 +585,33 @@ function onDocMouseDown(e: MouseEvent) {
     mdlMenuOpen.value = false;
   }
 }
+// ── Sub-agent done notifications ─────────────────────────────────────────────
+// When `burrow capture TOKEN` finishes, the hook server emits "agent-done".
+// Collect tokens for 500 ms then inject a single message into the Manager so it
+// can run `burrow collect` without the user having to prompt it.
+const pendingDoneTokens: string[] = [];
+let doneDebounce: ReturnType<typeof setTimeout> | null = null;
+let unlistenAgentDone: (() => void) | null = null;
+
+function flushDoneTokens() {
+  const tokens = pendingDoneTokens.splice(0);
+  if (!tokens.length) return;
+  const repoId = rootId.value;
+  if (typeof repoId !== "number") return;
+  ensureStarted();
+  const list = tokens.map((t) => `\`${t}\``).join(", ");
+  const cmd = `burrow collect ${tokens.join(" ")}`;
+  const msg = `Sub-agent${tokens.length > 1 ? "s" : ""} finished: ${list}. Run: \`${cmd}\``;
+  chatRefs.get(repoId)?.sendMessage(msg);
+}
+
+listen<string>("agent-done", (e) => {
+  const token = e.payload;
+  if (token && !pendingDoneTokens.includes(token)) pendingDoneTokens.push(token);
+  if (doneDebounce) clearTimeout(doneDebounce);
+  doneDebounce = setTimeout(flushDoneTokens, 500);
+}).then((fn) => { unlistenAgentDone = fn; });
+
 onMounted(() => {
   window.addEventListener("mousemove", onResizeMove);
   window.addEventListener("mouseup", onResizeUp);
@@ -599,6 +627,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("mouseup", onResizeUp);
   window.removeEventListener("mousedown", onDocMouseDown);
   document.documentElement.style.setProperty("--manager-bar-h", "0px");
+  unlistenAgentDone?.();
+  if (doneDebounce) clearTimeout(doneDebounce);
 });
 
 

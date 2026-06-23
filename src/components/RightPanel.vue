@@ -1,5 +1,5 @@
 <template>
-  <aside class="right-panel">
+  <aside class="right-panel" ref="panelEl">
     <!-- Tab bar -->
     <div class="panel-tabs">
       <button
@@ -10,7 +10,7 @@
         @click="activeTab = tab.id"
       >
         <component :is="tab.icon" :size="12" />
-        {{ tab.label }}
+        <span v-if="cq.is.sm">{{ tab.label }}</span>
       </button>
     </div>
 
@@ -56,6 +56,13 @@
             {{ git.hasUpstream ? "Push" : "Publish" }}
             <span v-if="git.ahead > 0">({{ git.ahead }})</span>
           </button>
+          <AutoRefreshButton
+            :current-interval="ar.currentInterval.value"
+            :is-running="ar.isRunning.value"
+            :next-refresh-in="ar.nextRefreshIn.value"
+            :toggle="ar.toggle"
+            :set-refresh-interval="ar.setRefreshInterval"
+          />
           <button class="icon-btn" :disabled="git.loading" @click="git.refresh()" title="Refresh">
             <PhArrowClockwise :size="13" :class="{ spin: git.loading }" />
           </button>
@@ -164,8 +171,8 @@
             </button>
           </div>
 
-          <!-- Diff -->
-          <div v-if="git.diffFile" class="diff-section">
+          <!-- Diff (hidden when panel is too narrow — use cq.is.md = ≥320px) -->
+          <div v-if="git.diffFile && cq.is.md" class="diff-section">
             <div class="diff-header">
               <span class="diff-title">{{ git.diffFile }}</span>
               <span class="diff-mode">{{ git.diffStaged ? "staged" : "unstaged" }}</span>
@@ -220,6 +227,9 @@ import {
 import { useGitStore, type GitCommit } from "@/stores/git";
 import { useFileTreeStore } from "@/stores/fileTree";
 import FileTreeNode from "./FileTreeNode.vue";
+import { useAutoRefresh } from "@/composables/useAutoRefresh";
+import { useContainerQuery } from "@/composables/useContainerQuery";
+import AutoRefreshButton from "./AutoRefreshButton.vue";
 
 const props = withDefaults(defineProps<{ cwd: string; isGit?: boolean }>(), { isGit: true });
 const git = useGitStore();
@@ -227,6 +237,10 @@ const fileTree = useFileTreeStore();
 const activeTab = ref("git");
 const showHistory = ref(false);
 const activeTerm = inject<() => any>('activeTerm', () => undefined);
+
+const panelEl = ref<HTMLElement | null>(null);
+// sm=220: show tab labels; md=320: show inline diff; lg=440: not used yet
+const cq = useContainerQuery(panelEl, { sm: 220, md: 320, lg: 440 });
 
 async function openAllDiffInTab(staged: boolean) {
   const diff = await git.fetchAllDiff(staged);
@@ -273,30 +287,28 @@ function diffLineClass(line: string) {
   return "diff-ctx";
 }
 
-// --- Auto-refresh: window focus + git-tab visible poll ---
+// --- Auto-refresh: window focus + configurable interval ---
 function autoRefresh() {
   if (activeTab.value === "git" && props.cwd && !document.hidden) {
     git.refresh(true);
   }
 }
 
-let pollId: number | undefined;
+const ar = useAutoRefresh(autoRefresh, "burrow-git-refresh-interval");
+
 function onFocus() { autoRefresh(); }
 function onVisible() { if (!document.hidden) autoRefresh(); }
 
-// refresh when switching to the git tab
 watch(activeTab, (t) => { if (t === "git") autoRefresh(); });
 
 onMounted(() => {
   window.addEventListener("focus", onFocus);
   document.addEventListener("visibilitychange", onVisible);
-  pollId = window.setInterval(autoRefresh, 30_000);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("focus", onFocus);
   document.removeEventListener("visibilitychange", onVisible);
-  if (pollId) clearInterval(pollId);
 });
 </script>
 
