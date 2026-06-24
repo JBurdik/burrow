@@ -67,7 +67,7 @@
         <g v-for="(turn, i) in reversedTurns" :key="`lbl-${turn.id}`">
           <text
             :x="LABEL_W - 6"
-            :y="AXIS_H + i * ROW_H + ROW_H / 2 + 4"
+            :y="AXIS_H + i * ROW_H + ROW_H / 2 + 3"
             class="tl-row-label"
             text-anchor="end"
           >T{{ turn.id + 1 }}</text>
@@ -96,10 +96,10 @@ import type { AgentTurn, TurnSegment } from "@/stores/agentHistory";
 const props = defineProps<{ ptyId: number }>();
 const store = useAgentHistoryStore();
 
-const LABEL_W = 36;
-const ROW_H = 26;
-const AXIS_H = 22;
-const PAD = 0;
+const LABEL_W = 32;
+const ROW_H = 14;
+const AXIS_H = 18;
+const PAD = 2;
 
 const wrap = ref<HTMLElement>();
 const svgW = ref(300);
@@ -244,10 +244,6 @@ onUnmounted(() => {
 <style scoped>
 .tl-wrap {
   width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
   position: relative;
   user-select: none;
 }
@@ -262,10 +258,9 @@ onUnmounted(() => {
 .tl-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
+  gap: 6px;
+  padding: 2px 6px;
   border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
 }
 
 .tl-fit-btn {
@@ -292,9 +287,9 @@ onUnmounted(() => {
 }
 
 .tl-svg {
-  flex: 1;
-  cursor: grab;
   display: block;
+  width: 100%;
+  cursor: grab;
   overflow: visible;
 }
 .tl-svg:active { cursor: grabbing; }

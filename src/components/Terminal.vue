@@ -86,8 +86,16 @@
     <div
       v-if="activeAgentLeafId !== null && historyStore.getTimeline(activeAgentLeafId).length > 0"
       class="agent-timeline-strip"
+      :class="{ collapsed: timelineCollapsed }"
     >
-      <AgentTimeline :pty-id="activeAgentLeafId" />
+      <div class="tl-strip-header" @click="timelineCollapsed = !timelineCollapsed">
+        <component :is="timelineCollapsed ? PhCaretRight : PhCaretDown" :size="9" weight="bold" />
+        <span>Timeline</span>
+        <span class="tl-strip-turns">{{ historyStore.getTimeline(activeAgentLeafId).length }}t</span>
+      </div>
+      <div v-if="!timelineCollapsed" class="tl-strip-body">
+        <AgentTimeline :pty-id="activeAgentLeafId" />
+      </div>
     </div>
 
     <div v-if="tabs.length > 0" class="terminal-body">
@@ -212,7 +220,7 @@
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { createActor, type Actor } from "xstate";
 import { agentStatusMachine } from "@/machines/agentStatus";
-import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut, PhFileCode, PhGlobe } from "@phosphor-icons/vue";
+import { PhRobot, PhTerminal, PhTerminalWindow, PhX, PhPlus, PhArrowSquareOut, PhFileCode, PhGlobe, PhCaretDown, PhCaretRight } from "@phosphor-icons/vue";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { invoke } from "@tauri-apps/api/core";
@@ -1661,6 +1669,8 @@ function repaintAll() {
   xtermRefs.forEach((x) => x?.repaint?.());
 }
 
+const timelineCollapsed = ref(false);
+
 // ID of the focused agent leaf — used to drive AgentTimeline display.
 const activeAgentLeafId = computed((): number | null => {
   const tab = tabs.value.find((t) => t.id === activeTabId.value);
@@ -1829,11 +1839,39 @@ defineExpose({ addTab, spawnAgent, adoptPty, openDiffInTab, openFileInTab, inser
 
 /* Agent turn timeline — shown below the tab/log strips for agent tabs */
 .agent-timeline-strip {
-  height: 120px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg-panel);
-  overflow: hidden;
+}
+
+.tl-strip-header {
+  height: 20px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+.agent-timeline-strip.collapsed .tl-strip-header {
+  border-bottom: none;
+}
+.tl-strip-header:hover { background: var(--bg-hover); }
+.tl-strip-header span { font-family: var(--font-ui); }
+.tl-strip-turns {
+  margin-left: auto;
+  font-family: var(--font-mono) !important;
+  font-size: 9px;
+}
+
+.tl-strip-body {
+  height: 90px;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .terminal-body {
