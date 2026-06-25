@@ -1083,9 +1083,10 @@ function onLine(line: string) {
   }
 }
 
-async function sendMessage(forcedText?: string) {
+async function sendMessage(forcedText?: string, extraImages?: string[]) {
   let text = (forcedText ?? inputText.value).trim();
   if (!text) return;
+  if (extraImages?.length) pendingImages.value.push(...extraImages);
   // While busy: queue the message instead of sending immediately.
   if (busy.value && !forcedText) {
     messageQueue.value.push(text);

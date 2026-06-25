@@ -74,6 +74,13 @@
             <span class="mb-sug-desc">{{ p }}</span>
           </div>
         </div>
+        <!-- Pasted image thumbnails -->
+        <div v-if="pastedImages.length" class="mb-pasted-imgs">
+          <div v-for="(img, i) in pastedImages" :key="i" class="mb-pasted-img-wrap">
+            <img :src="img" class="mb-pasted-img" :alt="`Image ${i + 1}`" />
+            <button class="mb-pasted-img-rm" title="Remove" @mousedown.prevent="pastedImages.splice(i, 1)">×</button>
+          </div>
+        </div>
         <textarea
           ref="quickEl"
           v-model="quickText"
@@ -83,6 +90,7 @@
           @focus="ensureStarted"
           @keydown="onQuickKeydown"
           @input="onQuickInput"
+          @paste="onQuickPaste"
         />
       </div>
 
@@ -201,6 +209,7 @@ function setChatRef(repoId: number, el: unknown) {
 }
 const quickEl = ref<HTMLTextAreaElement | null>(null);
 const quickText = ref("");
+const pastedImages = ref<string[]>([]);
 
 // ── Suggestions ─────────────────────────────────────────────────────────────
 interface Command { name: string; description: string }
@@ -287,6 +296,24 @@ function onQuickInput() {
   quickAutoResize();
   updateCmdSuggestions();
   updateAtSuggestions();
+}
+
+function onQuickPaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of Array.from(items)) {
+    if (item.type.startsWith("image/")) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (!file) continue;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
+        if (dataUrl) pastedImages.value.push(dataUrl);
+      };
+      reader.readAsDataURL(file);
+    }
+  }
 }
 
 function onQuickKeydown(e: KeyboardEvent) {
@@ -542,13 +569,13 @@ async function quickSend() {
   quickText.value = "";
   cmdSuggestions.value = [];
   atSuggestions.value = [];
+  const imgs = pastedImages.value.length ? [...pastedImages.value] : undefined;
+  pastedImages.value = [];
   nextTick(() => { quickAutoResize(); });
   ensureStarted();
-  // Stay collapsed on send — the message runs in the background; the strip's
-  // status dot reflects progress. User expands only when they want to read.
   const repoId = rootId.value;
   await nextTick();
-  chatRefs.get(repoId)?.sendMessage(text);
+  chatRefs.get(repoId)?.sendMessage(text, imgs);
 }
 
 // ── Resizable expanded panel height ──
@@ -685,7 +712,7 @@ const managerPrimer = computed(() => {
 /* ── Bottom strip ── */
 .mb-strip {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
   min-height: 38px;
   padding: 6px 10px;
@@ -864,4 +891,42 @@ const managerPrimer = computed(() => {
 .mb-wt-item-title { font-size: 12px; font-weight: 600; color: var(--text-primary, #e2e8f0); }
 .mb-wt-item-sub { font-size: 10px; line-height: 1.3; color: var(--text-muted, #64748b); }
 .mb-wt-item-check { color: var(--accent, #3b82f6); flex-shrink: 0; }
+
+/* ── Pasted image thumbnails ── */
+.mb-pasted-imgs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 0 4px;
+}
+.mb-pasted-img-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.mb-pasted-img {
+  display: block;
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(255,255,255,0.12));
+}
+.mb-pasted-img-rm {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.7);
+  border: none;
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
 </style>
