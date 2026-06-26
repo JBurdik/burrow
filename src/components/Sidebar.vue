@@ -302,6 +302,10 @@
       </div>
     </Teleport>
 
+  </aside>
+
+  <!-- Dialogs teleported to body to escape backdrop-filter stacking context -->
+  <Teleport to="body">
     <!-- Rename dialog -->
     <div class="dialog-overlay" v-if="renameId !== null" @click.self="renameId = null">
       <div class="dialog">
@@ -379,7 +383,7 @@
         </div>
       </div>
     </div>
-  </aside>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
