@@ -63,6 +63,12 @@ export function lspLanguageId(path: string): string | null {
     case "js": case "mjs": case "cjs": return "javascript";
     case "jsx": return "javascriptreact";
     case "rs": return "rust";
+    case "py": case "pyi": return "python";
+    case "go": return "go";
+    case "c": case "h": return "c";
+    case "cpp": case "cc": case "cxx": case "hpp": case "hh": case "hxx": return "cpp";
+    case "lua": return "lua";
+    case "sh": case "bash": return "shellscript";
     default: return null;
   }
 }
@@ -80,6 +86,24 @@ function serverFor(langId: string): ServerDef | null {
       return { key: "typescript", name: "typescript-language-server", args: ["--stdio"] };
     case "rust":
       return { key: "rust", name: "rust-analyzer", args: [] };
+    // Binaries resolved on the Rust side; a missing one fails gracefully → plain
+    // highlighting. Install hint per server in comments.
+    case "python":
+      // pip install pyright  (or npm i -g pyright)
+      return { key: "python", name: "pyright-langserver", args: ["--stdio"] };
+    case "go":
+      // go install golang.org/x/tools/gopls@latest
+      return { key: "go", name: "gopls", args: [] };
+    case "c":
+    case "cpp":
+      // brew install llvm / xcode clangd
+      return { key: "clangd", name: "clangd", args: [] };
+    case "lua":
+      // brew install lua-language-server
+      return { key: "lua", name: "lua-language-server", args: [] };
+    case "shellscript":
+      // npm i -g bash-language-server
+      return { key: "bash", name: "bash-language-server", args: ["start"] };
     default:
       return null;
   }

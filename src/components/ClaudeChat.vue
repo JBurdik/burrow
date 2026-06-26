@@ -154,7 +154,7 @@
                   :alt="`Image ${i + 1}`"
                 />
               </div>
-              {{ msg.text }}
+              <template v-for="(p, i) in msgParts(msg.text)" :key="i"><span v-if="p.mention" class="mention-pill"><PhFile :size="10" class="mention-pill-icon" />{{ p.v.slice(1) }}</span><template v-else>{{ p.v }}</template></template>
             </div>
             <div class="user-avatar">U</div>
           </div>
@@ -229,7 +229,6 @@
             <div class="assistant-content">
               <!-- eslint-disable-next-line vue/no-v-html -->
               <div class="md-body" v-html="renderMd(msg.text)" />
-              <span v-if="msg.partial" class="partial-cursor" />
             </div>
           </div>
         </template>
@@ -283,15 +282,6 @@
 
     <!-- New-style input bar -->
     <div v-if="!hideComposer" class="chat-input-wrap">
-      <!-- Context chips (files attached via @-mention) -->
-      <div v-if="contextChips.length > 0" class="context-chips">
-        <div v-for="path in contextChips" :key="path" class="ctx-chip">
-          <PhFile :size="10" class="ctx-chip-icon" />
-          <span class="ctx-chip-name">{{ path.split('/').slice(-1)[0] }}</span>
-          <button class="ctx-chip-remove" @click="removeChip(path)" :title="path"><PhX :size="8" weight="bold" /></button>
-        </div>
-      </div>
-
       <!-- Queued messages panel (Zed-style) -->
       <div v-if="messageQueue.length > 0" class="queue-panel">
         <div class="queue-header" @click="queueExpanded = !queueExpanded">
@@ -599,20 +589,7 @@ async function selectProfile(id: string) {
   if (id === selectedProfileId.value) return;
   selectedProfileId.value = id;
   localStorage.setItem(PROFILE_KEY(props.chatId), id);
-  suppressNextDone.value = true;
-  await invoke("claude_stop", { id: props.chatId }).catch(() => {});
-  const p = profilesStore.get(id);
-  await invoke("claude_start", {
-    id: props.chatId,
-    cwd: props.cwd,
-    resumeSessionId: sessionId.value || null,
-    permissionMode: permMode.value,
-    appendSystemPrompt: props.appendSystemPrompt || null,
-    model: selectedModel.value,
-    configDir: p?.configDir || null,
-    profileCommand: p?.command || null,
-    profileArgs: p?.args || null,
-  }).catch(() => {});
+  await restartClaude();
 }
 
 // Model switcher
@@ -655,19 +632,7 @@ async function selectModel(id: ClaudeModelId) {
   if (id === selectedModel.value) return;
   selectedModel.value = id;
   localStorage.setItem(MODEL_KEY, id);
-  suppressNextDone.value = true;
-  await invoke("claude_stop", { id: props.chatId }).catch(() => {});
-  await invoke("claude_start", {
-    id: props.chatId,
-    cwd: props.cwd,
-    resumeSessionId: sessionId.value || null,
-    permissionMode: permMode.value,
-    appendSystemPrompt: props.appendSystemPrompt || null,
-    model: selectedModel.value,
-    configDir: selectedProfile.value?.configDir || null,
-    profileCommand: selectedProfile.value?.command || null,
-    profileArgs: selectedProfile.value?.args || null,
-  }).catch(() => {});
+  await restartClaude();
 }
 const selectedModelLabel = computed(() => CLAUDE_MODELS.find((m) => m.id === selectedModel.value)?.label ?? selectedModel.value);
 
@@ -959,11 +924,19 @@ async function sendQueuedNow(i: number) {
   else { messageQueue.value.unshift(text); messages.value.unshift({ id: nextMsgId++, role: "queued", text }); }
 }
 
-// @-mention context chips (files attached via @ autocomplete)
-const contextChips = ref<string[]>([]);
-function removeChip(path: string) {
-  const i = contextChips.value.indexOf(path);
-  if (i !== -1) contextChips.value.splice(i, 1);
+// Split a user message into plain text + @path mention tokens for pill rendering.
+function msgParts(text: string): { mention: boolean; v: string }[] {
+  const parts: { mention: boolean; v: string }[] = [];
+  const re = /(^|\s)(@[^\s@]+)/g;
+  let last = 0, m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const start = m.index + m[1].length;
+    if (start > last) parts.push({ mention: false, v: text.slice(last, start) });
+    parts.push({ mention: true, v: m[2] });
+    last = start + m[2].length;
+  }
+  if (last < text.length) parts.push({ mention: false, v: text.slice(last) });
+  return parts;
 }
 
 // Context usage bar — 200k for all current models
@@ -1267,11 +1240,6 @@ function onLine(line: string) {
 
 async function sendMessage(forcedText?: string, extraImages?: string[]) {
   let text = (forcedText ?? inputText.value).trim();
-  // Prepend context chips as @-mentions so Claude reads them
-  if (!forcedText && contextChips.value.length > 0) {
-    text = contextChips.value.map((p) => `@${p}`).join(" ") + (text ? " " + text : "");
-    contextChips.value = [];
-  }
   if (!text) return;
   if (extraImages?.length) pendingImages.value.push(...extraImages);
   // While busy: queue the message instead of sending immediately.
@@ -1423,27 +1391,19 @@ async function selectPermMode(mode: PermMode) {
   permMode.value = mode;
   localStorage.setItem(PERM_KEY(props.chatId), permMode.value);
   localStorage.setItem(PERM_LAST_KEY, permMode.value);
-  suppressNextDone.value = true; // restart below — don't toast on the teardown `exit`
-  await invoke("claude_stop", { id: props.chatId }).catch(() => {});
-  await invoke("claude_start", {
-    id: props.chatId,
-    cwd: props.cwd,
-    resumeSessionId: sessionId.value || null,
-    permissionMode: permMode.value,
-    appendSystemPrompt: props.appendSystemPrompt || null,
-    model: selectedModel.value,
-    configDir: selectedProfile.value?.configDir || null,
-    profileCommand: selectedProfile.value?.command || null,
-    profileArgs: selectedProfile.value?.args || null,
-  }).catch(() => {});
+  await restartClaude();
 }
 
-async function abortTurn() {
-  suppressNextDone.value = true; // abort + restart — don't toast on the teardown `exit`
+// Stop + restart the claude proc (with --resume so the session continues) and
+// settle all turn state. Used by abort AND every setting switch (mode/model/
+// profile) — the teardown `exit` is suppressed so it emits no STOP, so the
+// status machine MUST be settled here via INTERRUPT or the dot sticks at
+// running/permission forever.
+async function restartClaude() {
+  suppressNextDone.value = true; // restart — don't toast on the teardown `exit`
   // claude_stop removes the proc from the map so the subsequent claude_start actually spawns.
   // claude_abort (SIGINT) leaves a dead entry in the map → claude_start is a no-op.
   await invoke("claude_stop", { id: props.chatId }).catch(() => {});
-  // Restart with --resume so session continues
   await invoke("claude_start", {
     id: props.chatId,
     cwd: props.cwd,
@@ -1458,10 +1418,19 @@ async function abortTurn() {
   busy.value = false;
   messageQueue.value = [];
   messages.value = messages.value.filter((m) => m.role !== "queued");
+  // Drop any in-flight permission/question/plan prompts — the proc backing them is gone.
+  pendingPermission.value = null;
+  pendingDiff.value = null;
+  pendingQuestion.value = null;
+  pendingPlan.value = null;
   const last = messages.value[messages.value.length - 1];
   if (last?.partial) last.partial = false;
   chats.sendStatusEvent(props.chatId, { type: "INTERRUPT" });
   syncStore();
+}
+
+async function abortTurn() {
+  await restartClaude();
 }
 
 async function clearChat() {
@@ -1488,11 +1457,20 @@ async function clearChat() {
   }).catch(() => {});
 }
 
+// `/cmd` token immediately before the cursor — at line start OR after whitespace,
+// so command help works mid-message, not only when the input starts with `/`.
+function slashQueryBeforeCursor(): { lead: string; q: string; full: string } | null {
+  const el = inputEl.value;
+  const pos = el?.selectionStart ?? inputText.value.length;
+  const upto = inputText.value.slice(0, pos);
+  const m = upto.match(/(^|\s)\/([^\s/]*)$/);
+  return m ? { lead: m[1], q: m[2], full: m[0] } : null;
+}
+
 function updateSuggestions() {
-  const val = inputText.value;
-  const slashMatch = val.match(/^\/(\S*)$/);
-  if (!slashMatch) { suggestions.value = []; return; }
-  const q = slashMatch[1].toLowerCase();
+  const m = slashQueryBeforeCursor();
+  if (!m) { suggestions.value = []; return; }
+  const q = m.q.toLowerCase();
   suggestions.value = allCommands.value.filter(
     (c) => c.name.toLowerCase().startsWith(q)
   );
@@ -1500,7 +1478,16 @@ function updateSuggestions() {
 }
 
 function applySuggestion(name: string) {
-  inputText.value = `/${name} `;
+  const el = inputEl.value;
+  const pos = el?.selectionStart ?? inputText.value.length;
+  const m = slashQueryBeforeCursor();
+  if (!m) { inputText.value = `/${name} `; }
+  else {
+    const upto = inputText.value.slice(0, pos);
+    const after = inputText.value.slice(pos);
+    const base = upto.slice(0, upto.length - m.full.length);
+    inputText.value = `${base}${m.lead}/${name} ${after}`;
+  }
   suggestions.value = [];
   nextTick(() => { inputEl.value?.focus(); autoResize(); });
 }
@@ -1546,12 +1533,17 @@ function applyAtSuggestion(path: string) {
   const after = inputText.value.slice(pos);
   const m = upto.match(/@([^\s@]*)$/);
   if (!m) return;
-  // Add as chip, remove @query from input text
-  if (!contextChips.value.includes(path)) contextChips.value.push(path);
+  // Insert the @path inline where it was typed (rendered as a pill in the bubble).
   const base = upto.slice(0, upto.length - m[0].length);
-  inputText.value = `${base}${after}`.trimStart();
+  const sep = after.startsWith(" ") ? "" : " ";
+  inputText.value = `${base}@${path}${sep}${after}`;
   atSuggestions.value = [];
-  nextTick(() => { inputEl.value?.focus(); autoResize(); });
+  nextTick(() => {
+    inputEl.value?.focus();
+    autoResize();
+    const el2 = inputEl.value;
+    if (el2) { const c = base.length + path.length + 1 + sep.length; el2.selectionStart = el2.selectionEnd = c; }
+  });
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -2242,16 +2234,6 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands,
   padding-top: 4px;
 }
 
-.partial-cursor {
-  display: inline-block;
-  width: 2px;
-  height: 13px;
-  background: var(--chat-accent, #7c3aed);
-  vertical-align: middle;
-  margin-left: 2px;
-  animation: blink 1s step-end infinite;
-}
-@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
 /* Thinking */
 .bubble-thinking {
@@ -2469,37 +2451,20 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands,
 .queue-send-now { color: rgba(124,58,237,0.8); border-color: rgba(124,58,237,0.3); }
 .queue-send-now:hover { color: rgba(124,58,237,1); border-color: rgba(124,58,237,0.6); }
 
-/* Context chips */
-.context-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 6px 10px 2px;
-}
-.ctx-chip {
+/* Inline @file mention pill (rendered in the user bubble) */
+.mention-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 6px 2px 7px;
-  background: rgba(124,58,237,0.12);
-  border: 1px solid rgba(124,58,237,0.3);
-  border-radius: 12px;
-  font-size: 11px;
-  color: rgba(255,255,255,0.7);
+  gap: 3px;
+  padding: 1px 6px;
+  margin: 0 1px;
+  background: rgba(124,58,237,0.18);
+  border: 1px solid rgba(124,58,237,0.35);
+  border-radius: 10px;
+  font-size: 0.92em;
+  vertical-align: baseline;
 }
-.ctx-chip-icon { color: rgba(124,58,237,0.8); flex-shrink: 0; }
-.ctx-chip-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ctx-chip-remove {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: rgba(255,255,255,0.35);
-  padding: 0;
-  display: flex;
-  align-items: center;
-  margin-left: 1px;
-}
-.ctx-chip-remove:hover { color: rgba(255,255,255,0.8); }
+.mention-pill-icon { color: rgba(167,139,250,0.95); flex-shrink: 0; }
 
 /* Context usage bar */
 .ctx-usage-bar-wrap {
@@ -2634,6 +2599,7 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands,
 }
 .status-cost { color: #a78bfa; }
 .status-busy { color: #a78bfa; animation: blink 1s step-end infinite; }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 .status-queued { color: rgba(255,255,255,0.3); font-family: var(--font-mono); }
 
 /* Command suggestions */

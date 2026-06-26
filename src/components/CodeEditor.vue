@@ -25,6 +25,7 @@ import { css } from "@codemirror/lang-css";
 import { markdown } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
 import { lspExtension } from "@/lib/lsp";
+import { jumpToDefinition } from "@codemirror/lsp-client";
 import { useUIStore } from "@/stores/ui";
 import { useEditorContextStore } from "@/stores/editorContext";
 
@@ -247,6 +248,7 @@ onMounted(async () => {
   // the editor always mounts.
   const lspExt = await lspExtension(props.path, props.cwd);
   if (!host.value) return; // leaf closed while we awaited
+  const hasLsp = !Array.isArray(lspExt) || lspExt.length > 0;
 
   const state = EditorState.create({
     doc: content,
@@ -254,6 +256,19 @@ onMounted(async () => {
       basicSetup,
       detectLanguage(props.path),
       lspExt,
+      // Cmd/Ctrl-click → go to definition (VS Code feel). F12 already bound by
+      // languageServerSupport. ponytail: only when an LSP server is active.
+      ...(hasLsp ? [EditorView.domEventHandlers({
+        mousedown(e, view) {
+          if (!(e.metaKey || e.ctrlKey)) return false;
+          const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+          if (pos == null) return false;
+          view.dispatch({ selection: { anchor: pos } });
+          jumpToDefinition(view);
+          e.preventDefault();
+          return true;
+        },
+      })] : []),
       oneDark,
       themeCompartment.of(editorTheme()),
       EditorView.updateListener.of((u) => {
