@@ -174,9 +174,7 @@
           :title="activePermMeta.title"
           @click="permMenuOpen = !permMenuOpen"
         >
-          <PhShieldWarning v-if="activePermMode === 'bypassPermissions'" :size="13" weight="bold" />
-          <PhPencilSimple v-else-if="activePermMode === 'acceptEdits'" :size="13" weight="bold" />
-          <PhShieldCheck v-else :size="13" weight="bold" />
+          <component :is="PERM_ICON[activePermMode]" :size="13" weight="bold" />
           <span class="mb-wt-label">{{ activePermMeta.label }}</span>
         </button>
         <div v-if="permMenuOpen" class="mb-wt-menu">
@@ -189,9 +187,7 @@
             :title="PERM_META[m].title"
             @click="selectPermMode(m)"
           >
-            <PhShieldWarning v-if="m === 'bypassPermissions'" :size="14" weight="bold" />
-            <PhPencilSimple v-else-if="m === 'acceptEdits'" :size="14" weight="bold" />
-            <PhShieldCheck v-else :size="14" weight="bold" />
+            <component :is="PERM_ICON[m]" :size="14" weight="bold" />
             <div class="mb-wt-item-text">
               <span class="mb-wt-item-title">{{ PERM_META[m].label }}</span>
               <span class="mb-wt-item-sub">{{ PERM_META[m].title }}</span>
@@ -220,7 +216,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
-import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu, PhGear, PhArrowCounterClockwise, PhShieldWarning, PhPencilSimple, PhShieldCheck } from "@phosphor-icons/vue";
+import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu, PhGear, PhArrowCounterClockwise, PhShieldWarning, PhPencilSimple, PhShieldCheck, PhListChecks, PhFastForward } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ClaudeChat from "./ClaudeChat.vue";
@@ -479,7 +475,6 @@ function selectWorktreeMode(v: boolean) {
 // Manager model — its own key, default Sonnet, switchable from the strip.
 const MANAGER_MODEL_KEY = "burrow.manager.model";
 const MANAGER_MODELS = [
-  { id: "auto", label: "Auto", note: "Let Claude Code pick the model adaptively" },
   { id: "claude-sonnet-4-6", label: "Sonnet 4.6", note: "Recommended — balanced orchestration" },
   { id: "claude-opus-4-8", label: "Opus 4.8", note: "Strongest judgment — heavy multi-agent work" },
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", note: "Cheapest — simple dispatch only" },
@@ -503,14 +498,25 @@ function selectManagerModel(id: string) {
   chatRefs.forEach((c) => (c as { selectModel?: (m: string) => void }).selectModel?.(id));
 }
 
-// Permission mode (Ask/Auto-edit/Bypass) — shared with active chat
-type PermMode = "default" | "acceptEdits" | "bypassPermissions";
+// Permission mode — shared with active chat. Mirrors `claude --permission-mode`.
+type PermMode = "default" | "auto" | "acceptEdits" | "plan" | "dontAsk" | "bypassPermissions";
 const PERM_META: Record<PermMode, { label: string; title: string; danger?: boolean }> = {
   default: { label: "Ask", title: "Ask before edits & commands" },
-  acceptEdits: { label: "Auto-edit", title: "Auto-accept file edits; still ask for other tools" },
+  auto: { label: "Auto", title: "Claude decides when to ask" },
+  acceptEdits: { label: "Accept Edits", title: "Auto-accept file edits; still ask for other tools" },
+  plan: { label: "Plan Mode", title: "Plan only — no edits or commands until you approve" },
+  dontAsk: { label: "Don't Ask", title: "Run edits & commands without asking; still blocks dangerous ops" },
   bypassPermissions: { label: "Bypass", title: "Skip ALL permission checks", danger: true },
 };
-const PERM_MODES: PermMode[] = ["default", "acceptEdits", "bypassPermissions"];
+const PERM_MODES: PermMode[] = ["default", "auto", "acceptEdits", "plan", "dontAsk", "bypassPermissions"];
+const PERM_ICON: Record<PermMode, unknown> = {
+  default: PhShieldCheck,
+  auto: PhSparkle,
+  acceptEdits: PhPencilSimple,
+  plan: PhListChecks,
+  dontAsk: PhFastForward,
+  bypassPermissions: PhShieldWarning,
+};
 const permMenuOpen = ref(false);
 // localStorage isn't reactive — mirror the active session's perm mode in a ref and
 // re-read whenever the active session changes. Keys match ClaudeChat's so a mode set
@@ -521,7 +527,7 @@ const activePermMode = ref<PermMode>("default");
 function refreshPermMode() {
   const sid = activeSessionId.value;
   const v = sid ? localStorage.getItem(PERM_KEY(sid)) : null;
-  activePermMode.value = (v === "acceptEdits" || v === "bypassPermissions") ? v : "default";
+  activePermMode.value = (v && (PERM_MODES as string[]).includes(v)) ? (v as PermMode) : "default";
 }
 watch(activeSessionId, refreshPermMode, { immediate: true });
 const activePermMeta = computed(() => PERM_META[activePermMode.value]);

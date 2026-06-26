@@ -404,9 +404,7 @@
                 :title="permMeta.title"
                 @click="togglePermMenu"
               >
-                <PhShieldWarning v-if="permMode === 'bypassPermissions'" :size="13" weight="bold" />
-                <PhPencilSimple v-else-if="permMode === 'acceptEdits'" :size="13" weight="bold" />
-                <PhShieldCheck v-else :size="13" weight="bold" />
+                <component :is="PERM_ICON[permMode]" :size="13" weight="bold" />
                 <span class="perm-mode-label">{{ permMeta.label }}</span>
                 <PhCaretDown :size="9" weight="bold" class="perm-mode-caret" />
               </button>
@@ -426,9 +424,7 @@
                     :title="PERM_META[m].title"
                     @click="selectPermMode(m)"
                   >
-                    <PhShieldWarning v-if="m === 'bypassPermissions'" :size="13" weight="bold" />
-                    <PhPencilSimple v-else-if="m === 'acceptEdits'" :size="13" weight="bold" />
-                    <PhShieldCheck v-else :size="13" weight="bold" />
+                    <component :is="PERM_ICON[m]" :size="13" weight="bold" />
                     <span>{{ PERM_META[m].label }}</span>
                   </button>
                 </div>
@@ -513,7 +509,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
-import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown, PhCaretRight, PhX, PhUserGear, PhClock, PhFile } from "@phosphor-icons/vue";
+import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown, PhCaretRight, PhX, PhUserGear, PhClock, PhFile, PhSparkle, PhFastForward } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
@@ -621,7 +617,6 @@ async function selectProfile(id: string) {
 
 // Model switcher
 const CLAUDE_MODELS = [
-  { id: "auto", label: "Auto" },
   { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
   { id: "claude-opus-4-8", label: "Opus 4.8" },
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
@@ -768,29 +763,44 @@ const inputEl = ref<HTMLTextAreaElement | null>(null);
 const suggestionsEl = ref<HTMLElement | null>(null);
 let unlisten: UnlistenFn | null = null;
 
-// Dangerous mode (bypass all permissions) — persisted per chatId
-// Permission mode (per-chat, persisted). Mirrors the VS Code extension's mode picker.
-type PermMode = "default" | "acceptEdits" | "bypassPermissions";
+// Permission mode (per-chat, persisted). Mirrors `claude --permission-mode`:
+// default | auto | acceptEdits | plan | dontAsk | bypassPermissions.
+type PermMode = "default" | "auto" | "acceptEdits" | "plan" | "dontAsk" | "bypassPermissions";
 const PERM_KEY = (id: number) => `burrow.claude.permMode.${id}`;
 const PERM_LAST_KEY = "burrow.claude.permMode.last";
+const PERM_VALUES: PermMode[] = ["default", "auto", "acceptEdits", "plan", "dontAsk", "bypassPermissions"];
+function isPermMode(v: unknown): v is PermMode {
+  return typeof v === "string" && (PERM_VALUES as string[]).includes(v);
+}
 function loadPermMode(id: number): PermMode {
   const v = localStorage.getItem(PERM_KEY(id));
-  if (v === "acceptEdits" || v === "bypassPermissions" || v === "default") return v;
+  if (isPermMode(v)) return v;
   // Migrate the old boolean "dangerous mode" flag → bypassPermissions.
   if (localStorage.getItem(`burrow.claude.dangerous.${id}`) === "1") return "bypassPermissions";
   // New chat: inherit the last-used mode so the user doesn't have to re-pick every time.
   const last = localStorage.getItem(PERM_LAST_KEY);
-  if (last === "acceptEdits" || last === "bypassPermissions" || last === "default") return last;
+  if (isPermMode(last)) return last;
   return "default";
 }
 const permMode = ref<PermMode>(loadPermMode(props.chatId));
 const PERM_META: Record<PermMode, { label: string; title: string; danger?: boolean }> = {
   default: { label: "Ask", title: "Ask before edits & commands (click to change)" },
-  acceptEdits: { label: "Auto-edit", title: "Auto-accept file edits; still ask for other tools (click to change)" },
+  auto: { label: "Auto", title: "Claude decides when to ask (click to change)" },
+  acceptEdits: { label: "Accept Edits", title: "Auto-accept file edits; still ask for other tools (click to change)" },
+  plan: { label: "Plan Mode", title: "Plan only — no edits or commands until you approve (click to change)" },
+  dontAsk: { label: "Don't Ask", title: "Run edits & commands without asking; still blocks dangerous ops (click to change)" },
   bypassPermissions: { label: "Bypass", title: "Skip ALL permission checks (click to change)", danger: true },
 };
 const permMeta = computed(() => PERM_META[permMode.value]);
-const PERM_MODES: PermMode[] = ["default", "acceptEdits", "bypassPermissions"];
+const PERM_MODES: PermMode[] = PERM_VALUES;
+const PERM_ICON: Record<PermMode, unknown> = {
+  default: PhShieldCheck,
+  auto: PhSparkle,
+  acceptEdits: PhPencilSimple,
+  plan: PhListChecks,
+  dontAsk: PhFastForward,
+  bypassPermissions: PhShieldWarning,
+};
 const permMenuOpen = ref(false);
 const permBtnEl = ref<HTMLElement | null>(null);
 const permMenuEl = ref<HTMLElement | null>(null);

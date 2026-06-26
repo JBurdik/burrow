@@ -2414,6 +2414,8 @@ async fn claude_start(
         Some("acceptEdits") => "acceptEdits",
         Some("bypassPermissions") => "bypassPermissions",
         Some("plan") => "plan",
+        Some("auto") => "auto",
+        Some("dontAsk") => "dontAsk",
         _ => "default",
     };
     let mut args = vec![
