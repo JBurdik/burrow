@@ -300,6 +300,26 @@
           </div>
 
           <div class="settings-group">
+            <span class="group-label">Chat</span>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Default agent</span>
+                <span class="field-desc">Agent used when opening a new chat. <code>claude-acp</code> / <code>gemini</code> / <code>codex</code> use the ACP protocol.</span>
+              </div>
+              <select
+                class="select"
+                :value="ui.defaultChatAgent"
+                @change="ui.defaultChatAgent = ($event.target as HTMLSelectElement).value as typeof ui.defaultChatAgent"
+              >
+                <option value="claude">Claude (stream-json, default)</option>
+                <option value="claude-acp">Claude ACP (opt-in)</option>
+                <option value="gemini">Gemini</option>
+                <option value="codex">Codex / OpenAI</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-group">
             <span class="group-label">Floating windows</span>
             <div class="field">
               <div class="field-info">

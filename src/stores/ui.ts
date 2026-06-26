@@ -86,6 +86,7 @@ interface Prefs {
   sidebarWidth: number; // left sidebar panel width in px
   rightPanelWidth: number; // right panel width in px
   toastPosition: ToastPosition; // screen anchor for toast notifications
+  defaultChatAgent: 'claude' | 'claude-acp' | 'gemini' | 'codex'; // default agent for new chat sessions
 }
 
 // Screen anchor for the toast stack (ToastStack.vue).
@@ -159,6 +160,7 @@ const DEFAULT_PREFS: Prefs = {
   sidebarWidth: 220,
   rightPanelWidth: 300,
   toastPosition: "bottom-left",
+  defaultChatAgent: "claude",
 };
 
 function loadPrefs(): Prefs {
@@ -223,6 +225,7 @@ export const useUIStore = defineStore("ui", () => {
   const sidebarWidth = ref(loaded.sidebarWidth ?? 220);
   const rightPanelWidth = ref(loaded.rightPanelWidth ?? 300);
   const toastPosition = ref<ToastPosition>(loaded.toastPosition ?? "bottom-left");
+  const defaultChatAgent = ref<'claude' | 'claude-acp' | 'gemini' | 'codex'>(loaded.defaultChatAgent ?? 'claude');
   // In-memory blob URL for the current wallpaper (not persisted).
   const bgImageUrl = ref<string>("");
   const missionActiveCount = ref(0);
@@ -377,6 +380,7 @@ export const useUIStore = defineStore("ui", () => {
         sidebarWidth: sidebarWidth.value,
         rightPanelWidth: rightPanelWidth.value,
         toastPosition: toastPosition.value,
+        defaultChatAgent: defaultChatAgent.value,
       } satisfies Prefs),
     );
   }
@@ -530,5 +534,6 @@ export const useUIStore = defineStore("ui", () => {
     sidebarWidth,
     rightPanelWidth,
     toastPosition,
+    defaultChatAgent,
   };
 });

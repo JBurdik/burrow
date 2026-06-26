@@ -968,9 +968,9 @@ function activateTab(id: number) {
 function openClaudeChat(chatId?: number) {
   let session: import("@/stores/claudeChats").ClaudeSession;
   if (chatId != null) {
-    session = chatsStore.sessions.find((s) => s.id === chatId) ?? chatsStore.create(props.workspaceId);
+    session = chatsStore.sessions.find((s) => s.id === chatId) ?? chatsStore.create(props.workspaceId, { agentKind: uiStore.defaultChatAgent });
   } else {
-    session = chatsStore.create(props.workspaceId);
+    session = chatsStore.create(props.workspaceId, { agentKind: uiStore.defaultChatAgent });
   }
   // Focus existing tab if already open
   const existing = tabs.value.find(
