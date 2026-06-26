@@ -79,11 +79,51 @@
   <h1>Burrow — Changelog</h1>
   <div class="tagline">Historie verzí v češtině. Co se změnilo a proč.</div>
 
+  <!-- v2.16.0 -->
+  <div class="release">
+    <div class="release-header">
+      <span class="version">v2.16.0</span>
+      <span class="tag tag-latest">nejnovější</span>
+      <span class="date">červen 2026</span>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Chat UI — zásadní přepracování</div>
+      <ul>
+        <li><strong>Výstupy nástrojů inline</strong> — rozbalitelné karty nástrojů (<code>Bash</code>, <code>Read</code>, …) teď zobrazují i výstup. Ve sbaleném stavu se ukáže první řádek výstupu jako preview; rozbalením se zobrazí celý blok.</li>
+        <li><strong>Fronta zpráv (Zed-style)</strong> — pokud je Claude zaneprázdněný, nová zpráva se zařadí do fronty místo čekání. Fronta se zobrazí jako sbalitelný panel nad inputem s počtem zpráv, možností odebrat nebo okamžitě odeslat kteroukoli z nich.</li>
+        <li><strong>Indikátor práce</strong> — tři pulzující tečky s popisem aktuální aktivity (<code>currentActivity</code>) se zobrazí nad textarou, když Claude zpracovává odpověď.</li>
+        <li><strong>Context usage bar</strong> — barevný proužek pod inputem ukazuje poměr spotřebovaných tokenů vůči limitu kontextového okna. Mění barvu při blížícím se limitu.</li>
+        <li><strong>Cena tahu v toolbaru</strong> — cena session (v USD) se zobrazuje přímo v toolbaru vedle tlačítka Send místo ve stavovém řádku.</li>
+        <li><strong>Přesun permission pickeru</strong> — výběr permission mode byl přesunut z hlavičky chatu do toolbaru (vedle ostatních nástrojů). Hlavička je teď čistší.</li>
+        <li><strong>Čipky přiložených souborů</strong> — soubory přidané přes @-mention se zobrazí jako odstraňitelné čipky nad inputem.</li>
+      </ul>
+    </div>
+
+    <div class="section feat">
+      <div class="section-label">Permission flow — šest módů + nový dialog</div>
+      <ul>
+        <li><strong>Šest permission módů</strong> — paleta rozšířena z původních tří na šest: <code>Ask</code> (výzva před každou akcí), <code>Auto</code> (Claude sám rozhoduje), <code>Accept Edits</code> (automaticky přijímá editace souborů), <code>Plan Mode</code> (jen plánuje, žádné akce), <code>Don't Ask</code> (provede bez dotazu, blokuje jen nebezpečné), <code>Bypass</code> (přeskočí vše). Každý mód má vlastní ikonu.</li>
+        <li><strong>Rozevírací Allow menu</strong> — tlačítko Allow dostalo šipku s dropdownem: "Allow once", "Always allow [příkaz]…", "Always allow [nástroj]", "Deny". Granulárněji než dřív, kdy existovalo jen Allow / Always / Deny.</li>
+        <li><strong>Rust: auto + dontAsk</strong> — <code>claude_start</code> v <code>lib.rs</code> nyní správně mapuje <code>"auto"</code> a <code>"dontAsk"</code> na parametr <code>--permission-mode</code>; dřív padaly na výchozí <code>default</code>.</li>
+      </ul>
+    </div>
+
+    <div class="section fix">
+      <div class="section-label">Opravy</div>
+      <ul>
+        <li><strong>Sidebar dialogy oříznuté na sidebar</strong> — <code>backdrop-filter</code> na sidebaru vytvářel nový containing block, který ořezával <code>position:fixed</code> dialogy (výběr agenta, model picker…). Dialogy jsou teď teleportovány do <code>&lt;body&gt;</code>.</li>
+        <li><strong>Chybějící import PhBell</strong> — <code>PhBell</code> nebyl importován v <code>Sidebar.vue</code>, Vue vypisovalo varování do konzole. Opraveno přidáním do importu.</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr class="divider" />
+
   <!-- v2.15.10 -->
   <div class="release">
     <div class="release-header">
       <span class="version">v2.15.10</span>
-      <span class="tag tag-latest">nejnovější</span>
       <span class="date">červen 2026</span>
     </div>
 
