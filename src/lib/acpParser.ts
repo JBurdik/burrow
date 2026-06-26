@@ -1,0 +1,46 @@
+import type { AgentEvent, PermissionOption } from './agentTransport'
+
+export function parseAcpUpdate(params: unknown): AgentEvent | null {
+  const p = params as Record<string, unknown>
+  const u = p?.update as Record<string, unknown> | undefined
+  if (!u) return null
+  const disc = u.sessionUpdate as string
+
+  switch (disc) {
+    case 'agent_message_chunk': {
+      const c = u.content as Record<string, unknown> | undefined
+      return { kind: 'text_chunk', messageId: (u.messageId as string) ?? 'msg', text: (c?.text as string) ?? '' }
+    }
+    case 'agent_thought_chunk': {
+      const c = u.content as Record<string, unknown> | undefined
+      return { kind: 'thinking_chunk', text: (c?.text as string) ?? '' }
+    }
+    case 'tool_call':
+      return { kind: 'tool_call', toolCallId: u.toolCallId as string, title: (u.title as string) ?? 'Tool' }
+    case 'tool_call_update': {
+      const status = u.status as string
+      if (status !== 'completed' && status !== 'failed') return null
+      const blocks = (u.content as Array<Record<string, unknown>>) ?? []
+      const text = blocks
+        .map(b => { const inner = b.content as Record<string, unknown> | undefined; return inner?.type === 'text' ? String(inner.text ?? '') : '' })
+        .filter(Boolean).join('\n')
+      return { kind: 'tool_output', toolCallId: u.toolCallId as string, output: text, done: status === 'completed' }
+    }
+    default:
+      return null
+  }
+}
+
+export function parseAcpPermRequest(raw: unknown): {
+  rpcId: number; sessionId: string; toolCallId: string; options: PermissionOption[]
+} | null {
+  const msg = raw as Record<string, unknown>
+  if (msg.method !== 'session/request_permission') return null
+  const rpcId = msg.id as number
+  const p = msg.params as Record<string, unknown>
+  const toolCall = p?.toolCall as Record<string, unknown> | undefined
+  const options = ((p?.options ?? []) as Array<Record<string, unknown>>).map(o => ({
+    optionId: o.optionId as string, name: o.name as string, kind: o.kind as string
+  }))
+  return { rpcId, sessionId: p?.sessionId as string, toolCallId: toolCall?.toolCallId as string, options }
+}
