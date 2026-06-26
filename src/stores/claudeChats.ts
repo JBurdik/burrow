@@ -21,8 +21,8 @@ export interface ClaudeSession {
   control?: boolean;
   // Set when the user manually renames the tab — prevents auto-title from overwriting.
   pinnedTitle?: boolean;
-  // Which agent backs this chat (default 'claude'); 'gemini' forces ACP transport.
-  agentKind?: 'claude' | 'gemini';
+  // Which agent backs this chat (default 'claude'); 'gemini'/'codex' force ACP transport.
+  agentKind?: 'claude' | 'gemini' | 'codex';
   // Wire protocol: 'stream-json' (Claude CLI) or 'acp' (Agent Client Protocol).
   transport?: 'stream-json' | 'acp';
 }
@@ -129,10 +129,10 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
   }
 
   // Create and activate a new session for this workspace.
-  function create(workspaceId: number, opts?: { agentKind?: 'claude' | 'gemini' }): ClaudeSession {
+  function create(workspaceId: number, opts?: { agentKind?: 'claude' | 'gemini' | 'codex' }): ClaudeSession {
     const id = nextId++;
     const agentKind = opts?.agentKind ?? 'claude';
-    const transport: 'stream-json' | 'acp' = agentKind === 'gemini' ? 'acp' : 'stream-json';
+    const transport: 'stream-json' | 'acp' = agentKind !== 'claude' ? 'acp' : 'stream-json';
     const session: ClaudeSession = {
       id,
       workspaceId,

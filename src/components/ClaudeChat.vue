@@ -554,33 +554,36 @@ const props = defineProps<{
   defaultModel?: string;
   // Wire transport: "stream-json" (Claude CLI, default) or "acp".
   transport?: 'stream-json' | 'acp';
-  // Which agent to run. "gemini" forces the ACP transport.
-  agentKind?: 'claude' | 'gemini';
+  // Which agent to run. "gemini"/"codex" force the ACP transport.
+  agentKind?: 'claude' | 'gemini' | 'codex';
 }>();
 
 const chats = useClaudeChatsStore();
 const notifStore = useNotificationsStore();
 const editorCtx = useEditorContextStore();
 
-// "acp" when agentKind=gemini or the transport prop says so; else "stream-json".
+// "acp" when agentKind!=claude or the transport prop says so; else "stream-json".
 const effectiveTransport = computed(() =>
-  props.agentKind === 'gemini' || props.transport === 'acp' ? 'acp' : 'stream-json'
+  agentKind.value !== 'claude' || props.transport === 'acp' ? 'acp' : 'stream-json'
 );
-// Per-agent accent. Only the COLOR differs; for Claude it resolves to the
-// existing chat accent so the UI is pixel-identical.
-const agentAccentColor = computed(() =>
-  props.agentKind === 'gemini' ? '#1a73e8' : 'var(--chat-accent)'
-);
+// Per-agent accent color.
+const agentAccentColor = computed(() => {
+  if (agentKind.value === 'gemini') return '#1a73e8';
+  if (agentKind.value === 'codex') return '#74aa9c';
+  return 'var(--chat-accent)';
+});
 // ACP permission: JSON-RPC id of the agent's blocking request_permission.
 const acpPermRpcId = ref<number | null>(null);
 // Local mirror of the session's agentKind, drives the header switcher icon.
-const agentKind = ref<'claude' | 'gemini'>(
+const agentKind = ref<'claude' | 'gemini' | 'codex'>(
   chats.sessions.find((s) => s.id === props.chatId)?.agentKind ?? props.agentKind ?? 'claude'
 );
+const AGENT_CYCLE: Array<'claude' | 'gemini' | 'codex'> = ['claude', 'gemini', 'codex'];
 async function toggleAgent() {
-  const next: 'claude' | 'gemini' = agentKind.value === 'gemini' ? 'claude' : 'gemini';
+  const idx = AGENT_CYCLE.indexOf(agentKind.value);
+  const next = AGENT_CYCLE[(idx + 1) % AGENT_CYCLE.length];
   agentKind.value = next;
-  chats.sync(props.chatId, { agentKind: next, transport: next === 'gemini' ? 'acp' : 'stream-json' });
+  chats.sync(props.chatId, { agentKind: next, transport: next === 'claude' ? 'stream-json' : 'acp' });
   await clearChat();
 }
 
@@ -1605,7 +1608,7 @@ async function abortTurn() {
   suppressNextDone.value = true; // abort + restart — don't toast on the teardown `exit`
   if (effectiveTransport.value === "acp") {
     await invoke("acp_stop", { id: props.chatId }).catch(() => {});
-    await invoke("acp_start", { id: props.chatId, kind: agentKind.value === "gemini" ? "gemini" : "claude", cwd: props.cwd }).catch(() => {});
+    await invoke("acp_start", { id: props.chatId, kind: agentKind.value, cwd: props.cwd }).catch(() => {});
     busy.value = false;
     messageQueue.value = [];
     messages.value = messages.value.filter((m) => m.role !== "queued");
@@ -1654,7 +1657,7 @@ async function clearChat() {
   localStorage.removeItem(msgKey(props.chatId));
   chats.sync(props.chatId, { claudeSessionId: "", busy: false, messageCount: 0, title: `Chat` });
   if (acp) {
-    await invoke("acp_start", { id: props.chatId, kind: agentKind.value === "gemini" ? "gemini" : "claude", cwd: props.cwd }).catch(() => {});
+    await invoke("acp_start", { id: props.chatId, kind: agentKind.value, cwd: props.cwd }).catch(() => {});
     return;
   }
   await invoke("claude_start", {
@@ -1837,7 +1840,7 @@ onMounted(async () => {
     acpReqUL = await listen<string>(`acp-req-${props.chatId}`, (e) => onAcpReq(e.payload));
     await invoke("acp_start", {
       id: props.chatId,
-      kind: agentKind.value === "gemini" ? "gemini" : "claude",
+      kind: agentKind.value,
       cwd: props.cwd,
     }).catch((e) => { console.error("acp_start failed:", e); });
     refreshChanges();

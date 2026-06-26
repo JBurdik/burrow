@@ -2679,6 +2679,12 @@ async fn acp_start(
                 ("npx", vec!["@agentclientprotocol/claude-agent-acp".to_string()], env)
             }
             "gemini" => ("gemini", vec!["--acp".to_string()], std::collections::HashMap::new()),
+            "codex" => {
+                let mut env = std::collections::HashMap::new();
+                if let Ok(k) = std::env::var("CODEX_API_KEY") { env.insert("CODEX_API_KEY".to_string(), k); }
+                if let Ok(k) = std::env::var("OPENAI_API_KEY") { env.insert("OPENAI_API_KEY".to_string(), k); }
+                ("codex", vec!["--acp".to_string()], env)
+            }
             other => return Err(format!("unknown acp kind: {other}")),
         };
 
