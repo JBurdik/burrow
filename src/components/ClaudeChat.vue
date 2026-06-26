@@ -554,8 +554,8 @@ const props = defineProps<{
   defaultModel?: string;
   // Wire transport: "stream-json" (Claude CLI, default) or "acp".
   transport?: 'stream-json' | 'acp';
-  // Which agent to run. "gemini"/"codex" force the ACP transport.
-  agentKind?: 'claude' | 'gemini' | 'codex';
+  // Which agent to run. All except 'claude' use ACP transport.
+  agentKind?: 'claude' | 'claude-acp' | 'gemini' | 'codex';
 }>();
 
 const chats = useClaudeChatsStore();
@@ -570,15 +570,16 @@ const effectiveTransport = computed(() =>
 const agentAccentColor = computed(() => {
   if (agentKind.value === 'gemini') return '#1a73e8';
   if (agentKind.value === 'codex') return '#74aa9c';
+  if (agentKind.value === 'claude-acp') return '#a855f7';
   return 'var(--chat-accent)';
 });
 // ACP permission: JSON-RPC id of the agent's blocking request_permission.
 const acpPermRpcId = ref<number | null>(null);
 // Local mirror of the session's agentKind, drives the header switcher icon.
-const agentKind = ref<'claude' | 'gemini' | 'codex'>(
+const agentKind = ref<'claude' | 'claude-acp' | 'gemini' | 'codex'>(
   chats.sessions.find((s) => s.id === props.chatId)?.agentKind ?? props.agentKind ?? 'claude'
 );
-const AGENT_CYCLE: Array<'claude' | 'gemini' | 'codex'> = ['claude', 'gemini', 'codex'];
+const AGENT_CYCLE: Array<'claude' | 'claude-acp' | 'gemini' | 'codex'> = ['claude', 'claude-acp', 'gemini', 'codex'];
 async function toggleAgent() {
   const idx = AGENT_CYCLE.indexOf(agentKind.value);
   const next = AGENT_CYCLE[(idx + 1) % AGENT_CYCLE.length];
@@ -1608,7 +1609,7 @@ async function abortTurn() {
   suppressNextDone.value = true; // abort + restart — don't toast on the teardown `exit`
   if (effectiveTransport.value === "acp") {
     await invoke("acp_stop", { id: props.chatId }).catch(() => {});
-    await invoke("acp_start", { id: props.chatId, kind: agentKind.value, cwd: props.cwd }).catch(() => {});
+    await invoke("acp_start", { id: props.chatId, kind: agentKind.value === 'claude-acp' ? 'claude' : agentKind.value, cwd: props.cwd }).catch(() => {});
     busy.value = false;
     messageQueue.value = [];
     messages.value = messages.value.filter((m) => m.role !== "queued");
@@ -1657,7 +1658,7 @@ async function clearChat() {
   localStorage.removeItem(msgKey(props.chatId));
   chats.sync(props.chatId, { claudeSessionId: "", busy: false, messageCount: 0, title: `Chat` });
   if (acp) {
-    await invoke("acp_start", { id: props.chatId, kind: agentKind.value, cwd: props.cwd }).catch(() => {});
+    await invoke("acp_start", { id: props.chatId, kind: agentKind.value === 'claude-acp' ? 'claude' : agentKind.value, cwd: props.cwd }).catch(() => {});
     return;
   }
   await invoke("claude_start", {
@@ -1840,7 +1841,7 @@ onMounted(async () => {
     acpReqUL = await listen<string>(`acp-req-${props.chatId}`, (e) => onAcpReq(e.payload));
     await invoke("acp_start", {
       id: props.chatId,
-      kind: agentKind.value,
+      kind: agentKind.value === 'claude-acp' ? 'claude' : agentKind.value,
       cwd: props.cwd,
     }).catch((e) => { console.error("acp_start failed:", e); });
     refreshChanges();
