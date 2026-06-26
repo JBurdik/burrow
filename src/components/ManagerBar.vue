@@ -165,6 +165,41 @@
           </button>
         </div>
       </div>
+
+      <!-- Permission mode switcher -->
+      <div class="mb-wt">
+        <button
+          class="mb-wt-btn"
+          :class="{ 'mb-wt-btn-danger': activePermMeta.danger }"
+          :title="activePermMeta.title"
+          @click="permMenuOpen = !permMenuOpen"
+        >
+          <PhShieldWarning v-if="activePermMode === 'bypassPermissions'" :size="13" weight="bold" />
+          <PhPencilSimple v-else-if="activePermMode === 'acceptEdits'" :size="13" weight="bold" />
+          <PhShieldCheck v-else :size="13" weight="bold" />
+          <span class="mb-wt-label">{{ activePermMeta.label }}</span>
+        </button>
+        <div v-if="permMenuOpen" class="mb-wt-menu">
+          <div class="mb-wt-menu-head">Permission mode</div>
+          <button
+            v-for="m in PERM_MODES"
+            :key="m"
+            class="mb-wt-item"
+            :class="{ 'mb-wt-item-on': activePermMode === m, 'mb-wt-item-danger': PERM_META[m].danger }"
+            :title="PERM_META[m].title"
+            @click="selectPermMode(m)"
+          >
+            <PhShieldWarning v-if="m === 'bypassPermissions'" :size="14" weight="bold" />
+            <PhPencilSimple v-else-if="m === 'acceptEdits'" :size="14" weight="bold" />
+            <PhShieldCheck v-else :size="14" weight="bold" />
+            <div class="mb-wt-item-text">
+              <span class="mb-wt-item-title">{{ PERM_META[m].label }}</span>
+              <span class="mb-wt-item-sub">{{ PERM_META[m].title }}</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
       <button
         class="mb-btn"
         :title="expanded ? 'Collapse Manager (⌘J)' : 'Expand Manager (⌘J)'"
@@ -185,7 +220,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
-import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu, PhGear, PhArrowCounterClockwise } from "@phosphor-icons/vue";
+import { PhSparkle, PhGitBranch, PhTree, PhCaretDown, PhCaretUp, PhCheck, PhCpu, PhGear, PhArrowCounterClockwise, PhShieldWarning, PhPencilSimple, PhShieldCheck } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ClaudeChat from "./ClaudeChat.vue";
@@ -467,6 +502,44 @@ function selectManagerModel(id: string) {
   chatRefs.forEach((c) => (c as { selectModel?: (m: string) => void }).selectModel?.(id));
 }
 
+// Permission mode (Ask/Auto-edit/Bypass) — shared with active chat
+type PermMode = "default" | "acceptEdits" | "bypassPermissions";
+const PERM_META: Record<PermMode, { label: string; title: string; danger?: boolean }> = {
+  default: { label: "Ask", title: "Ask before edits & commands" },
+  acceptEdits: { label: "Auto-edit", title: "Auto-accept file edits; still ask for other tools" },
+  bypassPermissions: { label: "Bypass", title: "Skip ALL permission checks", danger: true },
+};
+const PERM_MODES: PermMode[] = ["default", "acceptEdits", "bypassPermissions"];
+const permMenuOpen = ref(false);
+// localStorage isn't reactive — mirror the active session's perm mode in a ref and
+// re-read whenever the active session changes. Keys match ClaudeChat's so a mode set
+// here is picked up by the child on mount (loadPermMode) and vice-versa.
+const PERM_KEY = (id: number) => `burrow.claude.permMode.${id}`;
+const PERM_LAST_KEY = "burrow.claude.permMode.last";
+const activePermMode = ref<PermMode>("default");
+function refreshPermMode() {
+  const sid = activeSessionId.value;
+  const v = sid ? localStorage.getItem(PERM_KEY(sid)) : null;
+  activePermMode.value = (v === "acceptEdits" || v === "bypassPermissions") ? v : "default";
+}
+watch(activeSessionId, refreshPermMode, { immediate: true });
+const activePermMeta = computed(() => PERM_META[activePermMode.value]);
+
+async function selectPermMode(m: PermMode) {
+  permMenuOpen.value = false;
+  if (m === activePermMode.value) return;
+  activePermMode.value = m; // optimistic, reactive UI update
+  // Manager owns persistence directly so it works even when the chat isn't mounted
+  // (bar collapsed). The child reads the same key via loadPermMode on next mount.
+  const sid = activeSessionId.value;
+  if (sid) {
+    localStorage.setItem(PERM_KEY(sid), m);
+    localStorage.setItem(PERM_LAST_KEY, m);
+  }
+  // If the chat is mounted & running, apply live (restarts claude with the new mode).
+  await (chatRefs.get(rootId.value) as any)?.selectPermMode?.(m);
+}
+
 // Adopt the active workspace on every switch (no busy guard — the busy repo's
 // chat stays mounted hidden, so re-anchoring can't kill it).
 watch(
@@ -607,9 +680,10 @@ function onResizeUp() {
 // the Manager row instead of behind it.
 const STRIP_H = 38;
 function onDocMouseDown(e: MouseEvent) {
-  if ((wtMenuOpen.value || mdlMenuOpen.value) && !(e.target as HTMLElement)?.closest(".mb-wt")) {
+  if ((wtMenuOpen.value || mdlMenuOpen.value || permMenuOpen.value) && !(e.target as HTMLElement)?.closest(".mb-wt")) {
     wtMenuOpen.value = false;
     mdlMenuOpen.value = false;
+    permMenuOpen.value = false;
   }
 }
 // ── Sub-agent done notifications ─────────────────────────────────────────────
@@ -734,28 +808,33 @@ const managerPrimer = computed(() => {
   flex: 1;
   min-width: 0;
   position: relative;
+  background: #1a1a20;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  overflow: hidden;
+  transition: border-color .15s;
 }
+.mb-quick-wrap:focus-within { border-color: rgba(124,58,237,0.5); }
 .mb-quick {
-  width: 100%;
-  min-height: 26px;
-  max-height: 120px;
-  box-sizing: border-box;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
-  border-radius: 7px;
-  background: var(--bg-base, #0d0d0d);
-  color: var(--text-primary, #e2e8f0);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  padding: 4px 10px;
-  outline: none;
-  resize: none;
-  overflow-x: hidden;
-  overflow-y: auto;
-  line-height: 18px;
   display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,0.88);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  padding: 12px 14px 6px;
+  resize: none;
+  min-height: 40px;
+  max-height: 160px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  box-sizing: border-box;
 }
-.mb-quick::placeholder { color: var(--text-muted, #64748b); }
-.mb-quick:focus { border-color: var(--accent, #3b82f6); }
+.mb-quick::placeholder { color: rgba(255,255,255,0.5); }
+.mb-quick::-webkit-scrollbar { display: none; }
 
 /* Suggestions dropdown above the input */
 .mb-suggestions {
@@ -850,6 +929,11 @@ const managerPrimer = computed(() => {
 .mb-wt-btn:hover { background: var(--bg-hover, rgba(255, 255, 255, 0.08)); color: var(--text-primary, #e2e8f0); }
 .mb-wt-label { font-weight: 500; }
 .mb-wt-caret { opacity: 0.6; }
+.mb-wt-btn-danger { color: #ef4444; }
+.mb-wt-btn-danger:hover { background: rgba(239, 68, 68, 0.12); }
+.mb-wt-item-danger { color: #ef4444; }
+.mb-wt-item-danger:hover { background: rgba(239, 68, 68, 0.1); }
+.mb-wt-item-danger > svg:first-child { color: #ef4444; }
 
 .mb-wt-menu {
   position: absolute;

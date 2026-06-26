@@ -5,44 +5,6 @@
       <ClaudeIcon :size="16" class="chat-header-icon" />
       <span class="chat-header-title">Claude</span>
       <span class="chat-header-cwd" :title="cwd">{{ cwdDisplay }}</span>
-      <div class="perm-mode-dropdown">
-        <button
-          ref="permBtnEl"
-          class="chat-header-btn perm-mode-btn"
-          :class="{ 'btn-danger-active': permMeta.danger, 'btn-active': permMode === 'acceptEdits' }"
-          :title="permMeta.title"
-          @click="togglePermMenu"
-        >
-          <PhShieldWarning v-if="permMode === 'bypassPermissions'" :size="13" weight="bold" />
-          <PhPencilSimple v-else-if="permMode === 'acceptEdits'" :size="13" weight="bold" />
-          <PhShieldCheck v-else :size="13" weight="bold" />
-          <span class="perm-mode-label">{{ permMeta.label }}</span>
-          <PhCaretDown :size="9" weight="bold" class="perm-mode-caret" />
-        </button>
-        <!-- Teleported to body so the float-card's `overflow:hidden` can't clip it. -->
-        <Teleport to="body">
-          <div
-            v-if="permMenuOpen"
-            ref="permMenuEl"
-            class="perm-mode-menu"
-            :style="{ top: permMenuPos.top + 'px', right: permMenuPos.right + 'px' }"
-          >
-            <button
-              v-for="m in PERM_MODES"
-              :key="m"
-              class="perm-mode-item"
-              :class="{ 'perm-mode-item-active': permMode === m, 'perm-mode-item-danger': PERM_META[m].danger }"
-              :title="PERM_META[m].title"
-              @click="selectPermMode(m)"
-            >
-              <PhShieldWarning v-if="m === 'bypassPermissions'" :size="13" weight="bold" />
-              <PhPencilSimple v-else-if="m === 'acceptEdits'" :size="13" weight="bold" />
-              <PhShieldCheck v-else :size="13" weight="bold" />
-              <span>{{ PERM_META[m].label }}</span>
-            </button>
-          </div>
-        </Teleport>
-      </div>
       <button class="chat-header-btn" title="New conversation" @click="clearChat">
         <PhArrowCounterClockwise :size="13" />
       </button>
@@ -65,15 +27,38 @@
         <span class="perm-title">{{ pendingPermission.toolName }} wants to run</span>
         <code class="perm-detail">{{ permissionDetail }}</code>
       </div>
-      <button class="perm-btn perm-allow" @click="respondPermission(true)" title="Allow once (Y)">
-        Allow <kbd class="perm-kbd">Y</kbd>
-      </button>
-      <button class="perm-btn perm-always" @click="respondPermission(true, { always: true })" title="Always allow this tool">
-        Always
-      </button>
-      <button class="perm-btn perm-deny" @click="respondPermission(false)" title="Deny (N)">
-        Deny <kbd class="perm-kbd">N</kbd>
-      </button>
+      <div class="perm-actions">
+        <div class="perm-allow-group">
+          <button class="perm-btn perm-allow" @click="respondPermission(true)" title="Allow once (Y)">
+            Allow <kbd class="perm-kbd">Y</kbd>
+          </button>
+          <button class="perm-btn perm-allow perm-caret-btn" @click="permDropdownOpen = !permDropdownOpen" title="More options">
+            <PhCaretDown :size="9" weight="bold" />
+          </button>
+          <div v-if="permDropdownOpen" class="perm-dropdown">
+            <button class="perm-dropdown-item" @click="permDropdownOpen = false; respondPermission(true)">
+              Allow once
+            </button>
+            <button
+              v-if="pendingPermission.toolName === 'Bash' && permissionDetail"
+              class="perm-dropdown-item"
+              @click="permDropdownOpen = false; respondPermission(true, { always: true })"
+              :title="`Always allow: ${permissionDetail.split(' ')[0]}`"
+            >
+              Always allow <code class="perm-pattern">{{ permissionDetail.split(' ')[0] }}…</code>
+            </button>
+            <button class="perm-dropdown-item" @click="permDropdownOpen = false; respondPermission(true, { always: true })">
+              Always allow {{ pendingPermission.toolName }}
+            </button>
+            <button class="perm-dropdown-item perm-dropdown-deny" @click="permDropdownOpen = false; respondPermission(false)">
+              Deny <kbd class="perm-kbd">N</kbd>
+            </button>
+          </div>
+        </div>
+        <button class="perm-btn perm-deny" @click="respondPermission(false)" title="Deny (N)">
+          Deny <kbd class="perm-kbd">N</kbd>
+        </button>
+      </div>
     </div>
 
     <!-- File edit: diff preview with Accept / Reject -->
@@ -183,11 +168,34 @@
               <PhCaretRight :size="10" class="tool-caret" :class="{ 'tool-caret-open': msg.toolExpanded }" />
               <PhWrench :size="11" class="tool-icon" />
               <span class="tool-name">{{ msg.text }}</span>
+              <span v-if="msg.toolOutput && !msg.toolExpanded" class="tool-output-preview">{{ msg.toolOutput.split('\n')[0].slice(0, 60) }}</span>
             </div>
           </div>
-          <div v-if="msg.toolExpanded && msg.toolInput" class="agent-msg-row">
+          <div v-if="msg.toolExpanded" class="agent-msg-row">
             <div class="agent-avatar-spacer" />
             <pre class="tool-args">{{ JSON.stringify(msg.toolInput, null, 2) }}</pre>
+          </div>
+          <div v-if="msg.toolExpanded && msg.toolOutput" class="agent-msg-row">
+            <div class="agent-avatar-spacer" />
+            <pre class="tool-output">{{ msg.toolOutput }}</pre>
+          </div>
+        </template>
+
+        <!-- System info marker (permission requested, plan ready, etc.) -->
+        <template v-else-if="msg.role === 'system-info'">
+          <div class="system-info-row">
+            <span class="system-info-pill">{{ msg.text }}</span>
+          </div>
+        </template>
+
+        <!-- Queued message placeholder -->
+        <template v-else-if="msg.role === 'queued'">
+          <div class="user-msg-row">
+            <div class="bubble bubble-queued">
+              <PhClock :size="11" class="queued-icon" />
+              {{ msg.text }}
+            </div>
+            <div class="user-avatar user-avatar-muted">U</div>
           </div>
         </template>
 
@@ -275,6 +283,36 @@
 
     <!-- New-style input bar -->
     <div v-if="!hideComposer" class="chat-input-wrap">
+      <!-- Context chips (files attached via @-mention) -->
+      <div v-if="contextChips.length > 0" class="context-chips">
+        <div v-for="path in contextChips" :key="path" class="ctx-chip">
+          <PhFile :size="10" class="ctx-chip-icon" />
+          <span class="ctx-chip-name">{{ path.split('/').slice(-1)[0] }}</span>
+          <button class="ctx-chip-remove" @click="removeChip(path)" :title="path"><PhX :size="8" weight="bold" /></button>
+        </div>
+      </div>
+
+      <!-- Queued messages panel (Zed-style) -->
+      <div v-if="messageQueue.length > 0" class="queue-panel">
+        <div class="queue-header" @click="queueExpanded = !queueExpanded">
+          <PhCaretDown :size="10" class="queue-caret" :class="{ 'queue-caret-closed': !queueExpanded }" />
+          <span class="queue-title">{{ messageQueue.length }} Queued {{ messageQueue.length === 1 ? 'Message' : 'Messages' }}</span>
+          <button class="queue-clear-all" @click.stop="clearQueue" title="Clear All">Clear All</button>
+        </div>
+        <div v-if="queueExpanded" class="queue-items">
+          <div v-for="(msg, i) in messageQueue" :key="i" class="queue-item">
+            <span class="queue-dot">•</span>
+            <span class="queue-text">{{ msg }}</span>
+            <button class="queue-item-btn" @click="removeQueued(i)" title="Remove"><PhX :size="10" /></button>
+            <button class="queue-item-btn queue-send-now" @click="sendQueuedNow(i)" title="Send Now">Send Now <kbd>↵</kbd></button>
+          </div>
+        </div>
+      </div>
+      <!-- Working indicator — sits above the textarea, only when busy -->
+      <div v-if="busy" class="working-indicator">
+        <span class="working-dot" /><span class="working-dot" /><span class="working-dot" />
+        <span class="working-label">{{ currentActivity }}</span>
+      </div>
       <div class="chat-input-box" :class="{ 'input-queued': busy && inputText.trim() }">
         <textarea
           ref="inputEl"
@@ -357,11 +395,51 @@
                 </div>
               </Teleport>
             </div>
+            <!-- Permission mode switcher -->
+            <div class="perm-mode-dropdown">
+              <button
+                ref="permBtnEl"
+                class="toolbar-btn"
+                :class="{ 'btn-danger-active': permMeta.danger, 'btn-active': permMode === 'acceptEdits' }"
+                :title="permMeta.title"
+                @click="togglePermMenu"
+              >
+                <PhShieldWarning v-if="permMode === 'bypassPermissions'" :size="13" weight="bold" />
+                <PhPencilSimple v-else-if="permMode === 'acceptEdits'" :size="13" weight="bold" />
+                <PhShieldCheck v-else :size="13" weight="bold" />
+                <span class="perm-mode-label">{{ permMeta.label }}</span>
+                <PhCaretDown :size="9" weight="bold" class="perm-mode-caret" />
+              </button>
+              <!-- Teleported to body so the float-card's `overflow:hidden` can't clip it. -->
+              <Teleport to="body">
+                <div
+                  v-if="permMenuOpen"
+                  ref="permMenuEl"
+                  class="perm-mode-menu"
+                  :style="{ top: permMenuPos.top + 'px', left: permMenuPos.left + 'px' }"
+                >
+                  <button
+                    v-for="m in PERM_MODES"
+                    :key="m"
+                    class="perm-mode-item"
+                    :class="{ 'perm-mode-item-active': permMode === m, 'perm-mode-item-danger': PERM_META[m].danger }"
+                    :title="PERM_META[m].title"
+                    @click="selectPermMode(m)"
+                  >
+                    <PhShieldWarning v-if="m === 'bypassPermissions'" :size="13" weight="bold" />
+                    <PhPencilSimple v-else-if="m === 'acceptEdits'" :size="13" weight="bold" />
+                    <PhShieldCheck v-else :size="13" weight="bold" />
+                    <span>{{ PERM_META[m].label }}</span>
+                  </button>
+                </div>
+              </Teleport>
+            </div>
           </div>
 
-          <!-- Right: abort/send -->
+          <!-- Right: cost badge + abort/send -->
           <div class="toolbar-right">
-            <button v-if="busy" class="send-btn send-btn-abort" title="Abort" @click="abortTurn">
+            <span v-if="sessionCost > 0 && !busy" class="toolbar-cost">${{ sessionCost.toFixed(4) }}</span>
+            <button v-if="busy" class="send-btn send-btn-abort" title="Abort (Esc)" @click="abortTurn">
               <PhStop :size="14" weight="bold" />
             </button>
             <button
@@ -379,24 +457,19 @@
         </div>
       </div>
 
-      <!-- Status line below input -->
-      <div class="status-line" style="position:relative;z-index:1;">
+      <!-- Context usage bar -->
+      <div v-if="contextUsageRatio > 0" class="ctx-usage-bar-wrap" :title="`${turnStats?.inputTokens.toLocaleString()} / ${CONTEXT_MAX.toLocaleString()} tokens`">
+        <div class="ctx-usage-bar" :class="contextUsageClass" :style="{ width: (contextUsageRatio * 100) + '%' }" />
+      </div>
+
+      <!-- Status line below input — hidden when nothing to show -->
+      <div v-show="planLabel || fiveHourWindow" class="status-line" style="position:relative;z-index:1;">
         <span v-if="planLabel" class="status-item status-plan">{{ planLabel }}</span>
         <span v-if="fiveHourWindow" class="status-item" :title="'5h usage window'">5h: {{ fiveHourWindow }}</span>
         <span class="status-spacer" />
-        <span v-if="sessionId" class="status-item status-muted" :title="sessionId">
-          {{ sessionId.slice(0, 8) }}…
-        </span>
         <span v-if="turnStats" class="status-item status-muted">
           {{ turnStats.inputTokens.toLocaleString() }}↑ {{ turnStats.outputTokens.toLocaleString() }}↓
         </span>
-        <span v-if="sessionCost > 0" class="status-item status-cost">
-          ${{ sessionCost.toFixed(4) }}
-        </span>
-        <span v-if="messageQueue.length > 0" class="status-item status-queued">
-          {{ messageQueue.length }} queued
-        </span>
-        <span v-if="busy" class="status-item status-busy">thinking…</span>
       </div>
     </div>
     </div><!-- end .chat-main -->
@@ -440,7 +513,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
-import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown, PhCaretRight, PhX, PhUserGear } from "@phosphor-icons/vue";
+import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown, PhCaretRight, PhX, PhUserGear, PhClock, PhFile } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
@@ -604,11 +677,13 @@ const selectedModelLabel = computed(() => CLAUDE_MODELS.find((m) => m.id === sel
 
 interface ChatMessage {
   id: number;
-  role: "user" | "assistant" | "tool" | "thinking" | "permission";
+  role: "user" | "assistant" | "tool" | "thinking" | "permission" | "system-info" | "queued";
   text: string;
   images?: string[]; // data URIs for user messages with attached images
   partial?: boolean;
   toolInput?: Record<string, unknown>; // full tool args for expandable tool calls
+  toolOutput?: string;  // captured tool result (first 2000 chars)
+  toolUseId?: string;   // matches tool_result blocks back to tool cards
   toolExpanded?: boolean;
 }
 
@@ -719,11 +794,12 @@ const permMenuOpen = ref(false);
 const permBtnEl = ref<HTMLElement | null>(null);
 const permMenuEl = ref<HTMLElement | null>(null);
 // The menu is teleported + position:fixed, so anchor it to the button's rect.
-const permMenuPos = ref({ top: 0, right: 0 });
+const permMenuPos = ref({ top: 0, left: 0 });
 function togglePermMenu() {
   if (!permMenuOpen.value && permBtnEl.value) {
     const r = permBtnEl.value.getBoundingClientRect();
-    permMenuPos.value = { top: Math.round(r.bottom + 4), right: Math.round(window.innerWidth - r.right) };
+    const menuH = PERM_MODES.length * 36 + 12;
+    permMenuPos.value = { top: Math.round(r.top - menuH - 6), left: Math.round(r.left) };
   }
   permMenuOpen.value = !permMenuOpen.value;
 }
@@ -840,6 +916,70 @@ const pendingPermission = ref<CanUseToolReq | null>(null); // Bash / generic too
 const pendingQuestion = ref<CanUseToolReq | null>(null);   // AskUserQuestion
 const pendingPlan = ref<CanUseToolReq | null>(null);       // ExitPlanMode
 const pendingDiff = ref<CanUseToolReq | null>(null);       // Edit / Write / MultiEdit / NotebookEdit
+// Feed marker message IDs — removed when permission is resolved
+const pendingPermissionMsgId = ref<number | null>(null);
+const pendingQuestionMsgId = ref<number | null>(null);
+const pendingPlanMsgId = ref<number | null>(null);
+const pendingDiffMsgId = ref<number | null>(null);
+
+function removeFeedMarker(id: number | null) {
+  if (id === null) return;
+  const idx = messages.value.findIndex((m) => m.id === id);
+  if (idx !== -1) messages.value.splice(idx, 1);
+}
+
+// Queue panel
+const queueExpanded = ref(true);
+function clearQueue() {
+  messageQueue.value = [];
+  messages.value = messages.value.filter((m) => m.role !== "queued");
+}
+function removeQueued(i: number) {
+  const text = messageQueue.value[i];
+  messageQueue.value.splice(i, 1);
+  const qIdx = messages.value.findIndex((m) => m.role === "queued" && m.text === text);
+  if (qIdx !== -1) messages.value.splice(qIdx, 1);
+}
+async function sendQueuedNow(i: number) {
+  const text = messageQueue.value.splice(i, 1)[0];
+  const qIdx = messages.value.findIndex((m) => m.role === "queued" && m.text === text);
+  if (qIdx !== -1) messages.value.splice(qIdx, 1);
+  if (!busy.value) await sendMessage(text);
+  else { messageQueue.value.unshift(text); messages.value.unshift({ id: nextMsgId++, role: "queued", text }); }
+}
+
+// @-mention context chips (files attached via @ autocomplete)
+const contextChips = ref<string[]>([]);
+function removeChip(path: string) {
+  const i = contextChips.value.indexOf(path);
+  if (i !== -1) contextChips.value.splice(i, 1);
+}
+
+// Context usage bar — 200k for all current models
+const CONTEXT_MAX = 200_000;
+const contextUsageRatio = computed(() => {
+  if (!turnStats.value) return 0;
+  return Math.min(turnStats.value.inputTokens / CONTEXT_MAX, 1);
+});
+const contextUsageClass = computed(() => {
+  const r = contextUsageRatio.value;
+  if (r >= 0.9) return "ctx-exceeded";
+  if (r >= 0.75) return "ctx-warning";
+  return "ctx-ok";
+});
+
+// Permission dropdown
+const permDropdownOpen = ref(false);
+
+const currentActivity = computed(() => {
+  if (!busy.value) return "";
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i];
+    if (m.role === "tool") return `Running ${m.text}…`;
+    if (m.role === "assistant" || m.role === "thinking") return "Thinking…";
+  }
+  return "Thinking…";
+});
 
 // AskUserQuestion working selection: question text → chosen option label(s).
 const questionAnswers = ref<Record<string, string[]>>({});
@@ -983,16 +1123,30 @@ function onLine(line: string) {
     if (cr.toolName === "AskUserQuestion") {
       questionAnswers.value = {};
       pendingQuestion.value = cr;
+      const qText = ((cr.input.questions as Array<{question: string}>)?.[0]?.question ?? "Question").slice(0, 80);
+      const qMid = nextMsgId++;
+      pendingQuestionMsgId.value = qMid;
+      messages.value.push({ id: qMid, role: "system-info", text: `❓ ${qText}` });
       chats.sendStatusEvent(props.chatId, { type: "WAIT" });
     } else if (cr.toolName === "ExitPlanMode") {
       planFeedback.value = "";
       pendingPlan.value = cr;
+      const pMid = nextMsgId++;
+      pendingPlanMsgId.value = pMid;
+      messages.value.push({ id: pMid, role: "system-info", text: `📋 Plan ready for review` });
       chats.sendStatusEvent(props.chatId, { type: "WAIT" });
     } else if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(cr.toolName)) {
       pendingDiff.value = cr;
+      const filePath = ((cr.input.file_path ?? cr.input.path ?? "") as string);
+      const dMid = nextMsgId++;
+      pendingDiffMsgId.value = dMid;
+      messages.value.push({ id: dMid, role: "system-info", text: `✏️ ${cr.toolName}: ${filePath.split("/").slice(-2).join("/")}` });
       chats.sendStatusEvent(props.chatId, { type: "PERMISSION_REQUEST" });
     } else {
       pendingPermission.value = cr;
+      const pmMid = nextMsgId++;
+      pendingPermissionMsgId.value = pmMid;
+      messages.value.push({ id: pmMid, role: "system-info", text: `⚡ ${cr.toolName} wants permission` });
       chats.sendStatusEvent(props.chatId, { type: "PERMISSION_REQUEST" });
     }
     notifyPermission(cr);
@@ -1037,9 +1191,23 @@ function onLine(line: string) {
     for (const tb of toolBlocks) {
       const name = (tb.name as string) ?? "tool";
       const toolInput = (tb.input ?? {}) as Record<string, unknown>;
-      messages.value.push({ id: nextMsgId++, role: "tool", text: name, toolInput, toolExpanded: false });
+      const toolUseId = (tb.id as string) ?? undefined;
+      messages.value.push({ id: nextMsgId++, role: "tool", text: name, toolInput, toolUseId, toolExpanded: false });
     }
     scrollToBottom();
+    return;
+  }
+
+  if (type === "user") {
+    const content = ((event.message as Record<string, unknown>)?.content ?? []) as Array<Record<string, unknown>>;
+    for (const block of content) {
+      if (block.type !== "tool_result") continue;
+      const toolUseId = block.tool_use_id as string;
+      const rc = block.content as Array<Record<string, unknown>> | string | undefined;
+      let out = typeof rc === "string" ? rc : (Array.isArray(rc) ? rc.filter((b) => b.type === "text").map((b) => b.text as string).join("\n") : "");
+      const toolMsg = [...messages.value].reverse().find((m) => m.role === "tool" && m.toolUseId === toolUseId);
+      if (toolMsg && out) toolMsg.toolOutput = out.slice(0, 2000);
+    }
     return;
   }
 
@@ -1068,7 +1236,7 @@ function onLine(line: string) {
     refreshChanges();
     // An `exit` from an intentional restart (mode switch / abort) is not a real
     // turn boundary — skip the "finished" toast/notification once.
-    if (type === "exit" && suppressNextDone.value) {
+    if ((type === "exit" || type === "result") && suppressNextDone.value) {
       suppressNextDone.value = false;
     } else {
       chats.sendStatusEvent(props.chatId, { type: "STOP", watching: document.hasFocus() });
@@ -1077,6 +1245,9 @@ function onLine(line: string) {
     // Flush one queued message (next turn will flush the next one).
     if (messageQueue.value.length > 0) {
       const next = messageQueue.value.shift()!;
+      // Remove its greyed-out placeholder from the feed
+      const qIdx = messages.value.findIndex((m) => m.role === "queued" && m.text === next);
+      if (qIdx !== -1) messages.value.splice(qIdx, 1);
       nextTick(() => sendMessage(next));
     }
     return;
@@ -1085,14 +1256,21 @@ function onLine(line: string) {
 
 async function sendMessage(forcedText?: string, extraImages?: string[]) {
   let text = (forcedText ?? inputText.value).trim();
+  // Prepend context chips as @-mentions so Claude reads them
+  if (!forcedText && contextChips.value.length > 0) {
+    text = contextChips.value.map((p) => `@${p}`).join(" ") + (text ? " " + text : "");
+    contextChips.value = [];
+  }
   if (!text) return;
   if (extraImages?.length) pendingImages.value.push(...extraImages);
   // While busy: queue the message instead of sending immediately.
   if (busy.value && !forcedText) {
     messageQueue.value.push(text);
+    messages.value.push({ id: nextMsgId++, role: "queued", text });
     inputText.value = "";
     await nextTick();
     autoResize();
+    scrollToBottom();
     return;
   }
   if (!forcedText) {
@@ -1159,6 +1337,8 @@ async function respondControl(requestId: string, response: Record<string, unknow
 function respondPermission(allow: boolean, opts?: { always?: boolean; updatedInput?: Record<string, unknown>; message?: string }) {
   const cr = pendingPermission.value ?? pendingDiff.value;
   if (!cr) return;
+  removeFeedMarker(pendingPermissionMsgId.value); pendingPermissionMsgId.value = null;
+  removeFeedMarker(pendingDiffMsgId.value); pendingDiffMsgId.value = null;
   pendingPermission.value = null;
   pendingDiff.value = null;
   const detail = (cr.input.command ?? cr.input.file_path ?? cr.input.path ?? cr.description ?? "") as string;
@@ -1194,6 +1374,7 @@ function isPicked(question: string, label: string) {
 function submitQuestion() {
   const cr = pendingQuestion.value;
   if (!cr || !canSubmitQuestion.value) return;
+  removeFeedMarker(pendingQuestionMsgId.value); pendingQuestionMsgId.value = null;
   pendingQuestion.value = null;
   // The tool reads input.answers keyed by question text; multi-select joins with ", ".
   const answers: Record<string, string> = {};
@@ -1205,6 +1386,7 @@ function submitQuestion() {
 function cancelQuestion() {
   const cr = pendingQuestion.value;
   if (!cr) return;
+  removeFeedMarker(pendingQuestionMsgId.value); pendingQuestionMsgId.value = null;
   pendingQuestion.value = null;
   // allow with empty answers → tool reports "did not answer" (clean dismiss, no error).
   respondControl(cr.requestId, { behavior: "allow", updatedInput: { ...cr.input, answers: {} } });
@@ -1213,6 +1395,7 @@ function cancelQuestion() {
 function respondPlan(approve: boolean) {
   const cr = pendingPlan.value;
   if (!cr) return;
+  removeFeedMarker(pendingPlanMsgId.value); pendingPlanMsgId.value = null;
   pendingPlan.value = null;
   if (approve) {
     respondControl(cr.requestId, { behavior: "allow", updatedInput: cr.input });
@@ -1246,7 +1429,9 @@ async function selectPermMode(mode: PermMode) {
 
 async function abortTurn() {
   suppressNextDone.value = true; // abort + restart — don't toast on the teardown `exit`
-  await invoke("claude_abort", { id: props.chatId }).catch(() => {});
+  // claude_stop removes the proc from the map so the subsequent claude_start actually spawns.
+  // claude_abort (SIGINT) leaves a dead entry in the map → claude_start is a no-op.
+  await invoke("claude_stop", { id: props.chatId }).catch(() => {});
   // Restart with --resume so session continues
   await invoke("claude_start", {
     id: props.chatId,
@@ -1261,6 +1446,7 @@ async function abortTurn() {
   }).catch(() => {});
   busy.value = false;
   messageQueue.value = [];
+  messages.value = messages.value.filter((m) => m.role !== "queued");
   const last = messages.value[messages.value.length - 1];
   if (last?.partial) last.partial = false;
   chats.sendStatusEvent(props.chatId, { type: "INTERRUPT" });
@@ -1349,8 +1535,10 @@ function applyAtSuggestion(path: string) {
   const after = inputText.value.slice(pos);
   const m = upto.match(/@([^\s@]*)$/);
   if (!m) return;
+  // Add as chip, remove @query from input text
+  if (!contextChips.value.includes(path)) contextChips.value.push(path);
   const base = upto.slice(0, upto.length - m[0].length);
-  inputText.value = `${base}@${path} ${after}`;
+  inputText.value = `${base}${after}`.trimStart();
   atSuggestions.value = [];
   nextTick(() => { inputEl.value?.focus(); autoResize(); });
 }
@@ -1362,6 +1550,18 @@ function onKeydown(e: KeyboardEvent) {
   }
   if (pendingQuestion.value && e.key === "Escape") { e.preventDefault(); cancelQuestion(); return; }
   if (pendingPlan.value && e.key === "Escape") { e.preventDefault(); respondPlan(false); return; }
+  if (busy.value && e.key === "Escape" && !pendingPermission.value && !pendingDiff.value) { e.preventDefault(); abortTurn(); nextTick(() => inputEl.value?.focus()); return; }
+  if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); clearChat(); return; }
+  if (e.key === "ArrowUp" && inputText.value === "" && !busy.value) {
+    const lastUser = [...messages.value].reverse().find((m) => m.role === "user");
+    if (lastUser) {
+      e.preventDefault();
+      inputText.value = lastUser.text;
+      messages.value = messages.value.filter((m) => m !== lastUser);
+      nextTick(() => { inputEl.value?.focus(); autoResize(); const el = inputEl.value; if (el) el.selectionStart = el.selectionEnd = el.value.length; });
+      return;
+    }
+  }
   if (atSuggestions.value.length > 0) {
     if (e.key === "ArrowDown") { e.preventDefault(); atIdx.value = Math.min(atIdx.value + 1, atSuggestions.value.length - 1); return; }
     if (e.key === "ArrowUp") { e.preventDefault(); atIdx.value = Math.max(atIdx.value - 1, 0); return; }
@@ -1494,7 +1694,10 @@ watch(() => chats.activeByWs[props.workspaceId], (activeId) => {
 function focusInput() {
   nextTick(() => { inputEl.value?.focus(); autoResize(); });
 }
-defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands });
+function getPermMode(): PermMode {
+  return permMode.value;
+}
+defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands, getPermMode, selectPermMode, permMode });
 </script>
 
 <style scoped>
@@ -2100,6 +2303,15 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands 
 .tool-caret-open { transform: rotate(90deg); }
 .tool-icon { color: rgba(124,58,237,0.8); flex-shrink: 0; }
 .tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-output-preview {
+  color: rgba(255,255,255,0.3);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+  flex-shrink: 1;
+}
 .tool-args {
   margin: 0;
   padding: 8px 12px;
@@ -2114,6 +2326,229 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands 
   max-height: 200px;
   overflow-y: auto;
   max-width: min(560px, 90vw);
+}
+.tool-output {
+  margin: 0;
+  padding: 8px 12px;
+  background: rgba(22,163,74,0.04);
+  border: 1px solid rgba(22,163,74,0.15);
+  border-radius: 8px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: rgba(255,255,255,0.45);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  max-width: min(560px, 90vw);
+}
+
+/* System info markers (permission/plan in feed) */
+.system-info-row {
+  display: flex;
+  justify-content: center;
+  padding: 4px 16px;
+}
+.system-info-pill {
+  font-size: 11px;
+  color: rgba(255,255,255,0.35);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px;
+  padding: 2px 10px;
+}
+
+/* Queued message placeholder */
+.bubble-queued {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px dashed rgba(255,255,255,0.12);
+  border-radius: 14px;
+  font-size: 13px;
+  color: rgba(255,255,255,0.3);
+  max-width: min(460px, 85%);
+  text-align: right;
+}
+.queued-icon { color: rgba(255,255,255,0.25); flex-shrink: 0; }
+.user-avatar-muted { opacity: 0.35; }
+
+/* Working indicator above input */
+.working-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.working-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(124,58,237,0.7);
+  animation: thinking 1.2s ease-in-out infinite;
+}
+.working-dot:nth-child(2) { animation-delay: 0.2s; }
+.working-dot:nth-child(3) { animation-delay: 0.4s; }
+.working-label {
+  font-size: 11px;
+  color: rgba(255,255,255,0.35);
+  font-style: italic;
+}
+
+/* Cost badge in toolbar */
+.toolbar-cost {
+  font-size: 10px;
+  color: rgba(255,255,255,0.3);
+  font-family: var(--font-mono);
+  padding: 0 4px;
+}
+
+/* Queue panel */
+.queue-panel {
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  background: rgba(124,58,237,0.04);
+}
+.queue-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.queue-header:hover { background: rgba(255,255,255,0.03); }
+.queue-caret { color: rgba(255,255,255,0.4); transition: transform .15s; }
+.queue-caret-closed { transform: rotate(-90deg); }
+.queue-title { font-size: 11px; color: rgba(255,255,255,0.45); flex: 1; }
+.queue-clear-all {
+  font-size: 10px;
+  color: rgba(255,255,255,0.3);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 1px 4px;
+}
+.queue-clear-all:hover { color: rgba(255,255,255,0.6); }
+.queue-items { padding: 0 10px 6px; display: flex; flex-direction: column; gap: 3px; }
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+}
+.queue-dot { color: rgba(124,58,237,0.7); font-size: 12px; flex-shrink: 0; }
+.queue-text { font-size: 12px; color: rgba(255,255,255,0.5); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-item-btn {
+  font-size: 10px;
+  color: rgba(255,255,255,0.3);
+  background: none;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 4px;
+  padding: 1px 5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.queue-item-btn:hover { color: rgba(255,255,255,0.7); border-color: rgba(255,255,255,0.25); }
+.queue-send-now { color: rgba(124,58,237,0.8); border-color: rgba(124,58,237,0.3); }
+.queue-send-now:hover { color: rgba(124,58,237,1); border-color: rgba(124,58,237,0.6); }
+
+/* Context chips */
+.context-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px 2px;
+}
+.ctx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 7px;
+  background: rgba(124,58,237,0.12);
+  border: 1px solid rgba(124,58,237,0.3);
+  border-radius: 12px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.7);
+}
+.ctx-chip-icon { color: rgba(124,58,237,0.8); flex-shrink: 0; }
+.ctx-chip-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-chip-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: rgba(255,255,255,0.35);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  margin-left: 1px;
+}
+.ctx-chip-remove:hover { color: rgba(255,255,255,0.8); }
+
+/* Context usage bar */
+.ctx-usage-bar-wrap {
+  height: 2px;
+  background: rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+.ctx-usage-bar {
+  height: 100%;
+  transition: width 0.5s ease;
+  border-radius: 1px;
+}
+.ctx-usage-bar.ctx-ok { background: rgba(124,58,237,0.5); }
+.ctx-usage-bar.ctx-warning { background: rgba(234,179,8,0.7); }
+.ctx-usage-bar.ctx-exceeded { background: rgba(239,68,68,0.8); }
+
+/* Permission dropdown */
+.perm-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.perm-allow-group { position: relative; display: flex; }
+.perm-caret-btn {
+  padding: 3px 5px !important;
+  border-left: 1px solid rgba(255,255,255,0.12) !important;
+  border-radius: 0 6px 6px 0 !important;
+}
+.perm-allow-group .perm-allow:first-child { border-radius: 6px 0 0 6px !important; }
+.perm-dropdown {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: 0;
+  background: #1e1e2e;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 200px;
+  z-index: 100;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.perm-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  text-align: left;
+}
+.perm-dropdown-item:hover { background: rgba(255,255,255,0.07); color: #fff; }
+.perm-dropdown-deny { color: rgba(239,68,68,0.8) !important; }
+.perm-dropdown-deny:hover { background: rgba(239,68,68,0.1) !important; }
+.perm-pattern {
+  font-size: 10px;
+  color: rgba(255,255,255,0.45);
+  background: rgba(255,255,255,0.07);
+  border-radius: 3px;
+  padding: 1px 4px;
 }
 
 /* Permission log */

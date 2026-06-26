@@ -391,6 +391,7 @@ import {
   PhX,
   PhTerminal,
   PhRobot,
+  PhBell,
   PhPlus,
   PhGitBranch,
   PhPencilSimple,
