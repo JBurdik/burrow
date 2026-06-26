@@ -2378,6 +2378,22 @@ struct ClaudeState {
     procs: Mutex<std::collections::HashMap<u32, ClaudeProc>>,
 }
 
+// ── ACP (Agent Client Protocol) bridge ──────────────────────────────────────
+// Spawns an agent's ACP adapter as a subprocess speaking newline-delimited
+// JSON-RPC on stdio (NOT Content-Length framed like LSP). Both the Tauri
+// commands and the reader thread need stdin, hence Arc<Mutex<…>>.
+struct AcpProc {
+    stdin: Arc<std::sync::Mutex<std::process::ChildStdin>>,
+    child: std::process::Child,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+    session_id: String,
+}
+
+#[derive(Default)]
+struct AcpState {
+    procs: std::sync::Mutex<std::collections::HashMap<u32, AcpProc>>,
+}
+
 // `async` is load-bearing: Tauri runs sync commands on the MAIN thread, so the
 // blocking work here (binary probing, writing the burrow bin, and especially the
 // `claude` fork/exec) would freeze the webview — the beachball when opening a
@@ -2622,6 +2638,222 @@ fn claude_respond_control(state: State<ClaudeState>, id: u32, request_id: String
     });
     let line = msg.to_string() + "\n";
     proc.stdin.write_all(line.as_bytes()).and_then(|_| proc.stdin.flush()).map_err(|e| e.to_string())
+}
+
+// ── ACP commands ────────────────────────────────────────────────────────────
+// Write one newline-delimited JSON-RPC message to the adapter's stdin.
+fn acp_write(stdin: &Arc<std::sync::Mutex<std::process::ChildStdin>>, msg: &serde_json::Value) -> Result<(), String> {
+    use std::io::Write;
+    let line = msg.to_string() + "\n";
+    let mut g = stdin.lock().unwrap();
+    g.write_all(line.as_bytes()).and_then(|_| g.flush()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn acp_start(
+    app: AppHandle,
+    state: State<'_, AcpState>,
+    id: u32,
+    kind: String,
+    cwd: String,
+) -> Result<(), String> {
+    if state.procs.lock().unwrap().contains_key(&id) {
+        return Ok(());
+    }
+
+    // Resolve adapter command + args per agent kind. The claude adapter is an npx
+    // package that shells out to the `claude` binary, so it needs CLAUDE_CODE_EXECUTABLE
+    // pointed at the resolved binary + CLAUDE_CONFIG_DIR for the user's config.
+    let (bin_name, extra_args, mut extra_env): (&str, Vec<String>, std::collections::HashMap<String, String>) =
+        match kind.as_str() {
+            "claude" => {
+                let claude_bin = resolve_lsp_bin("claude", &cwd)
+                    .ok_or_else(|| "claude binary not found (checked ~/.local/bin, homebrew, PATH)".to_string())?;
+                let config_dir = match std::env::var("HOME") {
+                    Ok(home) => format!("{home}/claude-work"),
+                    Err(_) => "~/claude-work".to_string(),
+                };
+                let mut env = std::collections::HashMap::new();
+                env.insert("CLAUDE_CODE_EXECUTABLE".to_string(), claude_bin.to_string_lossy().to_string());
+                env.insert("CLAUDE_CONFIG_DIR".to_string(), config_dir);
+                ("npx", vec!["@agentclientprotocol/claude-agent-acp".to_string()], env)
+            }
+            "gemini" => ("gemini", vec!["--acp".to_string()], std::collections::HashMap::new()),
+            other => return Err(format!("unknown acp kind: {other}")),
+        };
+
+    let bin = resolve_lsp_bin(bin_name, &cwd)
+        .ok_or_else(|| format!("{bin_name} binary not found (checked ~/.local/bin, homebrew, PATH)"))?;
+
+    // Base env: minimal inherited set + augmented PATH. Blank ANTHROPIC_API_KEY
+    // forces subscription OAuth (same as claude_start).
+    for key in ["HOME", "USER", "TMPDIR", "LANG"] {
+        if let Ok(v) = std::env::var(key) {
+            extra_env.insert(key.to_string(), v);
+        }
+    }
+    extra_env.insert("PATH".to_string(), augmented_path(&cwd));
+    extra_env.insert("ANTHROPIC_API_KEY".to_string(), String::new());
+
+    let mut child = std::process::Command::new(&bin)
+        .args(&extra_args)
+        .current_dir(&cwd)
+        .envs(&extra_env)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn acp adapter: {e}"))?;
+
+    let stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+
+    // Drain stderr to prevent pipe stall.
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 4096];
+        let mut s = stderr;
+        while let Ok(n) = s.read(&mut buf) {
+            if n == 0 { break; }
+        }
+    });
+
+    let stdin = Arc::new(std::sync::Mutex::new(stdin));
+    let next_id = Arc::new(std::sync::atomic::AtomicU64::new(2)); // 0,1 used by handshake
+
+    // Handshake off the main thread: initialize (id 0) → session/new (id 1).
+    // Returns the BufReader (positioned past the handshake responses) + sessionId.
+    let cwd_hs = cwd.clone();
+    let stdin_hs = stdin.clone();
+    let (reader, session_id) = tauri::async_runtime::spawn_blocking(move || -> Result<(std::io::BufReader<std::process::ChildStdout>, String), String> {
+        use std::io::BufRead;
+        let mut reader = std::io::BufReader::new(stdout);
+
+        // Read newline-delimited JSON until we see a response with the given id.
+        let read_response = |reader: &mut std::io::BufReader<std::process::ChildStdout>, want: u64| -> Result<serde_json::Value, String> {
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => return Err("acp adapter closed during handshake".to_string()),
+                    Ok(_) => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+                let t = line.trim();
+                if t.is_empty() { continue; }
+                let v: serde_json::Value = match serde_json::from_str(t) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                // A response has an id matching `want` and no `method`.
+                if v.get("method").is_none() && v.get("id").and_then(|i| i.as_u64()) == Some(want) {
+                    return Ok(v);
+                }
+                // ignore notifications/requests during handshake
+            }
+        };
+
+        acp_write(&stdin_hs, &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientCapabilities": {
+                    "fs": { "readTextFile": false, "writeTextFile": false },
+                    "terminal": false
+                },
+                "clientInfo": { "name": "burrow", "title": "Burrow", "version": "2.16.0" }
+            }
+        }))?;
+        let _ = read_response(&mut reader, 0)?;
+
+        acp_write(&stdin_hs, &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session/new",
+            "params": { "cwd": cwd_hs, "mcpServers": [] }
+        }))?;
+        let resp = read_response(&mut reader, 1)?;
+        let session_id = resp
+            .get("result")
+            .and_then(|r| r.get("sessionId"))
+            .and_then(|s| s.as_str())
+            .ok_or("session/new response missing sessionId")?
+            .to_string();
+
+        Ok((reader, session_id))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    // Reader thread: route adapter output to the frontend.
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut reader = reader;
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break, // EOF
+                Ok(_) => {}
+            }
+            let t = line.trim();
+            if t.is_empty() { continue; }
+            // A message with a `method` AND an `id` is a server→client request
+            // (e.g. session/request_permission). Everything else (notifications
+            // like session/update, and our prompt responses) goes to acp-data.
+            let is_request = serde_json::from_str::<serde_json::Value>(t)
+                .ok()
+                .map(|v| v.get("method").is_some() && v.get("id").is_some())
+                .unwrap_or(false);
+            let topic = if is_request { format!("acp-req-{id}") } else { format!("acp-data-{id}") };
+            let _ = app2.emit(&topic, t.to_string());
+        }
+        let _ = app2.emit(&format!("acp-data-{id}"), r#"{"_burrow":"exit"}"#);
+    });
+
+    state.procs.lock().unwrap().insert(id, AcpProc { stdin, child, next_id, session_id });
+    Ok(())
+}
+
+#[tauri::command]
+fn acp_send(state: State<AcpState>, id: u32, text: String) -> Result<(), String> {
+    let guard = state.procs.lock().unwrap();
+    let proc = guard.get(&id).ok_or("acp adapter not running")?;
+    let rpc_id = proc.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    acp_write(&proc.stdin, &serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "method": "session/prompt",
+        "params": {
+            "sessionId": proc.session_id,
+            "prompt": [ { "type": "text", "text": text } ]
+        }
+    }))
+}
+
+#[tauri::command]
+fn acp_stop(state: State<AcpState>, id: u32) {
+    if let Some(mut proc) = state.procs.lock().unwrap().remove(&id) {
+        let _ = proc.child.kill();
+    }
+}
+
+#[tauri::command]
+fn acp_respond_permission(state: State<AcpState>, id: u32, rpc_id: u64, option_id: String) -> Result<(), String> {
+    let guard = state.procs.lock().unwrap();
+    let proc = guard.get(&id).ok_or("acp adapter not running")?;
+    let outcome = if option_id.is_empty() {
+        serde_json::json!({ "outcome": "cancelled" })
+    } else {
+        serde_json::json!({ "outcome": "selected", "optionId": option_id })
+    };
+    acp_write(&proc.stdin, &serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "result": { "outcome": outcome }
+    }))
 }
 
 // ── Claude account info ───────────────────────────────────────────────────────
@@ -4005,6 +4237,7 @@ pub fn run() {
             app.manage(DaemonState { client: Mutex::new(client) });
             app.manage(LspState::default());
             app.manage(ClaudeState::default());
+            app.manage(AcpState::default());
             app.manage(AccountInfoCache::default());
 
             start_hook_server(app.handle().clone());
@@ -4065,6 +4298,10 @@ pub fn run() {
             claude_stop,
             claude_abort,
             claude_respond_control,
+            acp_start,
+            acp_send,
+            acp_stop,
+            acp_respond_permission,
             claude_get_account,
             read_file_base64,
             save_temp_image,
