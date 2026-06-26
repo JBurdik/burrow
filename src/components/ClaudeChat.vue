@@ -1,5 +1,5 @@
 <template>
-  <div class="claude-chat">
+  <div class="claude-chat" :style="{ '--agent-accent': agentAccentColor }">
     <div class="chat-main">
     <div class="chat-header">
       <ClaudeIcon :size="16" class="chat-header-icon" />
@@ -17,6 +17,9 @@
       >
         <PhGitDiff :size="13" />
         <span v-if="changedFiles.length > 0" class="changes-badge">{{ changedFiles.length }}</span>
+      </button>
+      <button class="chat-header-btn" :title="`Agent: ${agentKind}`" @click="toggleAgent">
+        <PhRobot :size="13" />
       </button>
     </div>
 
@@ -509,9 +512,11 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
-import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown, PhCaretRight, PhX, PhUserGear, PhClock, PhFile, PhSparkle, PhFastForward } from "@phosphor-icons/vue";
+import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown, PhCaretRight, PhX, PhUserGear, PhClock, PhFile, PhSparkle, PhFastForward, PhRobot } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { parseAcpUpdate, parseAcpPermRequest } from "@/lib/acpParser";
+import type { PermissionDecision } from "@/lib/agentTransport";
 import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
@@ -547,11 +552,37 @@ const props = defineProps<{
   modelKey?: string;
   // Initial model when nothing is stored under modelKey yet.
   defaultModel?: string;
+  // Wire transport: "stream-json" (Claude CLI, default) or "acp".
+  transport?: 'stream-json' | 'acp';
+  // Which agent to run. "gemini" forces the ACP transport.
+  agentKind?: 'claude' | 'gemini';
 }>();
 
 const chats = useClaudeChatsStore();
 const notifStore = useNotificationsStore();
 const editorCtx = useEditorContextStore();
+
+// "acp" when agentKind=gemini or the transport prop says so; else "stream-json".
+const effectiveTransport = computed(() =>
+  props.agentKind === 'gemini' || props.transport === 'acp' ? 'acp' : 'stream-json'
+);
+// Per-agent accent. Only the COLOR differs; for Claude it resolves to the
+// existing chat accent so the UI is pixel-identical.
+const agentAccentColor = computed(() =>
+  props.agentKind === 'gemini' ? '#1a73e8' : 'var(--chat-accent)'
+);
+// ACP permission: JSON-RPC id of the agent's blocking request_permission.
+const acpPermRpcId = ref<number | null>(null);
+// Local mirror of the session's agentKind, drives the header switcher icon.
+const agentKind = ref<'claude' | 'gemini'>(
+  chats.sessions.find((s) => s.id === props.chatId)?.agentKind ?? props.agentKind ?? 'claude'
+);
+async function toggleAgent() {
+  const next: 'claude' | 'gemini' = agentKind.value === 'gemini' ? 'claude' : 'gemini';
+  agentKind.value = next;
+  chats.sync(props.chatId, { agentKind: next, transport: next === 'gemini' ? 'acp' : 'stream-json' });
+  await clearChat();
+}
 
 // Relative-to-cwd path for a shared selection's @-reference.
 function relPath(abs: string): string {
@@ -681,6 +712,7 @@ interface ChatMessage {
   toolOutput?: string;  // captured tool result (first 2000 chars)
   toolUseId?: string;   // matches tool_result blocks back to tool cards
   toolExpanded?: boolean;
+  _acpMsgId?: string;   // ACP messageId — identity for incremental chunk append
 }
 
 // Built-in claude slash commands
@@ -762,6 +794,8 @@ const scrollEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const suggestionsEl = ref<HTMLElement | null>(null);
 let unlisten: UnlistenFn | null = null;
+let acpDataUL: UnlistenFn | null = null;
+let acpReqUL: UnlistenFn | null = null;
 
 // Permission mode (per-chat, persisted). Mirrors `claude --permission-mode`:
 // default | auto | acceptEdits | plan | dontAsk | bypassPermissions.
@@ -1265,6 +1299,108 @@ function onLine(line: string) {
   }
 }
 
+// ── ACP transport ──────────────────────────────────────────────────────────
+// Lines from acp-data-{chatId}: session/update notifications + session/prompt
+// responses (turn done) + the {_burrow:"exit"} EOF marker.
+function onAcpData(raw: string) {
+  let msg: Record<string, unknown>;
+  try { msg = JSON.parse(raw); } catch { return; }
+
+  // Turn done — response to our session/prompt (has id, no method).
+  if ('id' in msg && !('method' in msg)) {
+    busy.value = false;
+    for (const m of messages.value) { if (m.partial) m.partial = false; }
+    saveMessages(props.chatId, messages.value);
+    syncStore();
+    scrollToBottom();
+    refreshChanges();
+    if (!suppressNextDone.value) {
+      chats.sendStatusEvent(props.chatId, { type: "STOP", watching: document.hasFocus() });
+      notifyDone();
+    }
+    suppressNextDone.value = false;
+    if (messageQueue.value.length > 0) {
+      const next = messageQueue.value.shift()!;
+      const qIdx = messages.value.findIndex((m) => m.role === "queued" && m.text === next);
+      if (qIdx !== -1) messages.value.splice(qIdx, 1);
+      nextTick(() => sendMessage(next));
+    }
+    return;
+  }
+
+  // EOF from the Rust reader thread.
+  if (msg._burrow === "exit") {
+    if (busy.value) {
+      busy.value = false;
+      for (const m of messages.value) { if (m.partial) m.partial = false; }
+      syncStore();
+    }
+    return;
+  }
+
+  if (msg.method !== "session/update") return;
+  const event = parseAcpUpdate(msg.params);
+  if (!event) return;
+
+  switch (event.kind) {
+    case "text_chunk": {
+      const last = messages.value.filter((m) => m.role === "assistant" && m.partial && m._acpMsgId === event.messageId).pop();
+      if (last) {
+        last.text += event.text;
+      } else {
+        messages.value.push({ id: nextMsgId++, role: "assistant", text: event.text, partial: true, _acpMsgId: event.messageId });
+      }
+      scrollToBottom();
+      break;
+    }
+    case "thinking_chunk": {
+      const last = messages.value[messages.value.length - 1];
+      if (last?.role === "thinking" && last.partial) {
+        last.text += event.text;
+      } else {
+        messages.value.push({ id: nextMsgId++, role: "thinking", text: event.text, partial: true });
+      }
+      scrollToBottom();
+      break;
+    }
+    case "tool_call":
+      messages.value.push({ id: nextMsgId++, role: "tool", text: event.title, toolInput: {}, toolUseId: event.toolCallId, toolExpanded: false });
+      scrollToBottom();
+      break;
+    case "tool_output": {
+      const toolMsg = [...messages.value].reverse().find((m) => m.role === "tool" && m.toolUseId === event.toolCallId);
+      if (toolMsg && event.output) toolMsg.toolOutput = event.output.slice(0, 2000);
+      scrollToBottom();
+      break;
+    }
+  }
+}
+
+// Lines from acp-req-{chatId}: blocking session/request_permission requests.
+function onAcpReq(raw: string) {
+  let msg: Record<string, unknown>;
+  try { msg = JSON.parse(raw); } catch { return; }
+  const perm = parseAcpPermRequest(msg);
+  if (!perm) return;
+
+  acpPermRpcId.value = perm.rpcId;
+  // Reuse the existing permission banner — map ACP options onto CanUseToolReq.
+  pendingPermission.value = {
+    requestId: String(perm.rpcId),
+    toolName: "Tool",
+    input: { toolCallId: perm.toolCallId },
+    suggestions: perm.options.map((o) => ({ label: o.name, optionId: o.optionId, kind: o.kind })),
+  } as CanUseToolReq;
+
+  const pmMid = nextMsgId++;
+  pendingPermissionMsgId.value = pmMid;
+  messages.value.push({ id: pmMid, role: "system-info", text: "⚡ Permission requested" });
+  chats.sendStatusEvent(props.chatId, { type: "PERMISSION_REQUEST" });
+  notifyPermission(pendingPermission.value);
+  syncStore();
+  scrollToBottom();
+}
+
 async function sendMessage(forcedText?: string, extraImages?: string[]) {
   let text = (forcedText ?? inputText.value).trim();
   // Prepend context chips as @-mentions so Claude reads them
@@ -1318,6 +1454,17 @@ async function sendMessage(forcedText?: string, extraImages?: string[]) {
   saveMessages(props.chatId, messages.value);
   syncStore();
   scrollToBottom();
+  if (effectiveTransport.value === "acp") {
+    try {
+      await invoke("acp_send", { id: props.chatId, text });
+    } catch (e) {
+      messages.value.push({ id: nextMsgId++, role: "assistant", text: `Error: ${e}` });
+      busy.value = false;
+      chats.sendStatusEvent(props.chatId, { type: "INTERRUPT" });
+      syncStore();
+    }
+    return;
+  }
   try {
     const images = pendingImages.value.length > 0 ? [...pendingImages.value] : undefined;
     pendingImages.value = [];
@@ -1352,6 +1499,22 @@ function respondPermission(allow: boolean, opts?: { always?: boolean; updatedInp
   removeFeedMarker(pendingDiffMsgId.value); pendingDiffMsgId.value = null;
   pendingPermission.value = null;
   pendingDiff.value = null;
+  // ACP transport: reply to the agent's blocking request_permission.
+  if (effectiveTransport.value === "acp" && acpPermRpcId.value !== null) {
+    const decision: PermissionDecision = allow
+      ? { type: "selected", optionId: opts?.always ? "allow-always" : "allow-once" }
+      : { type: "cancelled" };
+    const optionId = decision.type === "selected" ? decision.optionId : "";
+    messages.value.push({ id: nextMsgId++, role: "permission", text: `${allow ? "✓ Allowed" : "✗ Denied"}: ${cr.toolName}` });
+    saveMessages(props.chatId, messages.value);
+    invoke("acp_respond_permission", { id: props.chatId, rpcId: acpPermRpcId.value, optionId }).catch((e) => {
+      messages.value.push({ id: nextMsgId++, role: "assistant", text: `Permission response failed: ${e}` });
+    });
+    acpPermRpcId.value = null;
+    chats.sendStatusEvent(props.chatId, { type: "RESUME" });
+    syncStore();
+    return;
+  }
   const detail = (cr.input.command ?? cr.input.file_path ?? cr.input.path ?? cr.description ?? "") as string;
   const detailStr = detail ? ` — ${detail.length > 80 ? detail.slice(0, 80) + "…" : detail}` : "";
   if (allow) {
@@ -1440,6 +1603,18 @@ async function selectPermMode(mode: PermMode) {
 
 async function abortTurn() {
   suppressNextDone.value = true; // abort + restart — don't toast on the teardown `exit`
+  if (effectiveTransport.value === "acp") {
+    await invoke("acp_stop", { id: props.chatId }).catch(() => {});
+    await invoke("acp_start", { id: props.chatId, kind: agentKind.value === "gemini" ? "gemini" : "claude", cwd: props.cwd }).catch(() => {});
+    busy.value = false;
+    messageQueue.value = [];
+    messages.value = messages.value.filter((m) => m.role !== "queued");
+    const lastAcp = messages.value[messages.value.length - 1];
+    if (lastAcp?.partial) lastAcp.partial = false;
+    chats.sendStatusEvent(props.chatId, { type: "INTERRUPT" });
+    syncStore();
+    return;
+  }
   // claude_stop removes the proc from the map so the subsequent claude_start actually spawns.
   // claude_abort (SIGINT) leaves a dead entry in the map → claude_start is a no-op.
   await invoke("claude_stop", { id: props.chatId }).catch(() => {});
@@ -1465,7 +1640,8 @@ async function abortTurn() {
 }
 
 async function clearChat() {
-  await invoke("claude_stop", { id: props.chatId }).catch(() => {});
+  const acp = effectiveTransport.value === "acp";
+  await invoke(acp ? "acp_stop" : "claude_stop", { id: props.chatId }).catch(() => {});
   messages.value = [];
   sessionId.value = "";
   busy.value = false;
@@ -1474,8 +1650,13 @@ async function clearChat() {
   turnStats.value = null;
   sessionCost.value = 0;
   claudeGeneratedTitle.value = false;
+  acpPermRpcId.value = null;
   localStorage.removeItem(msgKey(props.chatId));
   chats.sync(props.chatId, { claudeSessionId: "", busy: false, messageCount: 0, title: `Chat` });
+  if (acp) {
+    await invoke("acp_start", { id: props.chatId, kind: agentKind.value === "gemini" ? "gemini" : "claude", cwd: props.cwd }).catch(() => {});
+    return;
+  }
   await invoke("claude_start", {
     id: props.chatId,
     cwd: props.cwd,
@@ -1651,6 +1832,17 @@ onMounted(async () => {
   if (props.compact) chats.addPermissionRule("Bash:burrow");
   const stored = chats.sessions.find((s) => s.id === props.chatId)?.claudeSessionId ?? "";
   if (stored) sessionId.value = stored;
+  if (effectiveTransport.value === "acp") {
+    acpDataUL = await listen<string>(`acp-data-${props.chatId}`, (e) => onAcpData(e.payload));
+    acpReqUL = await listen<string>(`acp-req-${props.chatId}`, (e) => onAcpReq(e.payload));
+    await invoke("acp_start", {
+      id: props.chatId,
+      kind: agentKind.value === "gemini" ? "gemini" : "claude",
+      cwd: props.cwd,
+    }).catch((e) => { console.error("acp_start failed:", e); });
+    refreshChanges();
+    return;
+  }
   await invoke("claude_start", {
     id: props.chatId,
     cwd: props.cwd,
@@ -1690,7 +1882,13 @@ onBeforeUnmount(() => {
   window.removeEventListener("mousedown", onModelMenuOutside);
   window.removeEventListener("mousedown", onProfileMenuOutside);
   unlisten?.();
-  invoke("claude_stop", { id: props.chatId }).catch(() => {});
+  acpDataUL?.();
+  acpReqUL?.();
+  if (effectiveTransport.value === "acp") {
+    invoke("acp_stop", { id: props.chatId }).catch(() => {});
+  } else {
+    invoke("claude_stop", { id: props.chatId }).catch(() => {});
+  }
 });
 
 watch(() => props.chatId, () => nextTick(() => inputEl.value?.focus()));
@@ -2246,7 +2444,7 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands,
   display: inline-block;
   width: 2px;
   height: 13px;
-  background: var(--chat-accent, #7c3aed);
+  background: var(--agent-accent, var(--chat-accent, #7c3aed));
   vertical-align: middle;
   margin-left: 2px;
   animation: blink 1s step-end infinite;
@@ -2804,7 +3002,7 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands,
 
 /* Send button */
 .send-btn {
-  background: #7c3aed;
+  background: var(--agent-accent, #7c3aed);
   border: none;
   border-radius: 50%;
   color: #fff;
