@@ -86,7 +86,7 @@ interface Prefs {
   sidebarWidth: number; // left sidebar panel width in px
   rightPanelWidth: number; // right panel width in px
   toastPosition: ToastPosition; // screen anchor for toast notifications
-  defaultChatAgent: 'claude' | 'claude-acp' | 'gemini' | 'codex'; // default agent for new chat sessions
+  defaultChatAgent: string; // default agent for new chat sessions (chatAgents store id)
 }
 
 // Screen anchor for the toast stack (ToastStack.vue).
@@ -225,7 +225,7 @@ export const useUIStore = defineStore("ui", () => {
   const sidebarWidth = ref(loaded.sidebarWidth ?? 220);
   const rightPanelWidth = ref(loaded.rightPanelWidth ?? 300);
   const toastPosition = ref<ToastPosition>(loaded.toastPosition ?? "bottom-left");
-  const defaultChatAgent = ref<'claude' | 'claude-acp' | 'gemini' | 'codex'>(loaded.defaultChatAgent ?? 'claude');
+  const defaultChatAgent = ref<string>(loaded.defaultChatAgent ?? 'claude');
   // In-memory blob URL for the current wallpaper (not persisted).
   const bgImageUrl = ref<string>("");
   const missionActiveCount = ref(0);

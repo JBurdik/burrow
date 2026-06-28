@@ -2,6 +2,11 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
+export interface ProjectSettings {
+  claude_config_dir?: string  // override CLAUDE_CONFIG_DIR for this project
+  env_file?: string           // path to .env relative to project root (default: .env)
+}
+
 // A Script is an ORDERED LIST OF STEPS run SEQUENTIALLY in one terminal tab.
 // Steps are chained into a single shell command line:
 //   continueOnError = false → "cmd1 && cmd2"  (next runs only if prev SUCCEEDED)
@@ -59,6 +64,28 @@ function parseTomlValue(val: string): unknown {
   return val;
 }
 
+function parseSettingsToml(content: string): ProjectSettings {
+  const settings: ProjectSettings = {};
+  // Match [settings] block up to the next section header or EOF
+  const m = content.match(/(?:^|\n)\[settings\]\n([\s\S]*?)(?=\n\[|\s*$)/);
+  if (!m) return settings;
+  for (const line of m[1].split("\n")) {
+    const kv = line.match(/^\s*(\w+)\s*=\s*(.+?)\s*$/);
+    if (!kv) continue;
+    const val = parseTomlValue(kv[2].trim());
+    if (typeof val === "string") (settings as Record<string, string>)[kv[1]] = val;
+  }
+  return settings;
+}
+
+function serializeSettingsToml(settings: ProjectSettings): string {
+  const pairs = (Object.entries(settings) as [string, string | undefined][]).filter(
+    ([, v]) => v != null && v !== "",
+  );
+  if (!pairs.length) return "";
+  return "[settings]\n" + pairs.map(([k, v]) => `${k} = "${escapeToml(String(v))}"`).join("\n") + "\n\n";
+}
+
 function parseScriptsToml(content: string): Script[] {
   const scripts: Script[] = [];
   const sections = content.split(/^\[\[scripts\]\]\s*$/m).slice(1);
@@ -94,16 +121,19 @@ function serializeScriptsToml(scripts: Script[]): string {
 
 export const useScriptsStore = defineStore("scripts", () => {
   const scriptsCache = ref<Record<string, Script[]>>({});
+  const settingsCache = ref<Record<string, ProjectSettings>>({});
 
   async function loadForPath(workspacePath: string): Promise<Script[]> {
     try {
       const content = await invoke<string>("read_text_file", {
         path: workspacePath + "/.burrow/config.toml",
       });
+      settingsCache.value[workspacePath] = parseSettingsToml(content);
       const parsed = parseScriptsToml(content);
       scriptsCache.value[workspacePath] = parsed;
       return parsed;
     } catch {
+      settingsCache.value[workspacePath] = {};
       scriptsCache.value[workspacePath] = [];
       return [];
     }
@@ -111,11 +141,22 @@ export const useScriptsStore = defineStore("scripts", () => {
 
   async function saveForPath(workspacePath: string): Promise<void> {
     const scripts = scriptsCache.value[workspacePath] ?? [];
-    const content = serializeScriptsToml(scripts);
+    const settings = settingsCache.value[workspacePath] ?? {};
+    const content = serializeSettingsToml(settings) + serializeScriptsToml(scripts);
     await invoke("write_text_file", {
       path: workspacePath + "/.burrow/config.toml",
       content,
     });
+  }
+
+  function settingsFor(workspacePath: string | null | undefined): ProjectSettings {
+    if (!workspacePath) return {};
+    return settingsCache.value[workspacePath] ?? {};
+  }
+
+  function updateSettings(workspacePath: string, patch: Partial<ProjectSettings>): void {
+    settingsCache.value[workspacePath] = { ...(settingsCache.value[workspacePath] ?? {}), ...patch };
+    saveForPath(workspacePath);
   }
 
   function scriptsFor(workspacePath: string | null | undefined): Script[] {
@@ -162,7 +203,10 @@ export const useScriptsStore = defineStore("scripts", () => {
 
   return {
     scriptsCache,
+    settingsCache,
     scriptsFor,
+    settingsFor,
+    updateSettings,
     loadForPath,
     addScript,
     updateScript,

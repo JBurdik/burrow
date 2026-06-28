@@ -2,12 +2,37 @@
   <div class="claude-chat" :style="{ '--agent-accent': agentAccentColor }">
     <div class="chat-main">
     <div class="chat-header">
-      <ClaudeIcon :size="16" class="chat-header-icon" />
-      <span class="chat-header-title">Claude</span>
+      <component :is="currentAgentIcon" :size="16" class="chat-header-icon" :style="{ color: currentAgent?.color }" />
+      <span class="chat-header-title">{{ currentAgent?.name ?? 'Claude' }}</span>
       <span class="chat-header-cwd" :title="cwd">{{ cwdDisplay }}</span>
       <button class="chat-header-btn" title="New conversation" @click="clearChat">
         <PhArrowCounterClockwise :size="13" />
       </button>
+      <div v-if="effectiveTransport === 'acp' && sessionId" class="agent-dropdown">
+        <button ref="acpHistoryBtnEl" class="chat-header-btn" title="Resume a past session" @click="openAcpHistory">
+          <PhClockCounterClockwise :size="13" />
+        </button>
+        <Teleport to="body">
+          <div v-if="acpHistoryOpen" ref="acpHistoryMenuEl" class="floating-menu acp-history-menu" :style="{ top: acpHistoryPos.top + 'px', left: acpHistoryPos.left + 'px' }">
+            <div class="acp-history-head">{{ currentAgent?.name }} sessions</div>
+            <div v-if="!acpSessions.length" class="acp-history-empty">No past sessions</div>
+            <button
+              v-for="s in acpSessions"
+              :key="s.sessionId"
+              class="floating-menu-item acp-history-item"
+              :class="{ 'floating-menu-item-active': s.sessionId === sessionId }"
+              :title="s.sessionId"
+              @click="resumeAcpSession(s.sessionId)"
+            >
+              <div class="acp-history-row">
+                <component :is="currentAgentIcon" :size="12" :style="{ color: currentAgent?.color }" />
+                <span class="acp-history-title">{{ s.title || s.sessionId.slice(0, 8) }}</span>
+              </div>
+              <span v-if="s.updatedAt" class="model-id-hint">{{ new Date(s.updatedAt).toLocaleString() }}</span>
+            </button>
+          </div>
+        </Teleport>
+      </div>
       <button
         v-if="!compact"
         class="chat-header-btn"
@@ -18,10 +43,38 @@
         <PhGitDiff :size="13" />
         <span v-if="changedFiles.length > 0" class="changes-badge">{{ changedFiles.length }}</span>
       </button>
-      <button class="chat-header-btn" :title="`Agent: ${agentKind}`" @click="toggleAgent">
-        <PhRobot :size="13" />
-      </button>
+      <div class="agent-dropdown">
+        <button ref="agentBtnEl" class="chat-header-btn chat-header-agent" :title="`Agent: ${currentAgent?.name}`" @click="toggleAgentMenu">
+          <component :is="currentAgentIcon" :size="13" :style="{ color: currentAgent?.color }" />
+          <span class="agent-name">{{ currentAgent?.name }}</span>
+          <PhCaretDown :size="8" weight="bold" />
+        </button>
+        <Teleport to="body">
+          <div
+            v-if="agentMenuOpen"
+            ref="agentMenuEl"
+            class="floating-menu"
+            :style="{ top: agentMenuPos.top + 'px', left: agentMenuPos.left + 'px' }"
+          >
+            <button
+              v-for="a in chatAgents.agents"
+              :key="a.id"
+              class="floating-menu-item"
+              :class="{ 'floating-menu-item-active': agentKind === a.id }"
+              @click="selectAgent(a.id)"
+            >
+              <component :is="agentIconComp(a.icon)" :size="12" :style="{ color: a.color }" />
+              {{ a.name }}
+              <span class="model-id-hint">{{ a.transport === 'acp' ? 'ACP' : 'native' }}</span>
+            </button>
+            <button class="floating-menu-item floating-menu-config" @click="agentMenuOpen = false; agentConfigOpen = true">
+              <PhGear :size="12" /> Configure agents…
+            </button>
+          </div>
+        </Teleport>
+      </div>
     </div>
+    <ChatAgentConfig v-if="agentConfigOpen" :cwd="cwd" @close="agentConfigOpen = false" />
 
     <!-- Permission prompt (Bash / generic tool) -->
     <div v-if="pendingPermission" class="permission-banner">
@@ -132,7 +185,7 @@
     <div ref="scrollEl" class="chat-messages">
       <div v-if="messages.length === 0" class="chat-empty">
         <div class="chat-empty-avatar">
-          <ClaudeIcon :size="28" />
+          <component :is="currentAgentIcon" :size="28" :style="{ color: currentAgent?.color }" />
         </div>
         <span class="chat-empty-title">How can I help you?</span>
         <span class="chat-empty-sub">Working in {{ cwdDisplay }}</span>
@@ -227,7 +280,7 @@
         <template v-else>
           <div class="agent-msg-row">
             <div class="agent-avatar">
-              <ClaudeIcon :size="14" />
+              <component :is="currentAgentIcon" :size="14" :style="{ color: currentAgent?.color }" />
             </div>
             <div class="assistant-content">
               <!-- eslint-disable-next-line vue/no-v-html -->
@@ -240,7 +293,7 @@
 
       <div v-if="busy && !hasPartialAssistant" class="chat-thinking">
         <div class="agent-avatar agent-avatar-sm">
-          <ClaudeIcon :size="12" />
+          <component :is="currentAgentIcon" :size="12" :style="{ color: currentAgent?.color }" />
         </div>
         <span class="thinking-dot" /><span class="thinking-dot" /><span class="thinking-dot" />
       </div>
@@ -339,8 +392,8 @@
             >
               <PhTextAa :size="13" />
             </button>
-            <!-- Model switcher -->
-            <div class="model-dropdown">
+            <!-- Model switcher (native Claude only — ACP agents manage their own model) -->
+            <div v-if="effectiveTransport === 'stream-json'" class="model-dropdown">
               <button ref="modelBtnEl" class="toolbar-btn toolbar-btn-label" @click="toggleModelMenu">
                 {{ selectedModelLabel }}
                 <PhCaretDown :size="9" weight="bold" class="btn-caret" />
@@ -366,7 +419,7 @@
               </Teleport>
             </div>
             <!-- Profile switcher (only shown when more than one profile exists) -->
-            <div v-if="profilesStore.profiles.length > 1" class="model-dropdown">
+            <div v-if="effectiveTransport === 'stream-json' && profilesStore.profiles.length > 1" class="model-dropdown">
               <button
                 ref="profileBtnEl"
                 class="toolbar-btn toolbar-btn-label"
@@ -398,8 +451,8 @@
                 </div>
               </Teleport>
             </div>
-            <!-- Permission mode switcher -->
-            <div class="perm-mode-dropdown">
+            <!-- Permission mode switcher (native Claude only) -->
+            <div v-if="effectiveTransport === 'stream-json'" class="perm-mode-dropdown">
               <button
                 ref="permBtnEl"
                 class="toolbar-btn"
@@ -429,6 +482,51 @@
                   >
                     <component :is="PERM_ICON[m]" :size="13" weight="bold" />
                     <span>{{ PERM_META[m].label }}</span>
+                  </button>
+                </div>
+              </Teleport>
+            </div>
+
+            <!-- ACP model switcher (driven by the adapter's configOptions) -->
+            <div v-if="effectiveTransport === 'acp' && acpModelOption" class="model-dropdown">
+              <button ref="acpModelBtnEl" class="toolbar-btn toolbar-btn-label" @click="openAcpMenu('model')">
+                {{ acpModelLabel }}
+                <PhCaretDown :size="9" weight="bold" class="btn-caret" />
+              </button>
+              <Teleport to="body">
+                <div v-if="acpModelMenuOpen" ref="acpModelMenuEl" class="floating-menu" :style="{ top: acpModelMenuPos.top + 'px', left: acpModelMenuPos.left + 'px' }">
+                  <button
+                    v-for="c in acpModelOption.options"
+                    :key="c.value"
+                    class="floating-menu-item"
+                    :class="{ 'floating-menu-item-active': acpModelOption.currentValue === c.value }"
+                    :title="c.description"
+                    @click="acpSelectModel(c.value)"
+                  >
+                    {{ c.name }}
+                  </button>
+                </div>
+              </Teleport>
+            </div>
+
+            <!-- ACP permission-mode switcher (driven by the adapter's session modes) -->
+            <div v-if="effectiveTransport === 'acp' && acpModes" class="perm-mode-dropdown">
+              <button ref="acpModeBtnEl" class="toolbar-btn" :title="`Permission mode: ${acpModeLabel}`" @click="openAcpMenu('mode')">
+                <PhShieldCheck :size="13" weight="bold" />
+                <span class="perm-mode-label">{{ acpModeLabel }}</span>
+                <PhCaretDown :size="9" weight="bold" class="perm-mode-caret" />
+              </button>
+              <Teleport to="body">
+                <div v-if="acpModeMenuOpen" ref="acpModeMenuEl" class="floating-menu" :style="{ top: acpModeMenuPos.top + 'px', left: acpModeMenuPos.left + 'px' }">
+                  <button
+                    v-for="m in acpModes.availableModes"
+                    :key="m.id"
+                    class="floating-menu-item"
+                    :class="{ 'floating-menu-item-active': acpModes.currentModeId === m.id }"
+                    :title="m.description"
+                    @click="acpSelectMode(m.id)"
+                  >
+                    {{ m.name }}
                   </button>
                 </div>
               </Teleport>
@@ -512,16 +610,18 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
-import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown, PhCaretRight, PhX, PhUserGear, PhClock, PhFile, PhSparkle, PhFastForward, PhRobot } from "@phosphor-icons/vue";
+import { PhArrowUp, PhArrowCounterClockwise, PhWrench, PhStop, PhShieldWarning, PhShieldCheck, PhPencilSimple, PhGitDiff, PhArrowsClockwise, PhListChecks, PhTextAa, PhCaretDown, PhCaretRight, PhX, PhUserGear, PhClock, PhFile, PhSparkle, PhFastForward, PhGear, PhClockCounterClockwise } from "@phosphor-icons/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { parseAcpUpdate, parseAcpPermRequest } from "@/lib/acpParser";
-import type { PermissionDecision } from "@/lib/agentTransport";
-import ClaudeIcon from "@/components/icons/ClaudeIcon.vue";
 import { useClaudeChatsStore } from "@/stores/claudeChats";
 import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useEditorContextStore } from "@/stores/editorContext";
+import { useScriptsStore } from "@/stores/scripts";
+import { useChatAgentsStore } from "@/stores/chatAgents";
+import { agentIconComp } from "@/lib/agentIcons";
+import ChatAgentConfig from "@/components/ChatAgentConfig.vue";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -554,38 +654,183 @@ const props = defineProps<{
   defaultModel?: string;
   // Wire transport: "stream-json" (Claude CLI, default) or "acp".
   transport?: 'stream-json' | 'acp';
-  // Which agent to run. All except 'claude' use ACP transport.
-  agentKind?: 'claude' | 'claude-acp' | 'gemini' | 'codex';
+  // Which agent to run — a chatAgents store id (default 'claude').
+  agentKind?: string;
 }>();
 
 const chats = useClaudeChatsStore();
 const notifStore = useNotificationsStore();
+const scriptsStore = useScriptsStore();
+const chatAgents = useChatAgentsStore();
 const editorCtx = useEditorContextStore();
 
-// "acp" when agentKind!=claude or the transport prop says so; else "stream-json".
-const effectiveTransport = computed(() =>
-  agentKind.value !== 'claude' || props.transport === 'acp' ? 'acp' : 'stream-json'
-);
-// Per-agent accent color.
-const agentAccentColor = computed(() => {
-  if (agentKind.value === 'gemini') return '#1a73e8';
-  if (agentKind.value === 'codex') return '#74aa9c';
-  if (agentKind.value === 'claude-acp') return '#a855f7';
-  return 'var(--chat-accent)';
-});
-// ACP permission: JSON-RPC id of the agent's blocking request_permission.
-const acpPermRpcId = ref<number | null>(null);
-// Local mirror of the session's agentKind, drives the header switcher icon.
-const agentKind = ref<'claude' | 'claude-acp' | 'gemini' | 'codex'>(
+// Local mirror of the session's agentKind (a chatAgents id), drives the switcher.
+const agentKind = ref<string>(
   chats.sessions.find((s) => s.id === props.chatId)?.agentKind ?? props.agentKind ?? 'claude'
 );
-const AGENT_CYCLE: Array<'claude' | 'claude-acp' | 'gemini' | 'codex'> = ['claude', 'claude-acp', 'gemini', 'codex'];
-async function toggleAgent() {
-  const idx = AGENT_CYCLE.indexOf(agentKind.value);
-  const next = AGENT_CYCLE[(idx + 1) % AGENT_CYCLE.length];
-  agentKind.value = next;
-  chats.sync(props.chatId, { agentKind: next, transport: next === 'claude' ? 'stream-json' : 'acp' });
+// The resolved agent definition from the registry.
+const currentAgent = computed(() => chatAgents.byId(agentKind.value));
+const currentAgentIcon = computed(() => agentIconComp(currentAgent.value?.icon));
+// "acp" per the agent's transport (or the transport prop override); else "stream-json".
+const effectiveTransport = computed(() =>
+  props.transport === 'acp' || currentAgent.value?.transport === 'acp' ? 'acp' : 'stream-json'
+);
+// Per-agent accent color.
+const agentAccentColor = computed(() =>
+  agentKind.value === 'claude' ? 'var(--chat-accent)' : (currentAgent.value?.color ?? 'var(--chat-accent)'),
+);
+// ACP permission: JSON-RPC id of the agent's blocking request_permission.
+const acpPermRpcId = ref<number | null>(null);
+
+// ── ACP session state (model + permission mode + resume) ──────────────────────
+interface AcpMode { id: string; name: string; description?: string }
+interface AcpModes { currentModeId: string; availableModes: AcpMode[] }
+interface AcpConfigChoice { value: string; name: string; description?: string }
+interface AcpConfigOption { id: string; name: string; type: string; currentValue: string; options: AcpConfigChoice[] }
+interface AcpSessionInfo { sessionId: string; title?: string; updatedAt?: string }
+// JSON-RPC id of the in-flight session/prompt — correlates the turn-done response.
+const acpPromptRpcId = ref<number | null>(null);
+// rpc ids of in-flight control calls (set_mode/set_config/list) → refresh UI on reply.
+const acpControlIds = new Set<number>();
+const acpModes = ref<AcpModes | null>(null);
+const acpConfigOptions = ref<AcpConfigOption[]>([]);
+const acpSessions = ref<AcpSessionInfo[]>([]);
+const acpHistoryOpen = ref(false);
+const acpHistoryBtnEl = ref<HTMLElement | null>(null);
+const acpHistoryMenuEl = ref<HTMLElement | null>(null);
+const acpHistoryPos = ref({ top: 0, left: 0 });
+const acpModelKey = (cid: number) => `burrow.acpModel.${cid}`;
+const acpModeKey = (cid: number) => `burrow.acpMode.${cid}`;
+const acpModelOption = computed(() => acpConfigOptions.value.find((o) => o.id === "model"));
+const acpModeLabel = computed(() => acpModes.value?.availableModes.find((m) => m.id === acpModes.value?.currentModeId)?.name ?? "Mode");
+const acpModelLabel = computed(() => { const o = acpModelOption.value; return o?.options.find((c) => c.value === o.currentValue)?.name ?? "Model"; });
+
+const acpModeMenuOpen = ref(false);
+const acpModeBtnEl = ref<HTMLElement | null>(null);
+const acpModeMenuEl = ref<HTMLElement | null>(null);
+const acpModeMenuPos = ref({ top: 0, left: 0 });
+const acpModelMenuOpen = ref(false);
+const acpModelBtnEl = ref<HTMLElement | null>(null);
+const acpModelMenuEl = ref<HTMLElement | null>(null);
+const acpModelMenuPos = ref({ top: 0, left: 0 });
+
+function openAcpMenu(which: "mode" | "model") {
+  const btn = which === "mode" ? acpModeBtnEl.value : acpModelBtnEl.value;
+  const openRef = which === "mode" ? acpModeMenuOpen : acpModelMenuOpen;
+  const posRef = which === "mode" ? acpModeMenuPos : acpModelMenuPos;
+  const count = which === "mode" ? (acpModes.value?.availableModes.length ?? 0) : (acpModelOption.value?.options.length ?? 0);
+  if (!openRef.value && btn) {
+    const r = btn.getBoundingClientRect();
+    posRef.value = { top: Math.round(r.top - (count * 36 + 12) - 6), left: Math.round(r.left) };
+  }
+  openRef.value = !openRef.value;
+}
+function onAcpMenuOutside(e: MouseEvent) {
+  const t = e.target as Node;
+  if (acpModeMenuOpen.value && !acpModeBtnEl.value?.contains(t) && !acpModeMenuEl.value?.contains(t)) acpModeMenuOpen.value = false;
+  if (acpModelMenuOpen.value && !acpModelBtnEl.value?.contains(t) && !acpModelMenuEl.value?.contains(t)) acpModelMenuOpen.value = false;
+  if (acpHistoryOpen.value && !acpHistoryBtnEl.value?.contains(t) && !acpHistoryMenuEl.value?.contains(t)) acpHistoryOpen.value = false;
+}
+async function acpSelectMode(modeId: string) {
+  acpModeMenuOpen.value = false;
+  if (acpModes.value) acpModes.value.currentModeId = modeId;
+  localStorage.setItem(acpModeKey(props.chatId), modeId);
+  try {
+    const rid = await invoke<number>("acp_set_mode", { id: props.chatId, modeId });
+    acpControlIds.add(rid);
+  } catch (e) {
+    messages.value.push({ id: nextMsgId++, role: "assistant", text: `Failed to set mode: ${e}` });
+  }
+}
+async function acpSelectModel(value: string) {
+  acpModelMenuOpen.value = false;
+  if (acpModelOption.value) acpModelOption.value.currentValue = value;
+  localStorage.setItem(acpModelKey(props.chatId), value);
+  try {
+    const rid = await invoke<number>("acp_set_config", { id: props.chatId, configId: "model", value });
+    acpControlIds.add(rid);
+  } catch (e) {
+    messages.value.push({ id: nextMsgId++, role: "assistant", text: `Failed to set model: ${e}` });
+  }
+}
+
+// History picker: list prior sessions for this cwd, then resume the chosen one.
+async function openAcpHistory() {
+  acpHistoryOpen.value = !acpHistoryOpen.value;
+  if (!acpHistoryOpen.value) return;
+  if (!sessionId.value) { acpHistoryOpen.value = false; return; } // adapter still starting
+  if (acpHistoryBtnEl.value) {
+    const r = acpHistoryBtnEl.value.getBoundingClientRect();
+    acpHistoryPos.value = { top: Math.round(r.bottom + 6), left: Math.round(Math.max(8, r.right - 280)) };
+  }
+  try {
+    const rid = await invoke<number>("acp_list_sessions", { id: props.chatId, cwd: props.cwd });
+    acpControlIds.add(rid);
+  } catch (e) {
+    console.warn("acp_list_sessions failed:", e); // transient (adapter not ready) — don't pollute the feed
+  }
+}
+async function resumeAcpSession(sid: string) {
+  acpHistoryOpen.value = false;
+  if (sid === sessionId.value) return;
+  suppressNextDone.value = true;
+  messages.value = [];
+  busy.value = false;
+  sessionId.value = sid;
+  chats.sync(props.chatId, { claudeSessionId: sid });
+  localStorage.removeItem(msgKey(props.chatId)); // replayed history repopulates it
+  await invoke("acp_stop", { id: props.chatId }).catch(() => {});
+  // emitHistory:true → Rust forwards the session/load replay so old turns render.
+  const startErr = await invoke("acp_start", acpStartPayload(true)).catch((e: unknown) => e);
+  if (startErr) messages.value.push({ id: nextMsgId++, role: "assistant", text: `Failed to resume: ${startErr}` });
+}
+
+// Agent switcher dropdown.
+const agentMenuOpen = ref(false);
+const agentBtnEl = ref<HTMLElement | null>(null);
+const agentMenuEl = ref<HTMLElement | null>(null);
+const agentMenuPos = ref({ top: 0, left: 0 });
+const agentConfigOpen = ref(false);
+function toggleAgentMenu() {
+  if (!agentMenuOpen.value && agentBtnEl.value) {
+    const r = agentBtnEl.value.getBoundingClientRect();
+    agentMenuPos.value = { top: Math.round(r.bottom + 6), left: Math.round(r.left) };
+  }
+  agentMenuOpen.value = !agentMenuOpen.value;
+}
+function onAgentMenuOutside(e: MouseEvent) {
+  if (!agentMenuOpen.value) return;
+  const t = e.target as Node;
+  if (agentBtnEl.value?.contains(t) || agentMenuEl.value?.contains(t)) return;
+  agentMenuOpen.value = false;
+}
+async function selectAgent(id: string) {
+  agentMenuOpen.value = false;
+  if (id === agentKind.value) return;
+  // Stop OLD process before agentKind changes (effectiveTransport depends on it).
+  await invoke(effectiveTransport.value === 'acp' ? 'acp_stop' : 'claude_stop', { id: props.chatId }).catch(() => {});
+  agentKind.value = id;
+  chats.sync(props.chatId, { agentKind: id, transport: currentAgent.value?.transport ?? 'stream-json' });
   await clearChat();
+}
+
+// Build the acp_start invoke payload from the current agent + per-project settings.
+function acpStartPayload(emitHistory = false) {
+  const a = currentAgent.value;
+  const proj = scriptsStore.settingsFor(props.cwd);
+  return {
+    emitHistory,
+    id: props.chatId,
+    cwd: props.cwd,
+    command: a?.command ?? "npx",
+    args: a?.args ?? [],
+    env: a?.env ?? {},
+    kind: a?.kind ?? "custom",
+    configDir: proj.claude_config_dir || a?.env?.CLAUDE_CONFIG_DIR || null,
+    envFile: proj.env_file || null,
+    // Resume the chat's prior ACP session (server-side history) when we have its id.
+    resumeSessionId: sessionId.value || null,
+  };
 }
 
 // Relative-to-cwd path for a shared selection's @-reference.
@@ -1310,8 +1555,48 @@ function onAcpData(raw: string) {
   let msg: Record<string, unknown>;
   try { msg = JSON.parse(raw); } catch { return; }
 
-  // Turn done — response to our session/prompt (has id, no method).
+  // Session info emitted by acp_start after the handshake: sessionId (for resume)
+  // + modes/configOptions (populate the permission-mode / model selectors).
+  if (msg._burrow === "session") {
+    const sid = msg.sessionId as string;
+    if (sid) { sessionId.value = sid; chats.sync(props.chatId, { claudeSessionId: sid }); }
+    acpModes.value = (msg.modes as AcpModes) ?? null;
+    acpConfigOptions.value = (msg.configOptions as AcpConfigOption[]) ?? [];
+    // Finalize any messages rendered from a session/load replay (no turn-done fires
+    // for a load) and persist the restored history.
+    if (messages.value.some((m) => m.partial)) {
+      for (const m of messages.value) m.partial = false;
+      saveMessages(props.chatId, messages.value);
+      scrollToBottom();
+    }
+    // Re-apply the chat's persisted model / permission mode (selectors reset to the
+    // adapter default on each (re)start, so restore the user's choice).
+    const savedModel = localStorage.getItem(acpModelKey(props.chatId));
+    if (savedModel && acpModelOption.value && acpModelOption.value.currentValue !== savedModel) {
+      acpSelectModel(savedModel);
+    }
+    const savedMode = localStorage.getItem(acpModeKey(props.chatId));
+    if (savedMode && acpModes.value && acpModes.value.currentModeId !== savedMode) {
+      acpSelectMode(savedMode);
+    }
+    return;
+  }
+
+  // Turn done — response to OUR session/prompt (id matches the in-flight prompt).
+  // Other id'd responses share this channel: control replies refresh selectors;
+  // everything else is ignored.
   if ('id' in msg && !('method' in msg)) {
+    const rid = msg.id as number;
+    if (acpControlIds.has(rid)) {
+      acpControlIds.delete(rid);
+      const result = msg.result as { configOptions?: AcpConfigOption[]; modes?: AcpModes; sessions?: AcpSessionInfo[] } | undefined;
+      if (result?.configOptions) acpConfigOptions.value = result.configOptions;
+      if (result?.modes) acpModes.value = result.modes;
+      if (result?.sessions) acpSessions.value = result.sessions;
+      return;
+    }
+    if (acpPromptRpcId.value === null || rid !== acpPromptRpcId.value) return;
+    acpPromptRpcId.value = null;
     busy.value = false;
     for (const m of messages.value) { if (m.partial) m.partial = false; }
     saveMessages(props.chatId, messages.value);
@@ -1343,6 +1628,19 @@ function onAcpData(raw: string) {
   }
 
   if (msg.method !== "session/update") return;
+
+  // Replayed user turns (session/load history) — render as user bubbles.
+  const u = (msg.params as { update?: Record<string, unknown> })?.update;
+  if (u?.sessionUpdate === "user_message_chunk") {
+    const text = ((u.content as Record<string, unknown>)?.text as string) ?? "";
+    const mid = (u.messageId as string) ?? "u";
+    const last = messages.value.filter((m) => m.role === "user" && m._acpMsgId === mid).pop();
+    if (last) last.text += text;
+    else if (text) messages.value.push({ id: nextMsgId++, role: "user", text, _acpMsgId: mid });
+    scrollToBottom();
+    return;
+  }
+
   const event = parseAcpUpdate(msg.params);
   if (!event) return;
 
@@ -1460,7 +1758,7 @@ async function sendMessage(forcedText?: string, extraImages?: string[]) {
   scrollToBottom();
   if (effectiveTransport.value === "acp") {
     try {
-      await invoke("acp_send", { id: props.chatId, text });
+      acpPromptRpcId.value = await invoke<number>("acp_send", { id: props.chatId, text });
     } catch (e) {
       messages.value.push({ id: nextMsgId++, role: "assistant", text: `Error: ${e}` });
       busy.value = false;
@@ -1505,10 +1803,16 @@ function respondPermission(allow: boolean, opts?: { always?: boolean; updatedInp
   pendingDiff.value = null;
   // ACP transport: reply to the agent's blocking request_permission.
   if (effectiveTransport.value === "acp" && acpPermRpcId.value !== null) {
-    const decision: PermissionDecision = allow
-      ? { type: "selected", optionId: opts?.always ? "allow-always" : "allow-once" }
-      : { type: "cancelled" };
-    const optionId = decision.type === "selected" ? decision.optionId : "";
+    // ACP optionIds are agent-defined — pick the matching one by kind from the
+    // request's options (NOT a hardcoded string), else fall back to the first.
+    const optsList = ((cr as unknown as { suggestions?: Array<{ optionId: string; kind: string }> }).suggestions ?? []);
+    const pick = (...kinds: string[]) => {
+      for (const k of kinds) { const o = optsList.find((x) => x.kind === k); if (o) return o.optionId; }
+      return optsList[0]?.optionId ?? "";
+    };
+    const optionId = allow
+      ? (opts?.always ? pick("allow_always", "allow_once") : pick("allow_once", "allow_always"))
+      : pick("reject_once", "reject_always");
     messages.value.push({ id: nextMsgId++, role: "permission", text: `${allow ? "✓ Allowed" : "✗ Denied"}: ${cr.toolName}` });
     saveMessages(props.chatId, messages.value);
     invoke("acp_respond_permission", { id: props.chatId, rpcId: acpPermRpcId.value, optionId }).catch((e) => {
@@ -1609,7 +1913,7 @@ async function abortTurn() {
   suppressNextDone.value = true; // abort + restart — don't toast on the teardown `exit`
   if (effectiveTransport.value === "acp") {
     await invoke("acp_stop", { id: props.chatId }).catch(() => {});
-    await invoke("acp_start", { id: props.chatId, kind: agentKind.value === 'claude-acp' ? 'claude' : agentKind.value, cwd: props.cwd }).catch(() => {});
+    await invoke("acp_start", acpStartPayload()).catch(() => {});
     busy.value = false;
     messageQueue.value = [];
     messages.value = messages.value.filter((m) => m.role !== "queued");
@@ -1657,8 +1961,12 @@ async function clearChat() {
   acpPermRpcId.value = null;
   localStorage.removeItem(msgKey(props.chatId));
   chats.sync(props.chatId, { claudeSessionId: "", busy: false, messageCount: 0, title: `Chat` });
+  const projSettings = scriptsStore.settingsFor(props.cwd);
   if (acp) {
-    await invoke("acp_start", { id: props.chatId, kind: agentKind.value === 'claude-acp' ? 'claude' : agentKind.value, cwd: props.cwd }).catch(() => {});
+    const startErr = await invoke("acp_start", acpStartPayload()).catch((e: unknown) => e);
+    if (startErr) {
+      messages.value.push({ id: nextMsgId++, role: 'assistant', text: `Failed to start ACP adapter: ${startErr}` });
+    }
     return;
   }
   await invoke("claude_start", {
@@ -1667,7 +1975,7 @@ async function clearChat() {
     permissionMode: permMode.value,
     appendSystemPrompt: props.appendSystemPrompt || null,
     model: selectedModel.value,
-    configDir: selectedProfile.value?.configDir || null,
+    configDir: selectedProfile.value?.configDir || projSettings.claude_config_dir || null,
     profileCommand: selectedProfile.value?.command || null,
     profileArgs: selectedProfile.value?.args || null,
   }).catch(() => {});
@@ -1830,6 +2138,8 @@ onMounted(async () => {
   window.addEventListener("mousedown", onPermMenuOutside);
   window.addEventListener("mousedown", onModelMenuOutside);
   window.addEventListener("mousedown", onProfileMenuOutside);
+  window.addEventListener("mousedown", onAgentMenuOutside);
+  window.addEventListener("mousedown", onAcpMenuOutside);
   // Float (compact) control chat: pre-allow `burrow` Bash commands so routine
   // control calls (focus/list/new-tab/spawn) don't prompt every time. User can
   // still tighten via the perm-mode switch / Deny.
@@ -1839,11 +2149,11 @@ onMounted(async () => {
   if (effectiveTransport.value === "acp") {
     acpDataUL = await listen<string>(`acp-data-${props.chatId}`, (e) => onAcpData(e.payload));
     acpReqUL = await listen<string>(`acp-req-${props.chatId}`, (e) => onAcpReq(e.payload));
-    await invoke("acp_start", {
-      id: props.chatId,
-      kind: agentKind.value === 'claude-acp' ? 'claude' : agentKind.value,
-      cwd: props.cwd,
-    }).catch((e) => { console.error("acp_start failed:", e); });
+    await scriptsStore.loadForPath(props.cwd);
+    const startErr = await invoke("acp_start", acpStartPayload()).catch((e: unknown) => e);
+    if (startErr) {
+      messages.value.push({ id: nextMsgId++, role: 'assistant', text: `Failed to start ACP adapter: ${startErr}` });
+    }
     refreshChanges();
     return;
   }
@@ -1885,6 +2195,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("mousedown", onPermMenuOutside);
   window.removeEventListener("mousedown", onModelMenuOutside);
   window.removeEventListener("mousedown", onProfileMenuOutside);
+  window.removeEventListener("mousedown", onAgentMenuOutside);
+  window.removeEventListener("mousedown", onAcpMenuOutside);
   unlisten?.();
   acpDataUL?.();
   acpReqUL?.();
@@ -1918,17 +2230,19 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands,
   display: flex;
   flex-direction: row;
   height: 100%;
-  background: #0f0f11;
   overflow: hidden;
-  --chat-bg: #0f0f11;
-  --chat-surface: #18181c;
-  --chat-border: rgba(255,255,255,0.08);
-  --chat-accent: #7c3aed;
-  --chat-accent-dim: #6d28d9;
-  --chat-text: rgba(255,255,255,0.88);
-  --chat-muted: rgba(255,255,255,0.42);
-  --chat-user-bg: #1e1b2e;
-  --chat-user-border: rgba(124,58,237,0.35);
+  /* Inherit the app theme (set as :root vars by the ui store); fall back to the
+     original dark palette when a var is absent. */
+  --chat-bg: var(--bg-base, #0f0f11);
+  --chat-surface: var(--bg-panel, #18181c);
+  --chat-border: var(--border, rgba(255,255,255,0.08));
+  --chat-accent: var(--accent, #7c3aed);
+  --chat-accent-dim: var(--accent-dim, #6d28d9);
+  --chat-text: var(--text-primary, rgba(255,255,255,0.88));
+  --chat-muted: var(--text-muted, rgba(255,255,255,0.42));
+  --chat-user-bg: color-mix(in srgb, var(--chat-accent) 14%, var(--chat-bg));
+  --chat-user-border: color-mix(in srgb, var(--chat-accent) 35%, transparent);
+  background: var(--chat-bg);
 }
 
 .chat-main {
@@ -2993,6 +3307,7 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands,
   text-align: left;
   cursor: pointer;
   transition: background .1s;
+  gap: 6px;
 }
 .floating-menu-item:hover { background: rgba(255,255,255,0.06); }
 .floating-menu-item-active { color: #a78bfa; background: rgba(124,58,237,0.12); }
@@ -3003,6 +3318,21 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands,
   color: rgba(255,255,255,0.3);
   margin-left: 6px;
 }
+
+/* Agent switcher in the chat header */
+.agent-dropdown { position: relative; display: inline-flex; }
+.chat-header-agent { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; width: auto; }
+.chat-header-agent .agent-name { font-size: 11px; font-weight: 500; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.floating-menu-item > .model-id-hint { margin-left: auto; }
+.floating-menu-config { color: rgba(255,255,255,0.55); border-top: 1px solid rgba(255,255,255,0.08); border-radius: 0 0 7px 7px; margin-top: 2px; gap: 6px; justify-content: flex-start; }
+
+.acp-history-menu { min-width: 280px; max-width: 360px; max-height: 320px; overflow-y: auto; }
+.acp-history-head { padding: 4px 10px 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: rgba(255,255,255,0.35); }
+.acp-history-item { flex-direction: column; align-items: flex-start; gap: 2px; }
+.acp-history-row { display: flex; align-items: center; gap: 6px; max-width: 100%; }
+.acp-history-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acp-history-item > .model-id-hint { margin-left: 18px; }
+.acp-history-empty { padding: 10px; font-size: 11px; color: rgba(255,255,255,0.4); text-align: center; }
 
 /* Send button */
 .send-btn {

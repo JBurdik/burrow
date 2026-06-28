@@ -215,6 +215,10 @@
                 class="status-dot"
                 :class="`status-${aggStatus(wt.id)}`"
               >{{ aggStatus(wt.id) === 'running' ? spinnerFrame : '' }}</span>
+              <button class="ws-add-chat" title="New chat" data-no-drag @click.stop="newChatSession(wt.id)">
+                <ClaudeIcon :size="12" />
+                <PhPlus :size="8" weight="bold" class="ws-add-chat-plus" />
+              </button>
             </div>
 
             <!-- worktree's own terminal tabs -->

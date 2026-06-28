@@ -2649,60 +2649,87 @@ fn acp_write(stdin: &Arc<std::sync::Mutex<std::process::ChildStdin>>, msg: &serd
     g.write_all(line.as_bytes()).and_then(|_| g.flush()).map_err(|e| e.to_string())
 }
 
+/// Load key=value pairs from a .env file (ignores comments and blank lines).
+/// Called from acp_start to merge project env vars without crate dependencies.
+fn load_dotenv_file(path: &std::path::Path) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(content) = std::fs::read_to_string(path) else { return map };
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        if let Some((k, v)) = line.split_once('=') {
+            let v = v.trim().trim_matches('"').trim_matches('\'');
+            map.insert(k.trim().to_string(), v.to_string());
+        }
+    }
+    map
+}
+
 #[tauri::command]
 async fn acp_start(
     app: AppHandle,
     state: State<'_, AcpState>,
     id: u32,
-    kind: String,
     cwd: String,
+    command: String,                                  // adapter program ("npx", "gemini", "codex", "opencode", …)
+    args: Vec<String>,                                // adapter args (e.g. ["@agentclientprotocol/claude-agent-acp"])
+    env: std::collections::HashMap<String, String>,   // user-defined env from the agent registry
+    kind: Option<String>,                             // "claude"|"gemini"|"codex"|"custom" — drives special env injection
+    config_dir: Option<String>,                       // override CLAUDE_CONFIG_DIR (from .burrow/config.toml [settings])
+    env_file: Option<String>,                         // path to .env relative to cwd (default: .env)
+    resume_session_id: Option<String>,                // resume a prior session via session/load instead of session/new
+    emit_history: Option<bool>,                       // render the session/load replay (picker resume); else discard it
 ) -> Result<(), String> {
     if state.procs.lock().unwrap().contains_key(&id) {
         return Ok(());
     }
+    let emit_history = emit_history.unwrap_or(false);
 
-    // Resolve adapter command + args per agent kind. The claude adapter is an npx
-    // package that shells out to the `claude` binary, so it needs CLAUDE_CODE_EXECUTABLE
-    // pointed at the resolved binary + CLAUDE_CONFIG_DIR for the user's config.
-    let (bin_name, extra_args, mut extra_env): (&str, Vec<String>, std::collections::HashMap<String, String>) =
-        match kind.as_str() {
-            "claude" => {
-                let claude_bin = resolve_lsp_bin("claude", &cwd)
-                    .ok_or_else(|| "claude binary not found (checked ~/.local/bin, homebrew, PATH)".to_string())?;
-                let config_dir = match std::env::var("HOME") {
-                    Ok(home) => format!("{home}/claude-work"),
-                    Err(_) => "~/claude-work".to_string(),
-                };
-                let mut env = std::collections::HashMap::new();
-                env.insert("CLAUDE_CODE_EXECUTABLE".to_string(), claude_bin.to_string_lossy().to_string());
-                env.insert("CLAUDE_CONFIG_DIR".to_string(), config_dir);
-                ("npx", vec!["@agentclientprotocol/claude-agent-acp".to_string()], env)
+    let kind = kind.unwrap_or_else(|| "custom".to_string());
+    // Start from the user-defined env, then layer special per-kind injection on top.
+    let mut extra_env = env;
+
+    if kind == "claude" {
+        // The claude adapter shells out to the `claude` binary, so point it at the
+        // resolved path and blank ANTHROPIC_API_KEY so subscription OAuth flows.
+        let claude_bin = resolve_lsp_bin("claude", &cwd)
+            .ok_or_else(|| "claude binary not found (checked ~/.local/bin, homebrew, PATH)".to_string())?;
+        extra_env.insert("CLAUDE_CODE_EXECUTABLE".to_string(), claude_bin.to_string_lossy().to_string());
+        extra_env.insert("ANTHROPIC_API_KEY".to_string(), String::new());
+        if let Some(cd) = config_dir.as_deref().filter(|s| !s.trim().is_empty()) {
+            extra_env.insert("CLAUDE_CONFIG_DIR".to_string(), cd.to_string());
+        }
+    } else if kind == "codex" {
+        // Forward Codex/OpenAI keys from the host env unless the agent already set them.
+        for k in ["CODEX_API_KEY", "OPENAI_API_KEY", "OPEN_AI_API_KEY"] {
+            if !extra_env.contains_key(k) {
+                if let Ok(v) = std::env::var(k) { extra_env.insert(k.to_string(), v); }
             }
-            "gemini" => ("gemini", vec!["--acp".to_string()], std::collections::HashMap::new()),
-            "codex" => {
-                let mut env = std::collections::HashMap::new();
-                if let Ok(k) = std::env::var("CODEX_API_KEY") { env.insert("CODEX_API_KEY".to_string(), k); }
-                if let Ok(k) = std::env::var("OPENAI_API_KEY") { env.insert("OPENAI_API_KEY".to_string(), k); }
-                ("codex", vec!["--acp".to_string()], env)
-            }
-            other => return Err(format!("unknown acp kind: {other}")),
-        };
+        }
+    }
 
-    let bin = resolve_lsp_bin(bin_name, &cwd)
-        .ok_or_else(|| format!("{bin_name} binary not found (checked ~/.local/bin, homebrew, PATH)"))?;
+    let bin = resolve_lsp_bin(&command, &cwd)
+        .ok_or_else(|| format!("{command} binary not found (checked ~/.local/bin, homebrew, PATH)"))?;
 
-    // Base env: minimal inherited set + augmented PATH. Blank ANTHROPIC_API_KEY
-    // forces subscription OAuth (same as claude_start).
+    // Load .env file from project dir (env_file setting, default .env).
+    // or_insert: never override env already set above.
+    let dotenv_path = std::path::Path::new(&cwd).join(
+        env_file.as_deref().unwrap_or(".env")
+    );
+    for (k, v) in load_dotenv_file(&dotenv_path) {
+        extra_env.entry(k).or_insert(v);
+    }
+
+    // Minimal inherited base + augmented PATH (don't clobber explicit entries).
     for key in ["HOME", "USER", "TMPDIR", "LANG"] {
         if let Ok(v) = std::env::var(key) {
-            extra_env.insert(key.to_string(), v);
+            extra_env.entry(key.to_string()).or_insert(v);
         }
     }
     extra_env.insert("PATH".to_string(), augmented_path(&cwd));
-    extra_env.insert("ANTHROPIC_API_KEY".to_string(), String::new());
 
     let mut child = std::process::Command::new(&bin)
-        .args(&extra_args)
+        .args(&args)
         .current_dir(&cwd)
         .envs(&extra_env)
         .stdin(std::process::Stdio::piped())
@@ -2726,13 +2753,17 @@ async fn acp_start(
     });
 
     let stdin = Arc::new(std::sync::Mutex::new(stdin));
-    let next_id = Arc::new(std::sync::atomic::AtomicU64::new(2)); // 0,1 used by handshake
+    let next_id = Arc::new(std::sync::atomic::AtomicU64::new(3)); // 0,1,2 reserved for handshake (initialize/load/new)
 
-    // Handshake off the main thread: initialize (id 0) → session/new (id 1).
-    // Returns the BufReader (positioned past the handshake responses) + sessionId.
+    // Handshake off the main thread: initialize (id 0) → session/new or session/load (id 1).
+    // Returns the BufReader (positioned past the handshake responses) + sessionId +
+    // the session result (modes + configOptions, surfaced to the frontend selectors).
     let cwd_hs = cwd.clone();
     let stdin_hs = stdin.clone();
-    let (reader, session_id) = tauri::async_runtime::spawn_blocking(move || -> Result<(std::io::BufReader<std::process::ChildStdout>, String), String> {
+    let resume_hs = resume_session_id.clone();
+    let app_hs = app.clone();
+    let emit_history_hs = emit_history;
+    let (reader, session_id, session_result) = tauri::async_runtime::spawn_blocking(move || -> Result<(std::io::BufReader<std::process::ChildStdout>, String, serde_json::Value), String> {
         use std::io::BufRead;
         let mut reader = std::io::BufReader::new(stdout);
 
@@ -2774,24 +2805,68 @@ async fn acp_start(
         }))?;
         let _ = read_response(&mut reader, 0)?;
 
-        acp_write(&stdin_hs, &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "session/new",
-            "params": { "cwd": cwd_hs, "mcpServers": [] }
-        }))?;
-        let resp = read_response(&mut reader, 1)?;
-        let session_id = resp
-            .get("result")
-            .and_then(|r| r.get("sessionId"))
-            .and_then(|s| s.as_str())
-            .ok_or("session/new response missing sessionId")?
-            .to_string();
+        // Resume a prior conversation via session/load; fall back to session/new on error.
+        let mut result = serde_json::Value::Null;
+        let mut session_id = String::new();
+        if let Some(sid) = resume_hs.as_deref().filter(|s| !s.trim().is_empty()) {
+            acp_write(&stdin_hs, &serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "session/load",
+                "params": { "sessionId": sid, "cwd": cwd_hs, "mcpServers": [] }
+            }))?;
+            // session/load REPLAYS the prior conversation as session/update notifications
+            // before responding — forward those to the frontend so the picker renders
+            // the old history. Loop here (instead of read_response) to emit while waiting.
+            let resp = loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => return Err("acp adapter closed during session/load".to_string()),
+                    Ok(_) => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+                let t = line.trim();
+                if t.is_empty() { continue; }
+                let v: serde_json::Value = match serde_json::from_str(t) { Ok(v) => v, Err(_) => continue };
+                if v.get("method").and_then(|m| m.as_str()) == Some("session/update") {
+                    if emit_history_hs { let _ = app_hs.emit(&format!("acp-data-{id}"), t.to_string()); }
+                    continue;
+                }
+                if v.get("method").is_none() && v.get("id").and_then(|i| i.as_u64()) == Some(1) {
+                    break v;
+                }
+            };
+            if resp.get("error").is_none() {
+                session_id = sid.to_string();
+                result = resp.get("result").cloned().unwrap_or(serde_json::Value::Null);
+            }
+            // else: load failed (stale id) — fall through to session/new below
+        }
+        if session_id.is_empty() {
+            acp_write(&stdin_hs, &serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "session/new",
+                "params": { "cwd": cwd_hs, "mcpServers": [] }
+            }))?;
+            let resp = read_response(&mut reader, 2)?;
+            result = resp.get("result").cloned().unwrap_or(serde_json::Value::Null);
+            session_id = result
+                .get("sessionId")
+                .and_then(|s| s.as_str())
+                .ok_or("session/new response missing sessionId")?
+                .to_string();
+        }
 
-        Ok((reader, session_id))
+        Ok((reader, session_id, result))
     })
     .await
     .map_err(|e| e.to_string())??;
+
+    // Surface the session info (sessionId + modes + configOptions) to the frontend
+    // so the model / permission-mode selectors can populate.
+    let _ = app.emit(&format!("acp-data-{id}"), serde_json::json!({
+        "_burrow": "session",
+        "sessionId": session_id,
+        "modes": session_result.get("modes").cloned().unwrap_or(serde_json::Value::Null),
+        "configOptions": session_result.get("configOptions").cloned().unwrap_or(serde_json::Value::Null),
+    }).to_string());
 
     // Reader thread: route adapter output to the frontend.
     let app2 = app.clone();
@@ -2823,8 +2898,10 @@ async fn acp_start(
     Ok(())
 }
 
+/// Sends a prompt and returns the JSON-RPC id used, so the frontend can match the
+/// turn-done response (other responses like set_mode share the acp-data channel).
 #[tauri::command]
-fn acp_send(state: State<AcpState>, id: u32, text: String) -> Result<(), String> {
+fn acp_send(state: State<AcpState>, id: u32, text: String) -> Result<u64, String> {
     let guard = state.procs.lock().unwrap();
     let proc = guard.get(&id).ok_or("acp adapter not running")?;
     let rpc_id = proc.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2836,7 +2913,50 @@ fn acp_send(state: State<AcpState>, id: u32, text: String) -> Result<(), String>
             "sessionId": proc.session_id,
             "prompt": [ { "type": "text", "text": text } ]
         }
-    }))
+    }))?;
+    Ok(rpc_id)
+}
+
+/// Sets the session permission mode (session/set_mode). Returns the rpc id so the
+/// frontend can refresh its selectors from the response (which carries modes).
+#[tauri::command]
+fn acp_set_mode(state: State<AcpState>, id: u32, mode_id: String) -> Result<u64, String> {
+    let guard = state.procs.lock().unwrap();
+    let proc = guard.get(&id).ok_or("acp adapter not running")?;
+    let rpc_id = proc.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    acp_write(&proc.stdin, &serde_json::json!({
+        "jsonrpc": "2.0", "id": rpc_id, "method": "session/set_mode",
+        "params": { "sessionId": proc.session_id, "modeId": mode_id }
+    }))?;
+    Ok(rpc_id)
+}
+
+/// Sets a session config option (session/set_config_option), e.g. model or effort.
+/// Returns the rpc id; the response echoes the updated configOptions.
+#[tauri::command]
+fn acp_set_config(state: State<AcpState>, id: u32, config_id: String, value: String) -> Result<u64, String> {
+    let guard = state.procs.lock().unwrap();
+    let proc = guard.get(&id).ok_or("acp adapter not running")?;
+    let rpc_id = proc.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    acp_write(&proc.stdin, &serde_json::json!({
+        "jsonrpc": "2.0", "id": rpc_id, "method": "session/set_config_option",
+        "params": { "sessionId": proc.session_id, "configId": config_id, "value": value }
+    }))?;
+    Ok(rpc_id)
+}
+
+/// Lists prior sessions for `cwd` (session/list). Returns the rpc id; the response
+/// (with `{sessions:[...]}`) is matched on acp-data and shown in the history picker.
+#[tauri::command]
+fn acp_list_sessions(state: State<AcpState>, id: u32, cwd: String) -> Result<u64, String> {
+    let guard = state.procs.lock().unwrap();
+    let proc = guard.get(&id).ok_or("acp adapter not running")?;
+    let rpc_id = proc.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    acp_write(&proc.stdin, &serde_json::json!({
+        "jsonrpc": "2.0", "id": rpc_id, "method": "session/list",
+        "params": { "cwd": cwd }
+    }))?;
+    Ok(rpc_id)
 }
 
 #[tauri::command]
@@ -4308,6 +4428,9 @@ pub fn run() {
             acp_send,
             acp_stop,
             acp_respond_permission,
+            acp_set_mode,
+            acp_set_config,
+            acp_list_sessions,
             claude_get_account,
             read_file_base64,
             save_temp_image,

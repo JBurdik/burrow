@@ -5,6 +5,7 @@ import { createActor } from "xstate";
 import type { TermStatus } from "@/lib/terminalStatus";
 import { agentStatusMachine } from "@/machines/agentStatus";
 import type { AgentStatusEvent } from "@/machines/agentStatus";
+import { useChatAgentsStore } from "@/stores/chatAgents";
 
 export interface ClaudeSession {
   id: number;
@@ -21,8 +22,8 @@ export interface ClaudeSession {
   control?: boolean;
   // Set when the user manually renames the tab — prevents auto-title from overwriting.
   pinnedTitle?: boolean;
-  // Which agent backs this chat (default 'claude'); all except 'claude' use ACP transport.
-  agentKind?: 'claude' | 'claude-acp' | 'gemini' | 'codex';
+  // Which agent backs this chat — a chatAgents store id (default 'claude').
+  agentKind?: string;
   // Wire protocol: 'stream-json' (Claude CLI) or 'acp' (Agent Client Protocol).
   transport?: 'stream-json' | 'acp';
 }
@@ -129,10 +130,11 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
   }
 
   // Create and activate a new session for this workspace.
-  function create(workspaceId: number, opts?: { agentKind?: 'claude' | 'claude-acp' | 'gemini' | 'codex' }): ClaudeSession {
+  function create(workspaceId: number, opts?: { agentKind?: string }): ClaudeSession {
     const id = nextId++;
     const agentKind = opts?.agentKind ?? 'claude';
-    const transport: 'stream-json' | 'acp' = agentKind !== 'claude' ? 'acp' : 'stream-json';
+    const transport: 'stream-json' | 'acp' =
+      useChatAgentsStore().byId(agentKind)?.transport ?? (agentKind === 'claude' ? 'stream-json' : 'acp');
     const session: ClaudeSession = {
       id,
       workspaceId,

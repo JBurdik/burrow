@@ -304,20 +304,27 @@
             <div class="field">
               <div class="field-info">
                 <span class="field-name">Default agent</span>
-                <span class="field-desc">Agent used when opening a new chat. <code>claude-acp</code> / <code>gemini</code> / <code>codex</code> use the ACP protocol.</span>
+                <span class="field-desc">Agent used when opening a new chat.</span>
               </div>
               <select
                 class="select"
                 :value="ui.defaultChatAgent"
-                @change="ui.defaultChatAgent = ($event.target as HTMLSelectElement).value as typeof ui.defaultChatAgent"
+                @change="ui.defaultChatAgent = ($event.target as HTMLSelectElement).value"
               >
-                <option value="claude">Claude (stream-json, default)</option>
-                <option value="claude-acp">Claude ACP (opt-in)</option>
-                <option value="gemini">Gemini</option>
-                <option value="codex">Codex / OpenAI</option>
+                <option v-for="a in chatAgents.agents" :key="a.id" :value="a.id">
+                  {{ a.name }} ({{ a.transport === 'acp' ? 'ACP' : 'native' }})
+                </option>
               </select>
             </div>
+            <div class="field">
+              <div class="field-info">
+                <span class="field-name">Chat agents</span>
+                <span class="field-desc">Add / edit ACP agents — command, args, environment variables, icon &amp; color.</span>
+              </div>
+              <button class="btn" @click="agentConfigOpen = true">Configure agents…</button>
+            </div>
           </div>
+          <ChatAgentConfig v-if="agentConfigOpen" @close="agentConfigOpen = false" />
 
           <div class="settings-group">
             <span class="group-label">Floating windows</span>
@@ -1347,6 +1354,8 @@ import { useScriptsStore, type Script } from "@/stores/scripts";
 import { useProfilesStore, DEFAULT_PROFILE_ID } from "@/stores/profiles";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUIStore, UI_FONTS, TERMINAL_FONTS, NTFY_EVENTS, TOAST_POSITIONS, type NtfyEvent, type ToastPosition } from "@/stores/ui";
+import { useChatAgentsStore } from "@/stores/chatAgents";
+import ChatAgentConfig from "@/components/ChatAgentConfig.vue";
 import { testNtfy } from "@/lib/ntfy";
 import { useUpdateStore } from "@/stores/update";
 import { THEMES } from "@/themes";
@@ -1366,6 +1375,8 @@ async function pickProfileConfigDir(id: string) {
 }
 const wsStore = useWorkspaceStore();
 const ui = useUIStore();
+const chatAgents = useChatAgentsStore();
+const agentConfigOpen = ref(false);
 const update = useUpdateStore();
 
 // ── Scripts ──
