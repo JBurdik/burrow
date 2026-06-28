@@ -509,6 +509,28 @@
               </Teleport>
             </div>
 
+            <!-- ACP effort switcher (driven by the adapter's configOptions) -->
+            <div v-if="effectiveTransport === 'acp' && acpEffortOption" class="model-dropdown">
+              <button ref="acpEffortBtnEl" class="toolbar-btn toolbar-btn-label" @click="openAcpMenu('effort')">
+                {{ acpEffortLabel }}
+                <PhCaretDown :size="9" weight="bold" class="btn-caret" />
+              </button>
+              <Teleport to="body">
+                <div v-if="acpEffortMenuOpen" ref="acpEffortMenuEl" class="floating-menu" :style="{ top: acpEffortMenuPos.top + 'px', left: acpEffortMenuPos.left + 'px' }">
+                  <button
+                    v-for="c in acpEffortOption.options"
+                    :key="c.value"
+                    class="floating-menu-item"
+                    :class="{ 'floating-menu-item-active': acpEffortOption.currentValue === c.value }"
+                    :title="c.description"
+                    @click="acpSelectEffort(c.value)"
+                  >
+                    {{ c.name }}
+                  </button>
+                </div>
+              </Teleport>
+            </div>
+
             <!-- ACP permission-mode switcher (driven by the adapter's session modes) -->
             <div v-if="effectiveTransport === 'acp' && acpModes" class="perm-mode-dropdown">
               <button ref="acpModeBtnEl" class="toolbar-btn" :title="`Permission mode: ${acpModeLabel}`" @click="openAcpMenu('mode')">
@@ -701,9 +723,12 @@ const acpHistoryMenuEl = ref<HTMLElement | null>(null);
 const acpHistoryPos = ref({ top: 0, left: 0 });
 const acpModelKey = (cid: number) => `burrow.acpModel.${cid}`;
 const acpModeKey = (cid: number) => `burrow.acpMode.${cid}`;
+const acpEffortKey = (cid: number) => `burrow.acpEffort.${cid}`;
 const acpModelOption = computed(() => acpConfigOptions.value.find((o) => o.id === "model"));
+const acpEffortOption = computed(() => acpConfigOptions.value.find((o) => o.id === "effort"));
 const acpModeLabel = computed(() => acpModes.value?.availableModes.find((m) => m.id === acpModes.value?.currentModeId)?.name ?? "Mode");
 const acpModelLabel = computed(() => { const o = acpModelOption.value; return o?.options.find((c) => c.value === o.currentValue)?.name ?? "Model"; });
+const acpEffortLabel = computed(() => { const o = acpEffortOption.value; return o?.options.find((c) => c.value === o.currentValue)?.name ?? "Effort"; });
 
 const acpModeMenuOpen = ref(false);
 const acpModeBtnEl = ref<HTMLElement | null>(null);
@@ -713,12 +738,16 @@ const acpModelMenuOpen = ref(false);
 const acpModelBtnEl = ref<HTMLElement | null>(null);
 const acpModelMenuEl = ref<HTMLElement | null>(null);
 const acpModelMenuPos = ref({ top: 0, left: 0 });
+const acpEffortMenuOpen = ref(false);
+const acpEffortBtnEl = ref<HTMLElement | null>(null);
+const acpEffortMenuEl = ref<HTMLElement | null>(null);
+const acpEffortMenuPos = ref({ top: 0, left: 0 });
 
-function openAcpMenu(which: "mode" | "model") {
-  const btn = which === "mode" ? acpModeBtnEl.value : acpModelBtnEl.value;
-  const openRef = which === "mode" ? acpModeMenuOpen : acpModelMenuOpen;
-  const posRef = which === "mode" ? acpModeMenuPos : acpModelMenuPos;
-  const count = which === "mode" ? (acpModes.value?.availableModes.length ?? 0) : (acpModelOption.value?.options.length ?? 0);
+function openAcpMenu(which: "mode" | "model" | "effort") {
+  const btn = which === "mode" ? acpModeBtnEl.value : which === "effort" ? acpEffortBtnEl.value : acpModelBtnEl.value;
+  const openRef = which === "mode" ? acpModeMenuOpen : which === "effort" ? acpEffortMenuOpen : acpModelMenuOpen;
+  const posRef = which === "mode" ? acpModeMenuPos : which === "effort" ? acpEffortMenuPos : acpModelMenuPos;
+  const count = which === "mode" ? (acpModes.value?.availableModes.length ?? 0) : which === "effort" ? (acpEffortOption.value?.options.length ?? 0) : (acpModelOption.value?.options.length ?? 0);
   if (!openRef.value && btn) {
     const r = btn.getBoundingClientRect();
     posRef.value = { top: Math.round(r.top - (count * 36 + 12) - 6), left: Math.round(r.left) };
@@ -729,6 +758,7 @@ function onAcpMenuOutside(e: MouseEvent) {
   const t = e.target as Node;
   if (acpModeMenuOpen.value && !acpModeBtnEl.value?.contains(t) && !acpModeMenuEl.value?.contains(t)) acpModeMenuOpen.value = false;
   if (acpModelMenuOpen.value && !acpModelBtnEl.value?.contains(t) && !acpModelMenuEl.value?.contains(t)) acpModelMenuOpen.value = false;
+  if (acpEffortMenuOpen.value && !acpEffortBtnEl.value?.contains(t) && !acpEffortMenuEl.value?.contains(t)) acpEffortMenuOpen.value = false;
   if (acpHistoryOpen.value && !acpHistoryBtnEl.value?.contains(t) && !acpHistoryMenuEl.value?.contains(t)) acpHistoryOpen.value = false;
 }
 async function acpSelectMode(modeId: string) {
@@ -751,6 +781,17 @@ async function acpSelectModel(value: string) {
     acpControlIds.add(rid);
   } catch (e) {
     messages.value.push({ id: nextMsgId++, role: "assistant", text: `Failed to set model: ${e}` });
+  }
+}
+async function acpSelectEffort(value: string) {
+  acpEffortMenuOpen.value = false;
+  if (acpEffortOption.value) acpEffortOption.value.currentValue = value;
+  localStorage.setItem(acpEffortKey(props.chatId), value);
+  try {
+    const rid = await invoke<number>("acp_set_config", { id: props.chatId, configId: "effort", value });
+    acpControlIds.add(rid);
+  } catch (e) {
+    messages.value.push({ id: nextMsgId++, role: "assistant", text: `Failed to set effort: ${e}` });
   }
 }
 
@@ -1578,6 +1619,10 @@ function onAcpData(raw: string) {
     const savedMode = localStorage.getItem(acpModeKey(props.chatId));
     if (savedMode && acpModes.value && acpModes.value.currentModeId !== savedMode) {
       acpSelectMode(savedMode);
+    }
+    const savedEffort = localStorage.getItem(acpEffortKey(props.chatId));
+    if (savedEffort && acpEffortOption.value && acpEffortOption.value.currentValue !== savedEffort) {
+      acpSelectEffort(savedEffort);
     }
     return;
   }
