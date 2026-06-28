@@ -5,6 +5,7 @@ import { createActor } from "xstate";
 import type { TermStatus } from "@/lib/terminalStatus";
 import { agentStatusMachine } from "@/machines/agentStatus";
 import type { AgentStatusEvent } from "@/machines/agentStatus";
+import { useChatAgentsStore } from "@/stores/chatAgents";
 
 export interface ClaudeSession {
   id: number;
@@ -21,6 +22,10 @@ export interface ClaudeSession {
   control?: boolean;
   // Set when the user manually renames the tab — prevents auto-title from overwriting.
   pinnedTitle?: boolean;
+  // Which agent backs this chat — a chatAgents store id (default 'claude').
+  agentKind?: string;
+  // Wire protocol: 'stream-json' (Claude CLI) or 'acp' (Agent Client Protocol).
+  transport?: 'stream-json' | 'acp';
 }
 
 const SESSIONS_KEY = "burrow.claude.sessions";
@@ -125,8 +130,11 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
   }
 
   // Create and activate a new session for this workspace.
-  function create(workspaceId: number): ClaudeSession {
+  function create(workspaceId: number, opts?: { agentKind?: string }): ClaudeSession {
     const id = nextId++;
+    const agentKind = opts?.agentKind ?? 'claude';
+    const transport: 'stream-json' | 'acp' =
+      useChatAgentsStore().byId(agentKind)?.transport ?? (agentKind === 'claude' ? 'stream-json' : 'acp');
     const session: ClaudeSession = {
       id,
       workspaceId,
@@ -134,6 +142,8 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
       title: `Chat ${sessionsForWs(workspaceId).length + 1}`,
       busy: false,
       messageCount: 0,
+      agentKind,
+      transport,
     };
     sessions.value.push(session);
     spawnActor(session);
@@ -199,11 +209,11 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
   });
 
   // Called by ClaudeChat.vue to sync live state back.
-  function sync(id: number, patch: Partial<Pick<ClaudeSession, "busy" | "messageCount" | "claudeSessionId" | "title" | "status" | "control">>) {
+  function sync(id: number, patch: Partial<Pick<ClaudeSession, "busy" | "messageCount" | "claudeSessionId" | "title" | "status" | "control" | "agentKind" | "transport">>) {
     const s = sessions.value.find((x) => x.id === id);
     if (!s) return;
     Object.assign(s, patch);
-    if (patch.claudeSessionId !== undefined || patch.title !== undefined || patch.messageCount !== undefined || patch.control !== undefined) {
+    if (patch.claudeSessionId !== undefined || patch.title !== undefined || patch.messageCount !== undefined || patch.control !== undefined || patch.agentKind !== undefined || patch.transport !== undefined) {
       persist();
     }
   }
