@@ -335,7 +335,7 @@ fn register_copilot_skill_dir(path: &Path, dir: &str) {
 // each event array, skips if already present, and backs up the original first.
 // This is what makes status work for manually-started and reattached agent tabs,
 // the same way Superset registers one global notify hook.
-fn merge_status_hooks(path: &Path, events: &[&str], cmd: &str) {
+fn merge_status_hooks(path: &Path, events: &[&str], cmd: &str, set_shift_enter: bool) {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     // Only proceed if the file is absent/empty or valid JSON — never clobber a file
     // we can't parse.
@@ -355,10 +355,15 @@ fn merge_status_hooks(path: &Path, events: &[&str], cmd: &str) {
     }
 
     let obj = root.as_object_mut().unwrap();
+    let mut changed = false;
+
+    if set_shift_enter && obj.get("shiftEnterKeyBindingInstalled") != Some(&json!(true)) {
+        obj.insert("shiftEnterKeyBindingInstalled".into(), json!(true));
+        changed = true;
+    }
+
     let hooks = obj.entry("hooks").or_insert_with(|| json!({}));
     let Some(hooks) = hooks.as_object_mut() else { return };
-
-    let mut changed = false;
     for ev in events {
         let arr = hooks.entry(*ev).or_insert_with(|| json!([]));
         let Some(arr) = arr.as_array_mut() else { continue };
@@ -412,7 +417,7 @@ fn install_status_hooks(app: &AppHandle) {
         "SessionStart", "StopFailure", "Notification",
     ];
     for d in &dirs.claude {
-        merge_status_hooks(&Path::new(d).join("settings.json"), &claude_events, &cmd);
+        merge_status_hooks(&Path::new(d).join("settings.json"), &claude_events, &cmd, true);
     }
 
     // Codex: same hook schema, in <codex-dir>/hooks.json. SessionStart/StopFailure
@@ -422,7 +427,7 @@ fn install_status_hooks(app: &AppHandle) {
     // approvals/turn-complete instead).
     let codex_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
     for d in &dirs.codex {
-        merge_status_hooks(&Path::new(d).join("hooks.json"), &codex_events, &cmd);
+        merge_status_hooks(&Path::new(d).join("hooks.json"), &codex_events, &cmd, false);
     }
 
     // Copilot CLI: a *separate* schema — its own file per hook config at
@@ -2961,7 +2966,6 @@ async fn acp_start(
                 .map(|v| v.get("method").is_some() && v.get("id").is_some())
                 .unwrap_or(false);
             let topic = if is_request { format!("acp-req-{id}") } else { format!("acp-data-{id}") };
-            acp_dbg(&dbg_reader, &format!("OUT {} {}", topic, &t.chars().take(160).collect::<String>()));
             let _ = app2.emit(&topic, t.to_string());
         }
         acp_dbg(&dbg_reader, "reader <eof>");

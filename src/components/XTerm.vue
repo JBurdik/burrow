@@ -186,6 +186,7 @@ function sanitizeTitle(s: string): string {
 }
 
 let outputBuffer = "";
+let lastInterruptScanAt = 0;
 // Timestamp of the last PTY output chunk — used to detect when the shell has
 // finished its startup (sourcing .zprofile/.zshrc, printing the first prompt)
 // and gone quiet, so we can inject the launch command without racing the init.
@@ -331,7 +332,10 @@ onMounted(async () => {
 
   fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
-  term.loadAddon(new WebLinksAddon((_e, uri) => shellOpen(uri)));
+  term.loadAddon(new WebLinksAddon((e, uri) => {
+    const isMac = /Mac/.test(navigator.platform || navigator.userAgent);
+    if (isMac ? e.metaKey : e.ctrlKey) shellOpen(uri);
+  }));
   // SerializeAddon lets a floating-bubble window request a snapshot of THIS
   // terminal's current screen (incl. alt-screen TUIs) to reconstruct it exactly
   // on expand — the daemon ring-buffer replay can't rebuild an alt-screen.
@@ -526,6 +530,19 @@ onMounted(async () => {
 
     outputBuffer = (outputBuffer + text).slice(-500);
     lastDataAt = performance.now();
+
+    // ponytail: output scan for Ctrl+C interrupted state — no hook fires in this case
+    if (isAgentSession && hookState === "running") {
+      const now = performance.now();
+      if (now - lastInterruptScanAt > 2000) {
+        const plain = outputBuffer.replace(ANSI_RE, "");
+        if (plain.includes("Interrupted by user") || (plain.includes("Interrupted") && plain.includes("What should"))) {
+          lastInterruptScanAt = now;
+          hookState = "waiting";
+          emit("agentState", "waiting");
+        }
+      }
+    }
   });
 
   // Send initial command once the shell is actually ready (inject --settings for

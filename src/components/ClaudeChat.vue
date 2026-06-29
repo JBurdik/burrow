@@ -810,6 +810,7 @@ async function resumeAcpSession(sid: string) {
   sessionId.value = sid;
   chats.sync(props.chatId, { claudeSessionId: sid });
   localStorage.removeItem(msgKey(props.chatId)); // replayed history repopulates it
+  await ensureAcpListeners();
   await invoke("acp_stop", { id: props.chatId }).catch(() => {});
   // emitHistory:true → Rust forwards the session/load replay so old turns render.
   const startErr = await invoke("acp_start", acpStartPayload(true)).catch((e: unknown) => e);
@@ -1051,6 +1052,15 @@ const suggestionsEl = ref<HTMLElement | null>(null);
 let unlisten: UnlistenFn | null = null;
 let acpDataUL: UnlistenFn | null = null;
 let acpReqUL: UnlistenFn | null = null;
+
+// Attach the acp-data/acp-req listeners if not already. onMounted only attaches
+// them when the chat STARTS as an ACP agent; switching to an ACP agent at runtime
+// (selectAgent → clearChat → acp_start) must attach them too, or every adapter
+// event (model/config + the whole turn) is dropped → no model, stuck "thinking".
+async function ensureAcpListeners() {
+  if (!acpDataUL) acpDataUL = await listen<string>(`acp-data-${props.chatId}`, (e) => onAcpData(e.payload));
+  if (!acpReqUL) acpReqUL = await listen<string>(`acp-req-${props.chatId}`, (e) => onAcpReq(e.payload));
+}
 
 // Permission mode (per-chat, persisted). Mirrors `claude --permission-mode`:
 // default | auto | acceptEdits | plan | dontAsk | bypassPermissions.
@@ -1918,6 +1928,7 @@ async function selectPermMode(mode: PermMode) {
 async function restartClaude() {
   suppressNextDone.value = true; // restart — don't toast on the teardown `exit`
   if (effectiveTransport.value === "acp") {
+    await ensureAcpListeners();
     await invoke("acp_stop", { id: props.chatId }).catch(() => {});
     await invoke("acp_start", acpStartPayload()).catch(() => {});
     busy.value = false;
@@ -1977,6 +1988,7 @@ async function clearChat() {
   chats.sync(props.chatId, { claudeSessionId: "", busy: false, messageCount: 0, title: `Chat` });
   const projSettings = scriptsStore.settingsFor(props.cwd);
   if (acp) {
+    await ensureAcpListeners();
     const startErr = await invoke("acp_start", acpStartPayload()).catch((e: unknown) => e);
     if (startErr) {
       messages.value.push({ id: nextMsgId++, role: 'assistant', text: `Failed to start ACP adapter: ${startErr}` });
@@ -1993,6 +2005,9 @@ async function clearChat() {
     profileCommand: selectedProfile.value?.command || null,
     profileArgs: selectedProfile.value?.args || null,
   }).catch(() => {});
+  // Switched to a stream-json agent at runtime → ensure the claude-data listener
+  // exists (onMounted only attaches it when the chat starts as stream-json).
+  if (!unlisten) unlisten = await listen<string>(`claude-data-${props.chatId}`, (ev) => onLine(ev.payload));
 }
 
 // `/cmd` token immediately before the cursor — at line start OR after whitespace,
@@ -2184,8 +2199,7 @@ onMounted(async () => {
   const stored = chats.sessions.find((s) => s.id === props.chatId)?.claudeSessionId ?? "";
   if (stored) sessionId.value = stored;
   if (effectiveTransport.value === "acp") {
-    acpDataUL = await listen<string>(`acp-data-${props.chatId}`, (e) => onAcpData(e.payload));
-    acpReqUL = await listen<string>(`acp-req-${props.chatId}`, (e) => onAcpReq(e.payload));
+    await ensureAcpListeners();
     await scriptsStore.loadForPath(props.cwd);
     const startErr = await invoke("acp_start", acpStartPayload()).catch((e: unknown) => e);
     if (startErr) {
