@@ -64,6 +64,7 @@
     />
     <ToastStack />
     <UpdateBanner />
+    <DiagramModal v-if="diagramContent !== null" />
     <Teleport to="body"><PetOverlay v-if="ui.petsEnabled" /></Teleport>
 
     <!-- Keyboard cheatsheet overlay (⌘/) -->
@@ -119,6 +120,8 @@ import { useTerminalTabsStore } from "@/stores/terminalTabs";
 import { matchesShortcut } from "@/lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import DiagramModal from "@/components/DiagramModal.vue";
+import { useDiagram } from "@/composables/useDiagram";
 
 let resizing: 'left' | 'right' | null = null;
 let resizeStartX = 0;
@@ -129,6 +132,7 @@ const showProjectConfig = ref(false);
 const ws = useWorkspaceStore();
 const ui = useUIStore();
 const git = useGitStore();
+const { diagramContent } = useDiagram();
 const agents = useAgentsStore();
 const update = useUpdateStore();
 const tabsStore = useTerminalTabsStore();

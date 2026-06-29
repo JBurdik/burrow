@@ -22,7 +22,7 @@
 # Sub-agents run INTERACTIVELY on your subscription (plain `claude`, never -p).
 
 sub="$1"
-[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane|list-workspaces|list-tabs|focus-workspace|focus-tab|new-tab|tab-rename|tab-close|workspace-create|git-status|git-log|git-diff|run <args>" >&2; exit 1; }
+[ -n "$sub" ] || { echo "usage: burrow spawn|worktree|diagram|collect|wait|sessions|status|hook|notify|set-status|set-progress|trigger-flash|log|diff|top|capture-pane|list-workspaces|list-tabs|focus-workspace|focus-tab|new-tab|tab-rename|tab-close|workspace-create|git-status|git-log|git-diff|run <args>" >&2; exit 1; }
 shift
 
 case "$sub" in
@@ -276,7 +276,21 @@ case "$sub" in
               -d "{\"ptyId\":$BURROW_PTY_ID,\"sessionId\":\"$session_id\"}" \
               >/dev/null 2>&1 && break
           done
-        fi ;;
+        fi
+        # Auto-title the tab from the first line of the user prompt.
+        prompt_title=$(printf '%s' "$json" | python3 -c "
+import sys, json, re
+try:
+  d = json.load(sys.stdin)
+  p = d.get('prompt','') or ''
+  p = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', p)
+  line = next((l.strip() for l in p.splitlines() if l.strip()), '')
+  print(line[:60])
+except: pass
+" 2>/dev/null)
+        [ -n "$prompt_title" ] && \
+          burrow status session --title "$prompt_title" --pid "$agent_pid"
+        ;;
       PreToolUse)
         # A turn that calls a BLOCKING tool parks waiting on the operator — flag it
         # as `waiting` ("needs you"), not plain `running`. Same set tank gates on
@@ -321,6 +335,23 @@ case "$sub" in
           state=running
         else
           state=done
+          # Fallback result capture: XTerm writes a token sidecar when spawning with
+          # --token. In Claude Code ≥ 2.1.195 the global Stop hook overrides the
+          # per-launch --settings hook, so burrow capture never fires from there.
+          # Read the sidecar here so `burrow collect` doesn't block forever.
+          # Consumes the file to avoid double-capture; idempotent if the per-launch
+          # hook also ran (it just overwrites .done/.result, which is fine).
+          if [ -n "$BURROW_PTY_ID" ] && [ -n "$BURROW_SESSION_DIR" ]; then
+            _tok_file="/tmp/agentic-ide-token-${BURROW_PTY_ID}"
+            if [ -f "$_tok_file" ]; then
+              _tok=$(cat "$_tok_file")
+              rm -f "$_tok_file"
+              if [ -n "$_tok" ]; then
+                printf '%s' "$json" | burrow capture "$_tok"
+                exit 0
+              fi
+            fi
+          fi
         fi ;;
       Notification)
         # Refined mapping: most notifications are telemetry (idle pings, auth/
@@ -409,6 +440,21 @@ case "$sub" in
         -H 'Content-Type: application/json' \
         -d "{\"token\":\"$token\"}" 2>/dev/null || true
     fi
+    exit 0
+    ;;
+
+  diagram)
+    content="$1"
+    [ -n "$content" ] || { echo 'burrow diagram: no content given' >&2; exit 1; }
+    reqdir="${BURROW_SESSION_DIR:?burrow: BURROW_SESSION_DIR unset — run inside Burrow}/requests"
+    mkdir -p "$reqdir"
+    ws="${BURROW_CWD:-$PWD}"
+    d=$(mktemp -d "$reqdir/req.XXXXXX")
+    printf '%s' 'diagram' > "$d/kind"
+    printf '%s' "$content" > "$d/content"
+    printf '%s' "$ws" > "$d/ws"
+    : > "$d/ready"
+    echo 'burrow: diagram queued for display' >&2
     exit 0
     ;;
 

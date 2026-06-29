@@ -706,7 +706,15 @@ burrow set-progress          # clear\n\
 burrow diff --last-turn      # quick sanity check\n\
 burrow set-status            # clear — turn done\n\
 burrow trigger-flash         # ping user: \"this tab finished\"\n\
-```";
+```\n\n\
+## Generating diagrams\n\
+When asked to visualize architecture, flows, or data models, use Mermaid syntax wrapped in a `burrow diagram` call:\n\
+```sh\n\
+burrow diagram 'flowchart LR\n\
+  A --> B\n\
+  B --> C'\n\
+```\n\
+This renders an interactive SVG diagram in the Burrow UI. Pass the entire Mermaid source as a single argument (single-quoted). Any valid Mermaid diagram type works: flowchart, sequenceDiagram, classDiagram, erDiagram, gantt, etc.";
 
 // ── Hook HTTP server ──────────────────────────────────────────────────────────
 
@@ -1339,6 +1347,8 @@ pub struct SpawnRequest {
     pub wsid: String,
     /// Control command (focus-tab): target tab/pty id (string, empty when unused).
     pub tabid: String,
+    /// diagram kind: mermaid source to render in the UI.
+    pub content: String,
 }
 
 /// Write a control read-command's answer where the `burrow` CLI is polling for it:
@@ -1378,6 +1388,7 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
                 | "worktree-remove" | "pr-create" | "pr-list" | "pr-view" | "pr-merge"
                 | "tab-rename" | "tab-close" | "workspace-create"
                 | "git-status" | "git-log" | "git-diff" | "run" | "tab-output"
+                | "diagram"
         ) {
             if ws != cwd { continue; }
             let token = read("token");
@@ -1542,6 +1553,21 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
                         "error: tab-output not supported (no addressable PTY scrollback)",
                     );
                 }
+                "diagram" => {
+                    let content = read("content");
+                    out.push(SpawnRequest {
+                        kind: kind_peek.clone(),
+                        cmd: String::new(),
+                        token: String::new(),
+                        cwd: String::new(),
+                        branch: String::new(),
+                        base: String::new(),
+                        tmux_win: String::new(),
+                        wsid: String::new(),
+                        tabid: String::new(),
+                        content,
+                    });
+                }
                 "tab-rename" | "tab-close" | "workspace-create" => {
                     // UI actions carrying extra fields: tab-rename uses name→cmd +
                     // tabid; tab-close uses tabid + force→base; workspace-create uses
@@ -1559,6 +1585,7 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
                         tmux_win: String::new(),
                         wsid,
                         tabid,
+                        content: String::new(),
                     });
                 }
                 _ => {
@@ -1573,6 +1600,7 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
                         tmux_win: String::new(),
                         wsid,
                         tabid,
+                        content: String::new(),
                     });
                 }
             }
@@ -1608,10 +1636,10 @@ fn take_spawn_requests(cwd: String, app: AppHandle, db: State<DbState>) -> Vec<S
         let _ = std::fs::remove_dir_all(&d);
         match kind.as_str() {
             "worktree" if !branch.is_empty() => {
-                out.push(SpawnRequest { kind, cmd: String::new(), token: String::new(), cwd: newcwd, branch, base, tmux_win: String::new(), wsid: String::new(), tabid: String::new() });
+                out.push(SpawnRequest { kind, cmd: String::new(), token: String::new(), cwd: newcwd, branch, base, tmux_win: String::new(), wsid: String::new(), tabid: String::new(), content: String::new() });
             }
             _ if !cmd.is_empty() => {
-                out.push(SpawnRequest { kind: "spawn".to_string(), cmd, token, cwd: newcwd, branch: String::new(), base: String::new(), tmux_win, wsid: String::new(), tabid: String::new() });
+                out.push(SpawnRequest { kind: "spawn".to_string(), cmd, token, cwd: newcwd, branch: String::new(), base: String::new(), tmux_win, wsid: String::new(), tabid: String::new(), content: String::new() });
             }
             _ => {}
         }

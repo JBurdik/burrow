@@ -400,9 +400,11 @@ onMounted(async () => {
   const baseCmd = props.initialCmd?.trim().split(/\s+/)[0] ?? "";
   let launchArgs = "";
 
-  // The ONE thing that can't live in global config is per-tab result capture for
-  // `burrow wait <token>` (the token is unique to this spawned sub-agent). Inject a
-  // tiny per-launch --settings carrying just that Stop hook when a token is present.
+  // Per-tab result capture for `burrow collect <token>`. Two layers:
+  // 1. --settings per-launch hook (works when --settings takes precedence over global)
+  // 2. Token sidecar file (fallback: global burrow hook reads it on Stop, so capture
+  //    works even if --settings hooks are overridden by ~/.claude/settings.json in
+  //    newer Claude Code versions)
   if (baseCmd === "claude" && props.resultToken) {
     hooksSettingsPath = `/tmp/agentic-ide-hooks-${props.ptyId}.json`;
     const hooksJson = JSON.stringify({
@@ -412,6 +414,12 @@ onMounted(async () => {
     });
     await invoke("write_text_file", { path: hooksSettingsPath, content: hooksJson });
     launchArgs = `--settings ${hooksSettingsPath}`;
+    // Sidecar: global burrow hook Stop handler reads this file and calls burrow capture
+    // when --settings hooks are silently ignored (Claude Code ≥ 2.1.195 behaviour).
+    await invoke("write_text_file", {
+      path: `/tmp/agentic-ide-token-${props.ptyId}`,
+      content: props.resultToken,
+    });
   }
 
   // Register all three listeners in parallel before creating the PTY — they are

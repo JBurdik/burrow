@@ -258,10 +258,12 @@ import { useGitStore } from "@/stores/git";
 import { usePointerReorder } from "@/composables/usePointerReorder";
 import { useDragSplit, type SplitZone } from "@/composables/useDragSplit";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { useDiagram } from "@/composables/useDiagram";
 
 const props = defineProps<{ cwd: string; workspaceId: number }>();
 const wsStore = useWorkspaceStore();
 const uiStore = useUIStore();
+const { showDiagram } = useDiagram();
 const chatsStore = useClaudeChatsStore();
 const tabsStore = useTerminalTabsStore();
 const notifStore = useNotificationsStore();
@@ -1552,10 +1554,12 @@ onMounted(() => {
   spawnPoll = setInterval(async () => {
     try {
       const reqs = await invoke<
-        { kind: string; cmd: string; token: string; cwd: string; branch: string; base: string; tmuxWin: string; wsid: string; tabid: string }[]
+        { kind: string; cmd: string; token: string; cwd: string; branch: string; base: string; tmuxWin: string; wsid: string; tabid: string; content: string }[]
       >("take_spawn_requests", { cwd: props.cwd });
       for (const r of reqs) {
-        if (r.kind === "worktree") {
+        if (r.kind === "diagram") {
+          showDiagram(r.content);
+        } else if (r.kind === "worktree") {
           await handleWorktreeRequest(r.branch, r.base);
         } else if (r.kind === "focus-workspace") {
           // Switch Burrow to (and mount) the requested workspace. wsStore is a shared
