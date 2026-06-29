@@ -2665,6 +2665,19 @@ fn load_dotenv_file(path: &std::path::Path) -> std::collections::HashMap<String,
     map
 }
 
+// Append a line to <app-data>/acp-debug.log. Always-on diagnostics: ACP adapters
+// behave differently in a Finder-launched bundle than in `tauri:dev`, and the
+// failure is otherwise invisible (silent "thinking", no model). Cheap, bounded
+// by the few lines per session.
+fn acp_dbg(path: &Option<std::path::PathBuf>, msg: &str) {
+    if let Some(p) = path {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = writeln!(f, "{msg}");
+        }
+    }
+}
+
 #[tauri::command]
 async fn acp_start(
     app: AppHandle,
@@ -2681,6 +2694,8 @@ async fn acp_start(
     emit_history: Option<bool>,                       // render the session/load replay (picker resume); else discard it
 ) -> Result<(), String> {
     if state.procs.lock().unwrap().contains_key(&id) {
+        let dbg = app.path().app_data_dir().ok().map(|d| d.join("acp-debug.log"));
+        acp_dbg(&dbg, &format!("acp_start id={id}: proc already running — early return (no session re-emit)"));
         return Ok(());
     }
     let emit_history = emit_history.unwrap_or(false);
@@ -2737,6 +2752,12 @@ async fn acp_start(
     }
     extra_env.insert("PATH".to_string(), augmented_path(&cwd));
 
+    let dbg_path = app.path().app_data_dir().ok().map(|d| d.join("acp-debug.log"));
+    acp_dbg(&dbg_path, &format!(
+        "\n=== acp_start id={id} kind={kind} ===\ncmd={command} bin={}\nargs={:?}\ncwd={cwd}\nPATH={}",
+        bin.display(), args, extra_env.get("PATH").cloned().unwrap_or_default()
+    ));
+
     let mut child = std::process::Command::new(&bin)
         .args(&args)
         .current_dir(&cwd)
@@ -2745,7 +2766,8 @@ async fn acp_start(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("failed to spawn acp adapter: {e}"))?;
+        .map_err(|e| { let m = format!("failed to spawn acp adapter: {e}"); acp_dbg(&dbg_path, &m); m })?;
+    acp_dbg(&dbg_path, &format!("spawned pid={}", child.id()));
 
     let stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
@@ -2755,17 +2777,21 @@ async fn acp_start(
     // handshake can report WHY (node not found, npm registry error, auth, …).
     let stderr_log = Arc::new(std::sync::Mutex::new(String::new()));
     let stderr_log2 = stderr_log.clone();
+    let dbg_err = dbg_path.clone();
     std::thread::spawn(move || {
         use std::io::Read;
         let mut buf = [0u8; 4096];
         let mut s = stderr;
         while let Ok(n) = s.read(&mut buf) {
             if n == 0 { break; }
+            let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+            acp_dbg(&dbg_err, &format!("STDERR {}", chunk.trim_end()));
             if let Ok(mut g) = stderr_log2.lock() {
-                g.push_str(&String::from_utf8_lossy(&buf[..n]));
+                g.push_str(&chunk);
                 if g.len() > 8192 { let cut = g.len() - 8192; g.drain(..cut); }
             }
         }
+        acp_dbg(&dbg_err, "STDERR <eof>");
     });
 
     let stdin = Arc::new(std::sync::Mutex::new(stdin));
@@ -2893,9 +2919,16 @@ async fn acp_start(
         // Handshake failed/timed out — attach the adapter's stderr tail so the
         // frontend shows the actual cause instead of a silent stuck session.
         let logs = stderr_log.lock().map(|g| g.trim().to_string()).unwrap_or_default();
-        if logs.is_empty() { e } else { format!("{e}\n--- adapter stderr ---\n{logs}") }
+        let m = if logs.is_empty() { e } else { format!("{e}\n--- adapter stderr ---\n{logs}") };
+        acp_dbg(&dbg_path, &format!("HANDSHAKE FAILED: {m}"));
+        m
     }))?;
     hs_done.store(true, std::sync::atomic::Ordering::SeqCst);
+    acp_dbg(&dbg_path, &format!(
+        "handshake OK session_id={session_id} has_modes={} has_config={}",
+        !session_result.get("modes").map(|v| v.is_null()).unwrap_or(true),
+        !session_result.get("configOptions").map(|v| v.is_null()).unwrap_or(true),
+    ));
 
     // Surface the session info (sessionId + modes + configOptions) to the frontend
     // so the model / permission-mode selectors can populate.
@@ -2908,6 +2941,7 @@ async fn acp_start(
 
     // Reader thread: route adapter output to the frontend.
     let app2 = app.clone();
+    let dbg_reader = dbg_path.clone();
     std::thread::spawn(move || {
         use std::io::BufRead;
         let mut reader = reader;
@@ -2927,8 +2961,10 @@ async fn acp_start(
                 .map(|v| v.get("method").is_some() && v.get("id").is_some())
                 .unwrap_or(false);
             let topic = if is_request { format!("acp-req-{id}") } else { format!("acp-data-{id}") };
+            acp_dbg(&dbg_reader, &format!("OUT {} {}", topic, &t.chars().take(160).collect::<String>()));
             let _ = app2.emit(&topic, t.to_string());
         }
+        acp_dbg(&dbg_reader, "reader <eof>");
         let _ = app2.emit(&format!("acp-data-{id}"), r#"{"_burrow":"exit"}"#);
     });
 
