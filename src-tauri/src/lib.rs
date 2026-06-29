@@ -2711,6 +2711,15 @@ async fn acp_start(
     let bin = resolve_lsp_bin(&command, &cwd)
         .ok_or_else(|| format!("{command} binary not found (checked ~/.local/bin, homebrew, PATH)"))?;
 
+    // npx with no controlling tty + the JSON-RPC pipe on stdin: if the adapter package
+    // isn't cached, npx would block on a confirmation prompt (reading our handshake as
+    // the answer) and the session hangs forever. Force non-interactive install.
+    let mut args = args;
+    let is_npx = bin.file_name().and_then(|n| n.to_str()).map(|n| n == "npx" || n == "npx.cmd").unwrap_or(false);
+    if is_npx && !args.iter().any(|a| a == "-y" || a == "--yes") {
+        args.insert(0, "-y".to_string());
+    }
+
     // Load .env file from project dir (env_file setting, default .env).
     // or_insert: never override env already set above.
     let dotenv_path = std::path::Path::new(&cwd).join(
@@ -2742,13 +2751,20 @@ async fn acp_start(
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
 
-    // Drain stderr to prevent pipe stall.
+    // Drain stderr to prevent pipe stall, AND keep the tail (~8KB) so a failed
+    // handshake can report WHY (node not found, npm registry error, auth, …).
+    let stderr_log = Arc::new(std::sync::Mutex::new(String::new()));
+    let stderr_log2 = stderr_log.clone();
     std::thread::spawn(move || {
         use std::io::Read;
         let mut buf = [0u8; 4096];
         let mut s = stderr;
         while let Ok(n) = s.read(&mut buf) {
             if n == 0 { break; }
+            if let Ok(mut g) = stderr_log2.lock() {
+                g.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if g.len() > 8192 { let cut = g.len() - 8192; g.drain(..cut); }
+            }
         }
     });
 
@@ -2763,6 +2779,21 @@ async fn acp_start(
     let resume_hs = resume_session_id.clone();
     let app_hs = app.clone();
     let emit_history_hs = emit_history;
+
+    // Watchdog: if the handshake doesn't finish within 30s, kill the adapter so the
+    // blocking read_line below unblocks (Ok(0) → "closed") instead of hanging the
+    // session in a permanent "thinking" with no model and no error.
+    let hs_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hs_done_wd = hs_done.clone();
+    let child_pid = child.id();
+    std::thread::spawn(move || {
+        for _ in 0..300 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if hs_done_wd.load(std::sync::atomic::Ordering::SeqCst) { return; }
+        }
+        let _ = std::process::Command::new("kill").arg("-9").arg(child_pid.to_string()).status();
+    });
+
     let (reader, session_id, session_result) = tauri::async_runtime::spawn_blocking(move || -> Result<(std::io::BufReader<std::process::ChildStdout>, String, serde_json::Value), String> {
         use std::io::BufRead;
         let mut reader = std::io::BufReader::new(stdout);
@@ -2857,7 +2888,14 @@ async fn acp_start(
         Ok((reader, session_id, result))
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| e.to_string())
+    .and_then(|inner| inner.map_err(|e| {
+        // Handshake failed/timed out — attach the adapter's stderr tail so the
+        // frontend shows the actual cause instead of a silent stuck session.
+        let logs = stderr_log.lock().map(|g| g.trim().to_string()).unwrap_or_default();
+        if logs.is_empty() { e } else { format!("{e}\n--- adapter stderr ---\n{logs}") }
+    }))?;
+    hs_done.store(true, std::sync::atomic::Ordering::SeqCst);
 
     // Surface the session info (sessionId + modes + configOptions) to the frontend
     // so the model / permission-mode selectors can populate.
