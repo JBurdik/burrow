@@ -1036,7 +1036,15 @@ function saveMessages(chatId: number, msgs: ChatMessage[]) {
 
 let nextMsgId = 0;
 const messages = ref<ChatMessage[]>(loadMessages(props.chatId));
-const inputText = ref("");
+const DRAFT_KEY = computed(() => `burrow.draft.chat.${props.chatId}`);
+const inputText = ref(localStorage.getItem(DRAFT_KEY.value) ?? "");
+watch(inputText, (val) => {
+  if (val) {
+    localStorage.setItem(DRAFT_KEY.value, val);
+  } else {
+    localStorage.removeItem(DRAFT_KEY.value);
+  }
+});
 const busy = ref(false);
 const messageQueue = ref<string[]>([]);
 // Set before an INTENTIONAL claude restart (mode switch / abort) so the `exit`
