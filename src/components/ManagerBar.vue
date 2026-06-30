@@ -239,7 +239,12 @@ function setChatRef(repoId: number, el: unknown) {
   else chatRefs.delete(repoId);
 }
 const quickEl = ref<HTMLTextAreaElement | null>(null);
-const quickText = ref("");
+const DRAFT_KEY = computed(() => `burrow.draft.manager.${props.wsId}`);
+const quickText = ref(localStorage.getItem(DRAFT_KEY.value) ?? "");
+watch(quickText, (val) => {
+  if (val) localStorage.setItem(DRAFT_KEY.value, val);
+  else localStorage.removeItem(DRAFT_KEY.value);
+});
 const pastedImages = ref<string[]>([]);
 
 // ── Suggestions ─────────────────────────────────────────────────────────────
