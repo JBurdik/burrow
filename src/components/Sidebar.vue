@@ -131,6 +131,7 @@
               dragging: tabDragGroup === String(item.id) && tabDragIdx === tabIdx,
             }"
             @click.stop="selectTab(item, tab.id)"
+            @dblclick.stop
             @pointerdown="(e: PointerEvent) => tabDragDown(tabIdx, e, String(item.id))"
           >
             <ClaudeIcon v-if="tab.isChat" :size="11" class="ws-term-icon claude-session-icon" />
@@ -672,10 +673,12 @@ function selectTab(ws: Workspace, tabId: number) {
 // ── tab inline rename ───────────────────────────────────────────────────────
 const editingTab = ref<{ wsId: number; tabId: number } | null>(null);
 const editingTabTitle = ref("");
+let renameReadyAt = 0;
 
 function startTabRename(ws: Workspace, tab: { id: number; title: string }) {
   editingTab.value = { wsId: ws.id, tabId: tab.id };
   editingTabTitle.value = tab.title;
+  renameReadyAt = Date.now() + 200; // blur within 200ms of focus = noise, ignore
   nextTick(() => {
     const el = document.querySelector<HTMLInputElement>(".ws-term-rename-input");
     el?.focus();
@@ -684,6 +687,7 @@ function startTabRename(ws: Workspace, tab: { id: number; title: string }) {
 }
 
 function commitTabRename() {
+  if (Date.now() < renameReadyAt) return; // spurious blur before user could type
   if (!editingTab.value) return;
   const title = editingTabTitle.value.trim();
   if (title) termTabs.rename(editingTab.value.wsId, editingTab.value.tabId, title);
