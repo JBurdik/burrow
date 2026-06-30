@@ -65,6 +65,14 @@ mod sleep_inhibit {
     }
 }
 
+#[tauri::command]
+fn set_sleep_inhibit(active: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    { sleep_inhibit::set(active) }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = active; Ok(()) }
+}
+
 struct DaemonState {
     client: Mutex<Option<Arc<DaemonClient>>>,
 }
@@ -4646,6 +4654,7 @@ pub fn run() {
             restart_daemon,
             take_spawn_requests,
             reinstall_status_hooks,
+            set_sleep_inhibit,
             remove_status_hooks,
             get_config_dirs,
             set_config_dirs,
