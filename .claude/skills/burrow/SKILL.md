@@ -132,3 +132,12 @@ burrow diff --last-turn      # quick sanity check
 burrow set-status            # clear — turn done
 burrow trigger-flash         # ping user: "this tab finished"
 ```
+
+## Generating diagrams
+When asked to visualize architecture, flows, or data models, use Mermaid syntax wrapped in a `burrow diagram` call:
+```sh
+burrow diagram 'flowchart LR
+A --> B
+B --> C'
+```
+This renders an interactive SVG diagram in the Burrow UI. Pass the entire Mermaid source as a single argument (single-quoted). Any valid Mermaid diagram type works: flowchart, sequenceDiagram, classDiagram, erDiagram, gantt, etc.

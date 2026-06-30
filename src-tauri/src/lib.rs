@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[cfg(target_os = "macos")]
 mod sleep_inhibit {
     use std::sync::Mutex;
+    use std::ffi::c_void;
     use libc::{c_char, c_uint};
 
     // IOKit types (not exposed by any crate we already have — declare manually)
@@ -19,12 +20,32 @@ mod sleep_inhibit {
     type IOReturn = c_uint;
     const kIOReturnSuccess: IOReturn = 0;
 
+    // CoreFoundation: IOPMAssertionCreateWithName takes CFStringRef for the
+    // type/name args, NOT `const char *`. Passing raw C strings made IOKit
+    // CFRetain the char-pointer bytes as if they were CF objects and insert
+    // them into its internal NSMutableDictionary -> objc_retain on a non-object
+    // -> EXC_BAD_ACCESS (crash addr was the bytes of "PreventUserIdle..." read
+    // as a pointer). Build real CFStrings and pass those instead.
+    type CFStringRef = *const c_void;
+    type CFAllocatorRef = *const c_void;
+    const kCFStringEncodingUTF8: u32 = 0x0800_0100;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFStringCreateWithCString(
+            alloc: CFAllocatorRef,
+            c_str: *const c_char,
+            encoding: u32,
+        ) -> CFStringRef;
+        fn CFRelease(cf: *const c_void);
+    }
+
     #[link(name = "IOKit", kind = "framework")]
     extern "C" {
         fn IOPMAssertionCreateWithName(
-            assertion_type: *const c_char,
+            assertion_type: CFStringRef,
             assertion_level: u32,
-            assertion_name: *const c_char,
+            assertion_name: CFStringRef,
             assertion_id: *mut IOPMAssertionID,
         ) -> IOReturn;
         fn IOPMAssertionRelease(assertion_id: IOPMAssertionID) -> IOReturn;
@@ -39,16 +60,24 @@ mod sleep_inhibit {
         let mut guard = ASSERTION_ID.lock().unwrap();
         if active {
             if guard.is_some() { return Ok(()); } // already held
-            let assertion_type = c"PreventUserIdleSystemSleep";
-            let assertion_name = c"Burrow agent running";
+            let type_c = c"PreventUserIdleSystemSleep";
+            let name_c = c"Burrow agent running";
             let mut id: IOPMAssertionID = 0;
+            // CFStrings own a copy of the bytes; release them after the call.
             let ret = unsafe {
-                IOPMAssertionCreateWithName(
-                    assertion_type.as_ptr(),
-                    kIOPMAssertionLevelOn,
-                    assertion_name.as_ptr(),
-                    &mut id,
-                )
+                let type_cf =
+                    CFStringCreateWithCString(std::ptr::null(), type_c.as_ptr(), kCFStringEncodingUTF8);
+                let name_cf =
+                    CFStringCreateWithCString(std::ptr::null(), name_c.as_ptr(), kCFStringEncodingUTF8);
+                if type_cf.is_null() || name_cf.is_null() {
+                    if !type_cf.is_null() { CFRelease(type_cf); }
+                    if !name_cf.is_null() { CFRelease(name_cf); }
+                    return Err("CFStringCreateWithCString failed".into());
+                }
+                let r = IOPMAssertionCreateWithName(type_cf, kIOPMAssertionLevelOn, name_cf, &mut id);
+                CFRelease(type_cf);
+                CFRelease(name_cf);
+                r
             };
             if ret == kIOReturnSuccess {
                 *guard = Some(id);
@@ -61,6 +90,21 @@ mod sleep_inhibit {
                 unsafe { IOPMAssertionRelease(id) };
             }
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        // Exercises the real IOKit/CoreFoundation FFI. Before the CFStringRef
+        // fix, set(true) passed raw char* where IOKit expected CF objects and
+        // crashed with EXC_BAD_ACCESS — so this test segfaults on a regression
+        // of the type signature rather than just asserting.
+        #[test]
+        fn set_round_trips_without_crashing() {
+            super::set(true).expect("acquire assertion");
+            super::set(true).expect("idempotent acquire");
+            super::set(false).expect("release assertion");
+            super::set(false).expect("release when none held");
         }
     }
 }
