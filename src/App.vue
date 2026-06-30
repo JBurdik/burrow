@@ -208,6 +208,19 @@ watch(
   () => { nextTick(() => activeTerm()?.repaintAll()); },
 );
 
+// Prevent Mac sleep while any agent tab is busy
+watch(
+  () => {
+    const allTabs = Object.values(tabsStore.tabsByWs).flat();
+    return allTabs.some((t) => t.busy);
+  },
+  (anyBusy) => {
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("set_sleep_inhibit", { active: anyBusy }))
+      .catch(() => {});
+  },
+);
+
 const spotlightRef = ref<InstanceType<typeof Spotlight> | null>(null);
 const cheatsheetOpen = ref(false);
 
