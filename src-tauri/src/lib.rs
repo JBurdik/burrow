@@ -9,6 +9,62 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+#[cfg(target_os = "macos")]
+mod sleep_inhibit {
+    use std::sync::Mutex;
+    use libc::{c_char, c_uint};
+
+    // IOKit types (not exposed by any crate we already have — declare manually)
+    type IOPMAssertionID = u32;
+    type IOReturn = c_uint;
+    const kIOReturnSuccess: IOReturn = 0;
+
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        fn IOPMAssertionCreateWithName(
+            assertion_type: *const c_char,
+            assertion_level: u32,
+            assertion_name: *const c_char,
+            assertion_id: *mut IOPMAssertionID,
+        ) -> IOReturn;
+        fn IOPMAssertionRelease(assertion_id: IOPMAssertionID) -> IOReturn;
+    }
+
+    // kIOPMAssertionLevelOn = 255
+    const kIOPMAssertionLevelOn: u32 = 255;
+
+    static ASSERTION_ID: Mutex<Option<IOPMAssertionID>> = Mutex::new(None);
+
+    pub fn set(active: bool) -> Result<(), String> {
+        let mut guard = ASSERTION_ID.lock().unwrap();
+        if active {
+            if guard.is_some() { return Ok(()); } // already held
+            let assertion_type = c"PreventUserIdleSystemSleep";
+            let assertion_name = c"Burrow agent running";
+            let mut id: IOPMAssertionID = 0;
+            let ret = unsafe {
+                IOPMAssertionCreateWithName(
+                    assertion_type.as_ptr(),
+                    kIOPMAssertionLevelOn,
+                    assertion_name.as_ptr(),
+                    &mut id,
+                )
+            };
+            if ret == kIOReturnSuccess {
+                *guard = Some(id);
+                Ok(())
+            } else {
+                Err(format!("IOPMAssertionCreateWithName failed: {ret}"))
+            }
+        } else {
+            if let Some(id) = guard.take() {
+                unsafe { IOPMAssertionRelease(id) };
+            }
+            Ok(())
+        }
+    }
+}
+
 struct DaemonState {
     client: Mutex<Option<Arc<DaemonClient>>>,
 }
@@ -3957,6 +4013,94 @@ fn read_claude_activity(cwd: String, session_id: String, config_dir: Option<Stri
     ClaudeActivity { exists: true, idle_ms, turn_ended, awaiting_input, is_error }
 }
 
+#[derive(serde::Serialize, Clone)]
+struct ClaudeSessionInfo {
+    session_id: String,
+    first_message: String,
+    updated_at: String, // ISO 8601
+}
+
+#[tauri::command]
+fn list_claude_sessions(
+    app: AppHandle,
+    cwd: String,
+    config_dir: Option<String>,
+) -> Vec<ClaudeSessionInfo> {
+    use std::io::{BufRead, BufReader};
+
+    // Resolve projects dir (same logic as claude_usage_5h)
+    let projects_dir = if let Some(cd) = config_dir.as_deref().filter(|s| !s.is_empty()) {
+        let expanded = if cd.starts_with("~/") {
+            app.path().home_dir().ok()
+                .map(|h| format!("{}{}", h.display(), &cd[1..]))
+                .unwrap_or_else(|| cd.to_string())
+        } else { cd.to_string() };
+        let base = std::path::Path::new(&expanded);
+        let direct = base.join("projects");
+        if direct.is_dir() { direct } else { base.join(".claude/projects") }
+    } else {
+        match app.path().home_dir() {
+            Ok(h) => h.join(".claude/projects"),
+            Err(_) => return vec![],
+        }
+    };
+
+    // Derive the project slug from cwd (same convention Claude uses)
+    let slug = cwd.replace(['/', '\\', ':'], "-").trim_start_matches('-').to_string();
+    let project_dir = projects_dir.join(&slug);
+    if !project_dir.is_dir() { return vec![]; }
+
+    let Ok(entries) = std::fs::read_dir(&project_dir) else { return vec![]; };
+    let mut results: Vec<ClaudeSessionInfo> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("jsonl") { return None; }
+            let session_id = path.file_stem()?.to_str()?.to_string();
+            // mtime as updated_at
+            let updated_at = path.metadata().ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| {
+                    // Simple ISO8601 from unix seconds — no chrono needed
+                    let secs = d.as_secs();
+                    let s = secs % 60; let m = (secs / 60) % 60;
+                    let h = (secs / 3600) % 24; let days = secs / 86400;
+                    // Approximate date calculation (good enough for display)
+                    format!("{days}d {h:02}:{m:02}:{s:02}") // rough display
+                })
+                .unwrap_or_default();
+            // Read first user message
+            let f = std::fs::File::open(&path).ok()?;
+            let first_message = BufReader::new(f).lines().flatten()
+                .find_map(|line| {
+                    let v: serde_json::Value = serde_json::from_str(&line).ok()?;
+                    if v["role"].as_str() == Some("user") {
+                        let content = &v["content"];
+                        if let Some(arr) = content.as_array() {
+                            return arr.iter().find_map(|c| {
+                                if c["type"].as_str() == Some("text") {
+                                    c["text"].as_str().map(|t| t.chars().take(80).collect::<String>())
+                                } else { None }
+                            });
+                        }
+                        if let Some(s) = content.as_str() {
+                            return Some(s.chars().take(80).collect());
+                        }
+                    }
+                    None
+                })
+                .unwrap_or_else(|| "(empty)".to_string());
+            Some(ClaudeSessionInfo { session_id, first_message, updated_at })
+        })
+        .collect();
+
+    // Sort by mtime desc — re-read metadata for sorting
+    results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    results.truncate(20); // top 20 recent sessions
+    results
+}
+
 /// One rendered line of a transcript: a single content block flattened out of the
 /// JSONL so the frontend can render the FULL conversation (not just the captured
 /// user/assistant turns Mission Control tracks live). `kind` distinguishes text,
@@ -4493,6 +4637,7 @@ pub fn run() {
             detach_pty,
             list_pty_sessions,
             get_pty_foreground,
+            list_claude_sessions,
             is_pid_alive,
             system_stats,
             daemon_stats,
