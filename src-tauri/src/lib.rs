@@ -3095,18 +3095,28 @@ async fn acp_start(
 /// Sends a prompt and returns the JSON-RPC id used, so the frontend can match the
 /// turn-done response (other responses like set_mode share the acp-data channel).
 #[tauri::command]
-fn acp_send(state: State<AcpState>, id: u32, text: String) -> Result<u64, String> {
+fn acp_send(state: State<AcpState>, id: u32, text: String, images: Option<Vec<String>>) -> Result<u64, String> {
     let guard = state.procs.lock().unwrap();
     let proc = guard.get(&id).ok_or("acp adapter not running")?;
     let rpc_id = proc.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // ACP ContentBlock: images go as { type:"image", mimeType, data(base64) }.
+    // The frontend sends data URIs ("data:image/png;base64,XXXX") — split them.
+    let mut prompt: Vec<serde_json::Value> = Vec::new();
+    if !text.is_empty() {
+        prompt.push(serde_json::json!({ "type": "text", "text": text }));
+    }
+    for uri in images.unwrap_or_default() {
+        let (mime, data) = match uri.strip_prefix("data:").and_then(|r| r.split_once(";base64,")) {
+            Some((m, d)) => (m.to_string(), d.to_string()),
+            None => ("image/png".to_string(), uri.clone()),
+        };
+        prompt.push(serde_json::json!({ "type": "image", "mimeType": mime, "data": data }));
+    }
     acp_write(&proc.stdin, &serde_json::json!({
         "jsonrpc": "2.0",
         "id": rpc_id,
         "method": "session/prompt",
-        "params": {
-            "sessionId": proc.session_id,
-            "prompt": [ { "type": "text", "text": text } ]
-        }
+        "params": { "sessionId": proc.session_id, "prompt": prompt }
     }))?;
     Ok(rpc_id)
 }

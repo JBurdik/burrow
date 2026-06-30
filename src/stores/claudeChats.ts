@@ -146,7 +146,9 @@ export const useClaudeChatsStore = defineStore("claudeChats", () => {
       transport,
     };
     sessions.value.push(session);
-    spawnActor(session);
+    // Pass the REACTIVE array element (not the raw `session`) so the actor's
+    // status mutations go through Vue's proxy and actually trigger reactivity.
+    spawnActor(sessions.value[sessions.value.length - 1]);
     activeByWs.value[workspaceId] = id;
     persist();
     return session;

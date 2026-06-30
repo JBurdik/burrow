@@ -1318,7 +1318,8 @@ async function sendQueuedNow(i: number) {
   const text = messageQueue.value.splice(i, 1)[0];
   const qIdx = messages.value.findIndex((m) => m.role === "queued" && m.text === text);
   if (qIdx !== -1) messages.value.splice(qIdx, 1);
-  if (!busy.value) await sendMessage(text);
+  // ACP supports promptQueueing → send now even mid-turn; stream-json must wait.
+  if (!busy.value || effectiveTransport.value === "acp") await sendMessage(text);
   else { messageQueue.value.unshift(text); messages.value.unshift({ id: nextMsgId++, role: "queued", text }); }
 }
 
@@ -1462,7 +1463,7 @@ function smartTitle(text: string): string {
   return title.length < clean.length ? title + "…" : title;
 }
 function isDefaultTitle(title: string): boolean {
-  return /^Chat\s+\d+$/.test(title.trim());
+  return /^Chat(\s+\d+)?$/.test(title.trim());
 }
 // Once Claude sends us a generated title, prefer it and stop overwriting.
 const claudeGeneratedTitle = ref(false);
@@ -1799,8 +1800,10 @@ async function sendMessage(forcedText?: string, extraImages?: string[]) {
   let text = (forcedText ?? inputText.value).trim();
   if (!text) return;
   if (extraImages?.length) pendingImages.value.push(...extraImages);
-  // While busy: queue the message instead of sending immediately.
-  if (busy.value && !forcedText) {
+  // While busy: queue the message instead of sending immediately. ACP adapters
+  // support promptQueueing (the agent queues it itself), so send concurrently —
+  // pressing Enter force-sends now instead of waiting for the turn to finish.
+  if (busy.value && !forcedText && effectiveTransport.value !== "acp") {
     messageQueue.value.push(text);
     messages.value.push({ id: nextMsgId++, role: "queued", text });
     inputText.value = "";
@@ -1845,7 +1848,9 @@ async function sendMessage(forcedText?: string, extraImages?: string[]) {
   scrollToBottom();
   if (effectiveTransport.value === "acp") {
     try {
-      acpPromptRpcId.value = await invoke<number>("acp_send", { id: props.chatId, text });
+      const images = pendingImages.value.length > 0 ? [...pendingImages.value] : undefined;
+      pendingImages.value = [];
+      acpPromptRpcId.value = await invoke<number>("acp_send", { id: props.chatId, text, images });
     } catch (e) {
       messages.value.push({ id: nextMsgId++, role: "assistant", text: `Error: ${e}` });
       busy.value = false;
