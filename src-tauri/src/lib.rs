@@ -2324,6 +2324,29 @@ fn augmented_path(root: &str) -> String {
     parts.join(":")
 }
 
+// Cold `npx -y <pkg>` downloads the adapter on first use; for the big
+// claude-agent-acp bundle that can exceed the handshake watchdog → the adapter
+// gets killed mid-download and surfaces as "closed during handshake". Warm the
+// npx cache in the background at startup so the real handshake is always fast.
+// (--package <pkg> -- node -e "" downloads the package without launching the
+// stdin-driven adapter.) Best-effort: failures are silent, the handshake still
+// works on its own, just slower the first time.
+fn prewarm_acp_adapters() {
+    std::thread::spawn(|| {
+        let root = std::env::var("HOME").unwrap_or_default();
+        for pkg in ["@agentclientprotocol/claude-agent-acp", "@agentclientprotocol/codex-acp"] {
+            let Some(npx) = resolve_lsp_bin("npx", &root) else { continue };
+            let _ = std::process::Command::new(&npx)
+                .args(["-y", "--package", pkg, "--", "node", "-e", ""])
+                .env("PATH", augmented_path(&root))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    });
+}
+
 #[tauri::command]
 fn lsp_start(
     app: AppHandle,
@@ -2903,14 +2926,15 @@ async fn acp_start(
     let app_hs = app.clone();
     let emit_history_hs = emit_history;
 
-    // Watchdog: if the handshake doesn't finish within 30s, kill the adapter so the
+    // Watchdog: if the handshake doesn't finish within 120s, kill the adapter so the
     // blocking read_line below unblocks (Ok(0) → "closed") instead of hanging the
-    // session in a permanent "thinking" with no model and no error.
+    // session in a permanent "thinking" with no model and no error. 120s (not 30s)
+    // tolerates a cold `npx -y` download of the adapter on first use.
     let hs_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let hs_done_wd = hs_done.clone();
     let child_pid = child.id();
     std::thread::spawn(move || {
-        for _ in 0..300 {
+        for _ in 0..1200 {
             std::thread::sleep(std::time::Duration::from_millis(100));
             if hs_done_wd.load(std::sync::atomic::Ordering::SeqCst) { return; }
         }
@@ -4630,6 +4654,7 @@ pub fn run() {
             // before the first PTY spawn, then register the persistent status hooks.
             ensure_burrow_bin(app.handle());
             install_status_hooks(app.handle());
+            prewarm_acp_adapters();
             Ok(())
         })
         .on_menu_event(|app, event| {
