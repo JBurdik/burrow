@@ -34,6 +34,12 @@
         </Teleport>
       </div>
       <button
+        v-if="effectiveTransport === 'acp'"
+        class="session-browse-btn"
+        title="Browse past sessions"
+        @click="openSessionBrowser"
+      >⏱</button>
+      <button
         v-if="!compact"
         class="chat-header-btn"
         :class="{ 'btn-active': changesVisible }"
@@ -617,6 +623,27 @@
         </template>
       </div>
     </div>
+
+    <!-- Session browser modal -->
+    <div v-if="sessionBrowserOpen" class="session-browser-overlay" @click.self="sessionBrowserOpen = false">
+      <div class="session-browser-modal">
+        <div class="session-browser-header">
+          <span>Recent sessions</span>
+          <button @click="sessionBrowserOpen = false">✕</button>
+        </div>
+        <div v-if="sessionBrowserLoading" class="session-browser-empty">Loading…</div>
+        <div v-else-if="!sessionBrowserItems.length" class="session-browser-empty">No sessions found for this project.</div>
+        <div
+          v-for="s in sessionBrowserItems"
+          :key="s.session_id"
+          class="session-browser-item"
+          @click="pickSession(s.session_id)"
+        >
+          <span class="session-preview">{{ s.first_message }}</span>
+          <span class="session-meta">{{ s.updated_at }} · {{ s.session_id.slice(0, 8) }}</span>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -700,6 +727,11 @@ interface AcpModes { currentModeId: string; availableModes: AcpMode[] }
 interface AcpConfigChoice { value: string; name: string; description?: string }
 interface AcpConfigOption { id: string; name: string; type: string; currentValue: string; options: AcpConfigChoice[] }
 interface AcpSessionInfo { sessionId: string; title?: string; updatedAt?: string }
+interface ClaudeSessionInfo {
+  session_id: string;
+  first_message: string;
+  updated_at: string;
+}
 // JSON-RPC id of the in-flight session/prompt — correlates the turn-done response.
 const acpPromptRpcId = ref<number | null>(null);
 // rpc ids of in-flight control calls (set_mode/set_config/list) → refresh UI on reply.
@@ -708,6 +740,30 @@ const acpModes = ref<AcpModes | null>(null);
 const acpConfigOptions = ref<AcpConfigOption[]>([]);
 const acpSessions = ref<AcpSessionInfo[]>([]);
 const acpHistoryOpen = ref(false);
+const sessionBrowserOpen = ref(false);
+const sessionBrowserItems = ref<ClaudeSessionInfo[]>([]);
+const sessionBrowserLoading = ref(false);
+
+async function openSessionBrowser() {
+  sessionBrowserOpen.value = true;
+  sessionBrowserLoading.value = true;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    sessionBrowserItems.value = await invoke<ClaudeSessionInfo[]>("list_claude_sessions", {
+      cwd: props.cwd,
+      configDir: null,
+    });
+  } catch (e) {
+    sessionBrowserItems.value = [];
+  } finally {
+    sessionBrowserLoading.value = false;
+  }
+}
+
+async function pickSession(sid: string) {
+  sessionBrowserOpen.value = false;
+  await resumeAcpSession(sid);
+}
 const acpHistoryBtnEl = ref<HTMLElement | null>(null);
 const acpHistoryMenuEl = ref<HTMLElement | null>(null);
 const acpHistoryPos = ref({ top: 0, left: 0 });
@@ -3464,4 +3520,60 @@ defineExpose({ sendMessage, focusInput, selectModel, selectedModel, allCommands,
 .md-body :deep(table) { border-collapse: collapse; font-size: 12px; margin: 8px 0; }
 .md-body :deep(th), .md-body :deep(td) { border: 1px solid rgba(255,255,255,0.1); padding: 5px 10px; }
 .md-body :deep(th) { background: rgba(255,255,255,0.05); font-weight: 600; }
+
+.session-browse-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 14px;
+  padding: 2px 4px;
+}
+.session-browse-btn:hover { opacity: 1; }
+
+.session-browser-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.session-browser-modal {
+  background: var(--bg2, #1e1e1e);
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  width: 420px;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.session-browser-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border, #333);
+  font-weight: 600;
+}
+.session-browser-header button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--fg, #ccc);
+}
+.session-browser-item {
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-faint, #2a2a2a);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.session-browser-item:hover { background: var(--bg3, #252525); }
+.session-preview { font-size: 13px; color: var(--fg, #ccc); }
+.session-meta { font-size: 11px; color: var(--fg-muted, #666); }
+.session-browser-empty { padding: 20px 14px; color: var(--fg-muted, #666); }
 </style>
